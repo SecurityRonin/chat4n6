@@ -1,11 +1,16 @@
 # chat4n6
 
-> Fast, deep WhatsApp forensics from Android images — recovers what commercial tools miss.
+> Deleted WhatsApp messages aren't always gone. chat4n6 finds them.
 
-`chat4n6` is an open-source command-line tool for digital forensic examiners. It extracts
-WhatsApp artifacts from Android forensic images (DAR archives from Passware Kit Mobile),
-including messages that were deleted, resided only in the SQLite write-ahead log, or were
-carved from unallocated space.
+When a suspect deletes a WhatsApp message, the data rarely disappears immediately.
+It lingers in SQLite freelists, write-ahead logs, the in-app search index, and
+unallocated disk space — often intact and recoverable, if you know where to look.
+
+`chat4n6` is a free, open-source command-line tool that systematically recovers
+this evidence from Android forensic images (DAR archives from Passware Kit Mobile).
+It goes six layers deep into each WhatsApp database, surfaces every recoverable
+artifact, tags each record with its evidence source, and produces a paginated HTML
+report ready for review or court presentation.
 
 ---
 
