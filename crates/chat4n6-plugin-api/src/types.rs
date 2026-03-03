@@ -2,14 +2,14 @@ use chrono::{DateTime, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EvidenceSource {
     Live,
     WalPending,
     WalHistoric,
     Freelist,
     FtsOnly,
-    CarvedUnalloc { confidence: f32 },
+    CarvedUnalloc { confidence_pct: u8 },
     CarvedDb,
 }
 
@@ -21,15 +21,15 @@ impl fmt::Display for EvidenceSource {
             Self::WalHistoric => write!(f, "WAL-HISTORIC"),
             Self::Freelist => write!(f, "FREELIST"),
             Self::FtsOnly => write!(f, "FTS-ONLY"),
-            Self::CarvedUnalloc { confidence } => {
-                write!(f, "CARVED-UNALLOC {:.0}%", confidence * 100.0)
+            Self::CarvedUnalloc { confidence_pct } => {
+                write!(f, "CARVED-UNALLOC {}%", confidence_pct)
             }
             Self::CarvedDb => write!(f, "CARVED-DB"),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ForensicTimestamp {
     pub utc: DateTime<Utc>,
     pub local_offset_seconds: i32,
@@ -53,18 +53,23 @@ impl ForensicTimestamp {
         let offset = FixedOffset::east_opt(self.local_offset_seconds)
             .unwrap_or(FixedOffset::east_opt(0).unwrap());
         let local = self.utc.with_timezone(&offset);
-        let hours = self.local_offset_seconds / 3600;
-        let sign = if hours >= 0 { "+" } else { "" };
+        let total_secs = self.local_offset_seconds;
+        let sign = if total_secs >= 0 { '+' } else { '-' };
+        let abs_secs = total_secs.unsigned_abs();
+        let hours = abs_secs / 3600;
+        let mins = (abs_secs % 3600) / 60;
         format!(
-            "{} UTC{}{}",
+            "{}  |  {} {}{:02}:{:02}",
+            self.utc.format("%Y-%m-%d %H:%M:%S UTC"),
             local.format("%Y-%m-%d %H:%M:%S"),
             sign,
-            hours
+            hours,
+            mins
         )
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MediaRef {
     pub file_path: String,
     pub mime_type: String,
@@ -82,7 +87,7 @@ pub struct Reaction {
     pub source: EvidenceSource,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CallRecord {
     pub call_id: i64,
     pub participants: Vec<String>,
@@ -94,7 +99,7 @@ pub struct CallRecord {
     pub source: EvidenceSource,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MessageContent {
     Text(String),
     Media(MediaRef),
@@ -119,7 +124,7 @@ pub struct Message {
     pub row_offset: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Contact {
     pub jid: String,
     pub display_name: Option<String>,
@@ -136,7 +141,7 @@ pub struct Chat {
     pub messages: Vec<Message>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum WalDeltaStatus {
     AddedInWal,
     DeletedInWal,

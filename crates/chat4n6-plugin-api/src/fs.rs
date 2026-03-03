@@ -19,7 +19,7 @@ pub trait ForensicFs: Send + Sync {
     fn list(&self, path: &str) -> Result<Vec<FsEntry>>;
     fn read(&self, path: &str) -> Result<Vec<u8>>;
     fn exists(&self, path: &str) -> bool;
-    fn unallocated_regions(&self) -> &[UnallocatedRegion];
+    fn unallocated_regions(&self) -> Vec<UnallocatedRegion>;
 }
 
 pub trait ForensicPlugin: Send + Sync {
