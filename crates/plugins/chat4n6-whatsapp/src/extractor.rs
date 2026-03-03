@@ -46,13 +46,22 @@ pub fn extract_from_msgstore(
         &jid_map,
     );
 
-    // Map messages into chats
+    // Map messages into chats.  If the chat record was deleted/unrecovered,
+    // create a stub so forensically-recovered messages are never silently dropped.
     let msg_records = by_table.get("message").map(|v| v.as_slice()).unwrap_or(&[]);
     for rec in msg_records {
         if let Some(msg) = record_to_message(rec, &jid_map, tz_offset_secs) {
-            if let Some(chat) = chats.get_mut(&msg.chat_id) {
-                chat.messages.push(msg);
-            }
+            chats
+                .entry(msg.chat_id)
+                .or_insert_with(|| Chat {
+                    id: msg.chat_id,
+                    jid: String::new(),
+                    name: None,
+                    is_group: false,
+                    messages: Vec::new(),
+                })
+                .messages
+                .push(msg);
         }
     }
 

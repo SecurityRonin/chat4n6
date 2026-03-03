@@ -29,6 +29,10 @@ impl ForensicPlugin for WhatsAppPlugin {
         let user_version = if db_bytes.len() >= 64 {
             u32::from_be_bytes([db_bytes[60], db_bytes[61], db_bytes[62], db_bytes[63]])
         } else { 0 };
+        // Table-name detection path (requires tables slice) is intentionally
+        // skipped here; user_version-based detection is sufficient for all
+        // known WhatsApp builds. The schema value is currently informational
+        // only (_schema_version is unused in extract_from_msgstore).
         let schema = detect_schema_version(user_version, &[]);
         extract_from_msgstore(&db_bytes, tz, schema)
     }
