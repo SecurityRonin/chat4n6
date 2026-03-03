@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Overview — chat4n6{% endblock %}
+{% block content %}
+<h2>Case Overview</h2>
+<table>
+<tr><th>Field</th><th>Value</th></tr>
+<tr><td>Case Name</td><td>{{ case_name }}</td></tr>
+<tr><td>Generated</td><td>{{ generated_at_utc }} UTC</td></tr>
+<tr><td>Timezone</td><td>{{ timezone_label }}</td></tr>
+<tr><td>Total Chats</td><td>{{ total_chats }}</td></tr>
+<tr><td>Total Messages</td><td>{{ total_messages }}</td></tr>
+<tr><td>Total Calls</td><td>{{ total_calls }}</td></tr>
+</table>
+
+<h2>Chats</h2>
+<table>
+<tr><th>Chat ID</th><th>JID / Name</th><th>Type</th><th>Messages</th><th>Link</th></tr>
+{% for chat in chats %}
+<tr>
+  <td>{{ chat.id }}</td>
+  <td>{{ chat.name | default(value=chat.jid) }}</td>
+  <td>{% if chat.is_group %}Group{% else %}1:1{% endif %}</td>
+  <td>{{ chat.message_count }}</td>
+  <td><a href="chat_{{ chat.id }}_1.html">View</a></td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}

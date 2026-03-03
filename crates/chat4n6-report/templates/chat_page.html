@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Chat {{ chat_id }} p{{ current_page }} — chat4n6{% endblock %}
+{% block content %}
+<h2>Chat: {{ chat_name }} (Page {{ current_page }}/{{ total_pages }})</h2>
+
+<div class="pagination">
+  {% if current_page > 1 %}<a href="chat_{{ chat_id }}_{{ current_page - 1 }}.html">&laquo; Prev</a>{% endif %}
+  <span class="active">{{ current_page }}</span>
+  {% if current_page < total_pages %}<a href="chat_{{ chat_id }}_{{ current_page + 1 }}.html">Next &raquo;</a>{% endif %}
+</div>
+
+<table>
+<tr><th>Timestamp</th><th>Dir</th><th>Sender</th><th>Content</th><th>Source</th></tr>
+{% for msg in messages %}
+<tr class="{% if msg.from_me %}msg-sent{% else %}msg-recv{% endif %}">
+  <td>{{ msg.timestamp_utc }}</td>
+  <td>{% if msg.from_me %}&#8599;{% else %}&#8600;{% endif %}</td>
+  <td>{{ msg.sender | default(value="Me") }}</td>
+  <td class="{% if msg.deleted %}msg-deleted{% endif %}">{{ msg.content }}</td>
+  <td><span class="badge badge-{{ msg.source_class }}">{{ msg.source }}</span></td>
+</tr>
+{% endfor %}
+</table>
+
+<div class="pagination">
+  {% if current_page > 1 %}<a href="chat_{{ chat_id }}_{{ current_page - 1 }}.html">&laquo; Prev</a>{% endif %}
+  <span class="active">{{ current_page }}</span>
+  {% if current_page < total_pages %}<a href="chat_{{ chat_id }}_{{ current_page + 1 }}.html">Next &raquo;</a>{% endif %}
+</div>
+{% endblock %}

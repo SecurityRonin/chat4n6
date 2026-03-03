@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}chat4n6 Report{% endblock %}</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;padding:0;background:#f5f5f5;color:#222}
+header{background:#1a1a2e;color:#fff;padding:1rem 2rem;display:flex;justify-content:space-between;align-items:center}
+header h1{margin:0;font-size:1.2rem}
+header .meta{font-size:.8rem;opacity:.8}
+nav{background:#16213e;padding:.5rem 2rem;display:flex;gap:1rem}
+nav a{color:#a8c0ff;text-decoration:none;font-size:.9rem}
+nav a:hover{color:#fff}
+main{max-width:1200px;margin:0 auto;padding:1rem 2rem}
+.badge{display:inline-block;padding:0 .4rem;border-radius:3px;font-size:.75rem;font-weight:bold;color:#fff}
+.badge-live{background:#2e7d32}
+.badge-wal-pending{background:#f57c00}
+.badge-wal-historic{background:#c0392b}
+.badge-freelist{background:#6a1b9a}
+.badge-fts-only{background:#00695c}
+.badge-carved-unalloc{background:#ad1457}
+.badge-carved-db{background:#37474f}
+table{width:100%;border-collapse:collapse;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+th{background:#1a1a2e;color:#fff;padding:.5rem;text-align:left;font-size:.85rem}
+td{padding:.4rem .5rem;border-bottom:1px solid #eee;font-size:.85rem;vertical-align:top}
+tr:hover{background:#f0f4ff}
+.msg-sent{background:#e8f5e9}
+.msg-recv{background:#fff}
+.msg-deleted{color:#999;font-style:italic}
+.pagination{margin:1rem 0;display:flex;gap:.5rem;align-items:center}
+.pagination a,.pagination span{padding:.3rem .7rem;border:1px solid #ccc;border-radius:3px;text-decoration:none;font-size:.85rem}
+.pagination .active{background:#1a1a2e;color:#fff;border-color:#1a1a2e}
+h2{border-bottom:2px solid #1a1a2e;padding-bottom:.3rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128269; chat4n6 Forensic Report — {{ case_name }}</h1>
+  <div class="meta">Generated: {{ generated_at_utc }} UTC | Timezone: {{ timezone_label }}</div>
+</header>
+<nav>
+  <a href="index.html">Overview</a>
+  <a href="calls.html">Calls</a>
+  <a href="deleted.html">Deleted/Carved</a>
+</nav>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

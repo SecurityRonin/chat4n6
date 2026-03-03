@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Deleted & Carved — chat4n6{% endblock %}
+{% block content %}
+<h2>Deleted & Carved Messages</h2>
+<p>Messages recovered from freelist, WAL, FTS shadow tables, or unallocated space.</p>
+<table>
+<tr><th>Chat</th><th>Timestamp</th><th>Dir</th><th>Content</th><th>Source</th></tr>
+{% for msg in deleted_messages %}
+<tr>
+  <td>{{ msg.chat_id }}</td>
+  <td>{{ msg.timestamp_utc }}</td>
+  <td>{% if msg.from_me %}Out{% else %}In{% endif %}</td>
+  <td>{{ msg.content }}</td>
+  <td><span class="badge badge-{{ msg.source_class }}">{{ msg.source }}</span></td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}
