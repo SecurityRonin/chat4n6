@@ -52,8 +52,7 @@ pub fn decrypt_db(ciphertext: &[u8], key: &[u8], _version: CryptVersion) -> Resu
         32 => key,
         n if n >= 158 => &key[126..158],
         n => bail!(
-            "key must be exactly 32 bytes or a key file of ≥158 bytes, got {} bytes",
-            n
+            "key must be exactly 32 bytes or a key file of ≥158 bytes, got {n} bytes",
         ),
     };
 
@@ -76,8 +75,7 @@ pub fn decrypt_db(ciphertext: &[u8], key: &[u8], _version: CryptVersion) -> Resu
     let total = ciphertext.len();
     if total < 83 + 16 {
         bail!(
-            "ciphertext too short to contain both body and GCM tag ({} bytes)",
-            total
+            "ciphertext too short to contain both body and GCM tag ({total} bytes)",
         );
     }
     let body = &ciphertext[83..total - 16];
