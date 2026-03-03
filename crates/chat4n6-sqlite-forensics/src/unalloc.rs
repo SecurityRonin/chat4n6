@@ -202,7 +202,8 @@ fn try_parse_record(
         return None;
     }
 
-    // Decode values
+    // Decode values — return None on any decode failure to avoid corrupting
+    // the consumed-byte count (which would mis-advance the scanner).
     let mut data_pos = header_end;
     let mut values: Vec<SqlValue> = Vec::with_capacity(serial_types.len());
     for &st in &serial_types {
@@ -211,9 +212,7 @@ fn try_parse_record(
                 data_pos += consumed;
                 values.push(val);
             }
-            None => {
-                values.push(SqlValue::Null);
-            }
+            None => return None,
         }
     }
 
@@ -239,10 +238,6 @@ fn try_parse_record(
 /// (integer, real, text, blob, null).
 fn serial_types_compatible(found: u64, hint: u64) -> bool {
     if found == hint {
-        return true;
-    }
-    // Both null
-    if found == 0 && hint == 0 {
         return true;
     }
     // Both integer types (1-6 are fixed-size integers, 8-9 are literal 0/1)
