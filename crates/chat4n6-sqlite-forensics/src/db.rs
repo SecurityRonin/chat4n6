@@ -3,7 +3,7 @@ use crate::btree::parse_table_leaf_page;
 use crate::header::{DbHeader, is_sqlite_header};
 use crate::page::PageType;
 use crate::record::RecoveredRecord;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct ForensicEngine<'a> {
     data: &'a [u8],
@@ -54,7 +54,11 @@ impl<'a> ForensicEngine<'a> {
 
     fn traverse_btree(&self, root_page: u32, table: &str, records: &mut Vec<RecoveredRecord>) {
         let mut stack = vec![root_page];
+        let mut visited: HashSet<u32> = HashSet::new();
         while let Some(page_num) = stack.pop() {
+            if !visited.insert(page_num) {
+                continue; // cycle guard: skip already-visited pages
+            }
             let Some((page_data, bhdr)) = self.page_data(page_num) else {
                 continue;
             };
@@ -151,7 +155,8 @@ impl<'a> ForensicEngine<'a> {
             if obj_type != "table" {
                 continue;
             }
-            let name = match &record.values[2] {
+            // col 1 = name (the object's own name — not tbl_name at col 2)
+            let name = match &record.values[1] {
                 SqlValue::Text(s) => s.clone(),
                 _ => continue,
             };

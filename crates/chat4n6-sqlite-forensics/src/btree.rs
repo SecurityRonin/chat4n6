@@ -68,6 +68,9 @@ pub fn parse_table_leaf_page(
 
         // Parse serial types from header
         let header_end = payload_start + header_len as usize;
+        if header_end > page_data.len() {
+            continue; // truncated/malformed cell — skip rather than emit null-filled record
+        }
         let mut serial_types = Vec::new();
         while pos < header_end && pos < page_data.len() {
             let (st, consumed) = match read_varint(page_data, pos) {
