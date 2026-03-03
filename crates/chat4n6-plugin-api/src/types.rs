@@ -79,7 +79,7 @@ pub struct MediaRef {
     pub duration_secs: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Reaction {
     pub emoji: String,
     pub reactor_jid: String,
@@ -110,7 +110,7 @@ pub enum MessageContent {
     Unknown(i32),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     pub id: i64,
     pub chat_id: i64,

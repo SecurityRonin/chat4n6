@@ -46,6 +46,13 @@ mod tests {
     }
 
     #[test]
+    fn test_timestamp_local_str_subhour_offset() {
+        // India Standard Time = UTC+05:30
+        let ts = ForensicTimestamp::from_millis(1710513127000, 5 * 3600 + 30 * 60);
+        assert_eq!(ts.local_str(), "2024-03-15 14:32:07 UTC  |  2024-03-15 20:02:07 +05:30");
+    }
+
+    #[test]
     fn test_extraction_result_default_empty() {
         let r = ExtractionResult::default();
         assert!(r.chats.is_empty());
