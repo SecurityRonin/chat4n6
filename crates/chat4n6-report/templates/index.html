@@ -21,7 +21,7 @@
   <td>{{ chat.name | default(value=chat.jid) }}</td>
   <td>{% if chat.is_group %}Group{% else %}1:1{% endif %}</td>
   <td>{{ chat.message_count }}</td>
-  <td><a href="chat_{{ chat.id }}_1.html">View</a></td>
+  <td>{% if chat.message_count > 0 %}<a href="chat_{{ chat.id }}_1.html">View</a>{% else %}—{% endif %}</td>
 </tr>
 {% endfor %}
 </table>

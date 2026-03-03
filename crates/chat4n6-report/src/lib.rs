@@ -96,8 +96,12 @@ impl ReportGenerator {
     }
 
     fn render_chat(&self, base: &BaseCtx, chat: &Chat, out: &Path) -> Result<()> {
+        // Skip chats with no messages — index.html only links chats with messages.
+        if chat.messages.is_empty() {
+            return Ok(());
+        }
         let pages = paginate(&chat.messages, PAGE_SIZE);
-        let total_pages = pages.len().max(1);
+        let total_pages = pages.len();
 
         for (page_idx, page_msgs) in pages.iter().enumerate() {
             let current_page = page_idx + 1;
