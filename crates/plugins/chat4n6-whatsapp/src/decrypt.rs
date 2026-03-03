@@ -2,7 +2,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Key, Nonce,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 
 /// WhatsApp encrypted database format version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,9 +67,10 @@ pub fn decrypt_db(ciphertext: &[u8], key: &[u8], _version: CryptVersion) -> Resu
     }
 
     // --- Extract IV (nonce) ---
-    // The file stores 16 bytes at [67..83]; AES-GCM uses a 12-byte (96-bit) nonce.
-    // WhatsApp uses the first 12 bytes of the 16-byte field as the GCM nonce.
-    let iv = &ciphertext[67..79]; // 12 bytes (AES-GCM standard nonce length)
+    // The file stores a 16-byte field at [67..83], but AES-GCM requires a 12-byte
+    // (96-bit) nonce. WhatsApp uses only the first 12 bytes [67..79]; bytes [79..83]
+    // are padding and are not used by the cipher.
+    let iv = &ciphertext[67..79];
 
     // --- Extract body and GCM tag ---
     let total = ciphertext.len();
@@ -94,8 +95,7 @@ pub fn decrypt_db(ciphertext: &[u8], key: &[u8], _version: CryptVersion) -> Resu
 
     let plaintext = cipher
         .decrypt(nonce, Payload { msg: &ct_with_tag, aad: b"" })
-        .map_err(|e| anyhow!("AES-256-GCM decryption failed: {}", e))
-        .context("failed to decrypt WhatsApp database")?;
+        .map_err(|_| anyhow!("AES-256-GCM decryption failed (wrong key or corrupted file)"))?;
 
     Ok(plaintext)
 }
