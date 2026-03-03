@@ -22,7 +22,11 @@ pub struct RecoveredRecord {
 
 /// Decode a SQLite serial type into a value, consuming bytes from `data` at `offset`.
 /// Returns (SqlValue, bytes_consumed) or None on truncation.
-pub fn decode_serial_type(serial_type: u64, data: &[u8], offset: usize) -> Option<(SqlValue, usize)> {
+pub fn decode_serial_type(
+    serial_type: u64,
+    data: &[u8],
+    offset: usize,
+) -> Option<(SqlValue, usize)> {
     match serial_type {
         0 => Some((SqlValue::Null, 0)),
         1 => {
@@ -55,19 +59,25 @@ pub fn decode_serial_type(serial_type: u64, data: &[u8], offset: usize) -> Optio
                 | (bytes[4] as i64) << 8
                 | bytes[5] as i64;
             // Sign-extend from 48 bits
-            let v = if v & (1i64 << 47) != 0 { v | !0xFFFFFFFFFFFFi64 } else { v };
+            let v = if v & (1i64 << 47) != 0 {
+                v | !0xFFFFFFFFFFFFi64
+            } else {
+                v
+            };
             Some((SqlValue::Int(v), 6))
         }
         6 => {
             let bytes = data.get(offset..offset + 8)?;
-            let v = i64::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3],
-                                        bytes[4], bytes[5], bytes[6], bytes[7]]);
+            let v = i64::from_be_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]);
             Some((SqlValue::Int(v), 8))
         }
         7 => {
             let bytes = data.get(offset..offset + 8)?;
-            let v = f64::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3],
-                                        bytes[4], bytes[5], bytes[6], bytes[7]]);
+            let v = f64::from_be_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]);
             Some((SqlValue::Real(v), 8))
         }
         8 => Some((SqlValue::Int(0), 0)),

@@ -22,7 +22,7 @@ impl fmt::Display for EvidenceSource {
             Self::Freelist => write!(f, "FREELIST"),
             Self::FtsOnly => write!(f, "FTS-ONLY"),
             Self::CarvedUnalloc { confidence_pct } => {
-                write!(f, "CARVED-UNALLOC {}%", confidence_pct)
+                write!(f, "CARVED-UNALLOC {confidence_pct}%")
             }
             Self::CarvedDb => write!(f, "CARVED-DB"),
         }
@@ -42,7 +42,10 @@ impl ForensicTimestamp {
             .timestamp_millis_opt(ms)
             .single()
             .unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
-        Self { utc, local_offset_seconds }
+        Self {
+            utc,
+            local_offset_seconds,
+        }
     }
 
     pub fn utc_str(&self) -> String {
@@ -103,7 +106,11 @@ pub struct CallRecord {
 pub enum MessageContent {
     Text(String),
     Media(MediaRef),
-    Location { lat: f64, lon: f64, name: Option<String> },
+    Location {
+        lat: f64,
+        lon: f64,
+        name: Option<String>,
+    },
     VCard(String),
     Deleted,
     System(String),

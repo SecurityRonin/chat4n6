@@ -9,7 +9,11 @@ use std::collections::HashSet;
 /// For page 1 the B-tree header starts at byte 100 (after the SQLite file header).
 /// For all other pages it starts at byte 0.
 /// Returns `None` if the page number is 0 or the slice is out of bounds.
-pub(crate) fn get_page_data(db: &[u8], page_number: u32, page_size: usize) -> Option<(&[u8], usize)> {
+pub(crate) fn get_page_data(
+    db: &[u8],
+    page_number: u32,
+    page_size: usize,
+) -> Option<(&[u8], usize)> {
     if page_number == 0 {
         return None;
     }
@@ -84,10 +88,8 @@ pub(crate) fn walk_table_btree(
                     if ptr_off + 2 > page_data.len() {
                         break;
                     }
-                    let cell_off = u16::from_be_bytes([
-                        page_data[ptr_off],
-                        page_data[ptr_off + 1],
-                    ]) as usize;
+                    let cell_off =
+                        u16::from_be_bytes([page_data[ptr_off], page_data[ptr_off + 1]]) as usize;
                     if cell_off + 4 > page_data.len() {
                         continue;
                     }

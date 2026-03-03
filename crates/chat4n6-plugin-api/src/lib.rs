@@ -17,7 +17,10 @@ mod tests {
         assert_eq!(format!("{}", EvidenceSource::WalHistoric), "WAL-HISTORIC");
         assert_eq!(format!("{}", EvidenceSource::Freelist), "FREELIST");
         assert_eq!(format!("{}", EvidenceSource::FtsOnly), "FTS-ONLY");
-        assert_eq!(format!("{}", EvidenceSource::CarvedUnalloc { confidence_pct: 94 }), "CARVED-UNALLOC 94%");
+        assert_eq!(
+            format!("{}", EvidenceSource::CarvedUnalloc { confidence_pct: 94 }),
+            "CARVED-UNALLOC 94%"
+        );
         assert_eq!(format!("{}", EvidenceSource::CarvedDb), "CARVED-DB");
     }
 
@@ -30,26 +33,38 @@ mod tests {
     #[test]
     fn test_timestamp_local_str_positive_offset() {
         let ts = ForensicTimestamp::from_millis(1710513127000, 8 * 3600);
-        assert_eq!(ts.local_str(), "2024-03-15 14:32:07 UTC  |  2024-03-15 22:32:07 +08:00");
+        assert_eq!(
+            ts.local_str(),
+            "2024-03-15 14:32:07 UTC  |  2024-03-15 22:32:07 +08:00"
+        );
     }
 
     #[test]
     fn test_timestamp_local_str_negative_offset() {
         let ts = ForensicTimestamp::from_millis(1710513127000, -5 * 3600);
-        assert_eq!(ts.local_str(), "2024-03-15 14:32:07 UTC  |  2024-03-15 09:32:07 -05:00");
+        assert_eq!(
+            ts.local_str(),
+            "2024-03-15 14:32:07 UTC  |  2024-03-15 09:32:07 -05:00"
+        );
     }
 
     #[test]
     fn test_timestamp_local_str_utc() {
         let ts = ForensicTimestamp::from_millis(1710513127000, 0);
-        assert_eq!(ts.local_str(), "2024-03-15 14:32:07 UTC  |  2024-03-15 14:32:07 +00:00");
+        assert_eq!(
+            ts.local_str(),
+            "2024-03-15 14:32:07 UTC  |  2024-03-15 14:32:07 +00:00"
+        );
     }
 
     #[test]
     fn test_timestamp_local_str_subhour_offset() {
         // India Standard Time = UTC+05:30
         let ts = ForensicTimestamp::from_millis(1710513127000, 5 * 3600 + 30 * 60);
-        assert_eq!(ts.local_str(), "2024-03-15 14:32:07 UTC  |  2024-03-15 20:02:07 +05:30");
+        assert_eq!(
+            ts.local_str(),
+            "2024-03-15 14:32:07 UTC  |  2024-03-15 20:02:07 +05:30"
+        );
     }
 
     #[test]

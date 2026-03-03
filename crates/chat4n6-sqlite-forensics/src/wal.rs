@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
 use crate::btree::parse_table_leaf_page;
 use crate::record::RecoveredRecord;
 use chat4n6_plugin_api::{EvidenceSource, WalDelta, WalDeltaStatus};
+use std::collections::BTreeMap;
 
 pub const WAL_MAGIC_1: u32 = 0x377f0682;
 pub const WAL_MAGIC_2: u32 = 0x377f0683;
@@ -9,7 +9,9 @@ pub const WAL_HEADER_SIZE: usize = 32;
 pub const WAL_FRAME_HEADER_SIZE: usize = 24;
 
 pub fn is_wal_header(data: &[u8]) -> bool {
-    if data.len() < 4 { return false; }
+    if data.len() < 4 {
+        return false;
+    }
     let magic = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
     magic == WAL_MAGIC_1 || magic == WAL_MAGIC_2
 }
@@ -28,7 +30,9 @@ pub struct WalHeader {
 
 impl WalHeader {
     pub fn parse(data: &[u8]) -> Option<Self> {
-        if data.len() < 32 || !is_wal_header(data) { return None; }
+        if data.len() < 32 || !is_wal_header(data) {
+            return None;
+        }
         Some(Self {
             page_size: u32::from_be_bytes([data[8], data[9], data[10], data[11]]),
             checkpoint_seq: u32::from_be_bytes([data[12], data[13], data[14], data[15]]),
@@ -56,20 +60,28 @@ pub struct WalFrame {
 /// time ordering. Use file position (frame index) to determine recency.
 pub fn parse_wal_frames(wal: &[u8], page_size: u32) -> BTreeMap<u32, Vec<WalFrame>> {
     let mut map: BTreeMap<u32, Vec<WalFrame>> = BTreeMap::new();
-    if !is_wal_header(wal) { return map; }
+    if !is_wal_header(wal) {
+        return map;
+    }
     let frame_size = WAL_FRAME_HEADER_SIZE + page_size as usize;
     let mut idx = 0;
     loop {
         let frame_off = WAL_HEADER_SIZE + idx * frame_size;
-        if frame_off + WAL_FRAME_HEADER_SIZE > wal.len() { break; }
+        if frame_off + WAL_FRAME_HEADER_SIZE > wal.len() {
+            break;
+        }
         let fh = &wal[frame_off..frame_off + WAL_FRAME_HEADER_SIZE];
         let page_number = u32::from_be_bytes([fh[0], fh[1], fh[2], fh[3]]);
         let db_size = u32::from_be_bytes([fh[4], fh[5], fh[6], fh[7]]);
         let salt1 = u32::from_be_bytes([fh[8], fh[9], fh[10], fh[11]]);
         let salt2 = u32::from_be_bytes([fh[12], fh[13], fh[14], fh[15]]);
-        if page_number == 0 { break; }
+        if page_number == 0 {
+            break;
+        }
         let page_data_end = frame_off + frame_size;
-        if page_data_end > wal.len() { break; }
+        if page_data_end > wal.len() {
+            break;
+        }
         map.entry(salt1).or_default().push(WalFrame {
             page_number,
             db_size_after_commit: db_size,
@@ -99,9 +111,11 @@ pub fn recover_layer2(
     // Process all salt groups in file order (BTreeMap iteration is by salt1 key,
     // but within each group frames are in file order). We process all groups
     // because forensic recovery must not discard any session's data.
-    for (_, frame_group) in &frames {
+    for frame_group in frames.values() {
         for frame in frame_group {
-            let wal_page = match wal.get(frame.page_data_offset..frame.page_data_offset + page_size as usize) {
+            let wal_page = match wal
+                .get(frame.page_data_offset..frame.page_data_offset + page_size as usize)
+            {
                 Some(p) => p,
                 None => continue,
             };
@@ -112,7 +126,8 @@ pub fn recover_layer2(
                 continue; // already checkpointed
             }
             let bhdr = if frame.page_number == 1 { 100 } else { 0 };
-            let mut page_records = parse_table_leaf_page(wal_page, bhdr, frame.page_number, page_size, table_name);
+            let mut page_records =
+                parse_table_leaf_page(wal_page, bhdr, frame.page_number, page_size, table_name);
             for r in &mut page_records {
                 r.source = EvidenceSource::WalPending;
             }
@@ -147,9 +162,11 @@ pub fn recover_layer3_deltas(
     let mut seen: HashMap<i64, WalDeltaStatus> = HashMap::new();
 
     let frames = parse_wal_frames(wal, page_size);
-    for (_, frame_group) in &frames {
+    for frame_group in frames.values() {
         for frame in frame_group {
-            let wal_page = match wal.get(frame.page_data_offset..frame.page_data_offset + page_size as usize) {
+            let wal_page = match wal
+                .get(frame.page_data_offset..frame.page_data_offset + page_size as usize)
+            {
                 Some(p) => p,
                 None => continue,
             };
@@ -160,7 +177,13 @@ pub fn recover_layer3_deltas(
                 Some(p) => p,
                 None => {
                     // Page absent in main DB — all WAL rows are additions
-                    let wal_records = parse_table_leaf_page(wal_page, bhdr, frame.page_number, page_size, table_name);
+                    let wal_records = parse_table_leaf_page(
+                        wal_page,
+                        bhdr,
+                        frame.page_number,
+                        page_size,
+                        table_name,
+                    );
                     for r in wal_records {
                         if let Some(row_id) = r.row_id {
                             seen.insert(row_id, WalDeltaStatus::AddedInWal);
@@ -169,15 +192,21 @@ pub fn recover_layer3_deltas(
                     continue;
                 }
             };
-            if wal_page == db_page { continue; }
+            if wal_page == db_page {
+                continue;
+            }
 
-            let wal_records = parse_table_leaf_page(wal_page, bhdr, frame.page_number, page_size, table_name);
-            let db_records = parse_table_leaf_page(db_page, bhdr, frame.page_number, page_size, table_name);
+            let wal_records =
+                parse_table_leaf_page(wal_page, bhdr, frame.page_number, page_size, table_name);
+            let db_records =
+                parse_table_leaf_page(db_page, bhdr, frame.page_number, page_size, table_name);
 
-            let wal_ids: HashMap<i64, _> = wal_records.iter()
+            let wal_ids: HashMap<i64, _> = wal_records
+                .iter()
                 .filter_map(|r| r.row_id.map(|id| (id, &r.values)))
                 .collect();
-            let db_ids: HashMap<i64, _> = db_records.iter()
+            let db_ids: HashMap<i64, _> = db_records
+                .iter()
                 .filter_map(|r| r.row_id.map(|id| (id, &r.values)))
                 .collect();
 
@@ -238,9 +267,9 @@ mod tests {
         header[0..4].copy_from_slice(&0x377f0682u32.to_be_bytes());
         header[4..8].copy_from_slice(&3007000u32.to_be_bytes());
         header[8..12].copy_from_slice(&4096u32.to_be_bytes());
-        header[12..16].copy_from_slice(&7u32.to_be_bytes());   // checkpoint_seq
-        header[16..20].copy_from_slice(&42u32.to_be_bytes());  // salt1
-        header[20..24].copy_from_slice(&99u32.to_be_bytes());  // salt2
+        header[12..16].copy_from_slice(&7u32.to_be_bytes()); // checkpoint_seq
+        header[16..20].copy_from_slice(&42u32.to_be_bytes()); // salt1
+        header[20..24].copy_from_slice(&99u32.to_be_bytes()); // salt2
         let wh = WalHeader::parse(&header).unwrap();
         assert_eq!(wh.page_size, 4096);
         assert_eq!(wh.checkpoint_seq, 7);
@@ -295,11 +324,10 @@ mod integration_tests {
     fn test_parse_wal_frames_groups_by_salt1() {
         let page_size = 4096u32;
         let pd = vec![0u8; page_size as usize];
-        let wal = make_wal_bytes(page_size, &[
-            (1, 0, 100, &pd),
-            (2, 1, 100, &pd),
-            (3, 1, 200, &pd),
-        ]);
+        let wal = make_wal_bytes(
+            page_size,
+            &[(1, 0, 100, &pd), (2, 1, 100, &pd), (3, 1, 200, &pd)],
+        );
         let frames = parse_wal_frames(&wal, page_size);
         assert_eq!(frames.get(&100).unwrap().len(), 2);
         assert_eq!(frames.get(&200).unwrap().len(), 1);

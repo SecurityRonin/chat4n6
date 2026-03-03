@@ -10,7 +10,14 @@ use std::collections::HashMap;
 
 fn read_sqlite_master_records(data: &[u8], page_size: u32) -> Vec<RecoveredRecord> {
     let mut records = Vec::new();
-    walk_table_btree(data, page_size, 1, "sqlite_master", EvidenceSource::Live, &mut records);
+    walk_table_btree(
+        data,
+        page_size,
+        1,
+        "sqlite_master",
+        EvidenceSource::Live,
+        &mut records,
+    );
     records
 }
 
@@ -67,7 +74,7 @@ pub fn read_fts_content_shadow(
     fts_table_name: &str,
     page_size: u32,
 ) -> Vec<RecoveredRecord> {
-    let shadow_name = format!("{}_content", fts_table_name);
+    let shadow_name = format!("{fts_table_name}_content");
 
     // Find the root page of the shadow table in sqlite_master
     let master_records = read_sqlite_master_records(db_bytes, page_size);
@@ -167,9 +174,9 @@ pub fn recover_layer5(db_bytes: &[u8], page_size: u32) -> Vec<RecoveredRecord> {
     // Traverse each FTS content shadow table using the pre-built root map
     let mut all_records = Vec::new();
     for fts_name in &fts_names {
-        let shadow_key = format!("{}_content", fts_name).to_ascii_lowercase();
+        let shadow_key = format!("{fts_name}_content").to_ascii_lowercase();
         if let Some(&root_page) = table_roots.get(&shadow_key) {
-            let shadow_display = format!("{}_content", fts_name);
+            let shadow_display = format!("{fts_name}_content");
             walk_table_btree(
                 db_bytes,
                 page_size,
@@ -242,7 +249,11 @@ mod tests {
     fn test_find_fts_tables_empty_db() {
         let db_bytes = create_plain_db();
         let fts_tables = find_fts_tables(&db_bytes);
-        assert!(fts_tables.is_empty(), "expected no FTS tables, got: {:?}", fts_tables);
+        assert!(
+            fts_tables.is_empty(),
+            "expected no FTS tables, got: {:?}",
+            fts_tables
+        );
     }
 
     #[test]
@@ -261,7 +272,11 @@ mod tests {
         let db_bytes = create_plain_db();
         let page_size = DbHeader::parse(&db_bytes).unwrap().page_size;
         let records = recover_layer5(&db_bytes, page_size);
-        assert!(records.is_empty(), "expected no records, got: {:?}", records.len());
+        assert!(
+            records.is_empty(),
+            "expected no records, got: {:?}",
+            records.len()
+        );
     }
 
     #[test]
@@ -271,7 +286,10 @@ mod tests {
         let db_bytes = create_fts4_db();
         let page_size = DbHeader::parse(&db_bytes).unwrap().page_size;
         let records = recover_layer5(&db_bytes, page_size);
-        assert!(!records.is_empty(), "expected shadow table records from FTS4 _content table");
+        assert!(
+            !records.is_empty(),
+            "expected shadow table records from FTS4 _content table"
+        );
         assert!(
             records.iter().all(|r| r.source == EvidenceSource::FtsOnly),
             "all records must be tagged FtsOnly"

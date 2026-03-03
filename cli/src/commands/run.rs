@@ -63,8 +63,8 @@ pub fn run(args: RunArgs) -> Result<()> {
 
     // --- Report ---
     let template_dir = locate_templates()?;
-    let generator = ReportGenerator::new(&template_dir)
-        .context("failed to load report templates")?;
+    let generator =
+        ReportGenerator::new(&template_dir).context("failed to load report templates")?;
     generator
         .render(&args.case_name, &combined, &args.output)
         .context("report generation failed")?;
@@ -78,11 +78,9 @@ pub fn run(args: RunArgs) -> Result<()> {
 fn resolve_tz_arg(tz: Option<&str>) -> Result<Option<i32>> {
     match tz {
         None => Ok(None),
-        Some(s) => {
-            chat4n6_whatsapp::timezone::resolve_timezone_offset(s)
-                .map(Some)
-                .ok_or_else(|| anyhow::anyhow!("unrecognised timezone: '{}'", s))
-        }
+        Some(s) => chat4n6_whatsapp::timezone::resolve_timezone_offset(s)
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("unrecognised timezone: '{s}'")),
     }
 }
 
@@ -104,7 +102,7 @@ fn locate_templates() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("CHAT4N6_TEMPLATES") {
         let path = PathBuf::from(&p)
             .canonicalize()
-            .with_context(|| format!("CHAT4N6_TEMPLATES='{}' cannot be resolved", p))?;
+            .with_context(|| format!("CHAT4N6_TEMPLATES='{p}' cannot be resolved"))?;
         if path.is_dir() {
             return Ok(path);
         }

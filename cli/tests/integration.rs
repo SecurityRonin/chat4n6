@@ -6,7 +6,11 @@ fn template_dir() -> std::path::PathBuf {
         .parent()
         .expect("CARGO_MANIFEST_DIR has no parent")
         .join("crates/chat4n6-report/templates");
-    assert!(p.is_dir(), "template directory does not exist: {}", p.display());
+    assert!(
+        p.is_dir(),
+        "template directory does not exist: {}",
+        p.display()
+    );
     p
 }
 

@@ -18,7 +18,11 @@ impl DarVersion {
         match bytes[0] {
             0xd2 if bytes[1] == 0xab => Ok(DarVersion::V8),
             0xd3 if bytes[1] == 0xab => Ok(DarVersion::V9),
-            _ => bail!("unrecognized DAR magic: {:#04x} {:#04x}", bytes[0], bytes[1]),
+            _ => bail!(
+                "unrecognized DAR magic: {:#04x} {:#04x}",
+                bytes[0],
+                bytes[1]
+            ),
         }
     }
 }
@@ -56,7 +60,11 @@ pub fn decode_infinint(data: &[u8]) -> Result<(u64, usize)> {
     }
     let end = zero_count * 2;
     if data.len() < end {
-        bail!("truncated infinint: need {} bytes, have {}", end, data.len());
+        bail!(
+            "truncated infinint: need {} bytes, have {}",
+            end,
+            data.len()
+        );
     }
     let value_bytes = &data[zero_count..end];
     let mut value = 0u64;

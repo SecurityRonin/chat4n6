@@ -69,10 +69,10 @@ impl ForensicFs for DarFs {
         let entry = self
             .catalog
             .get(key)
-            .ok_or_else(|| anyhow::anyhow!("file not found in DAR: {}", path))?;
+            .ok_or_else(|| anyhow::anyhow!("file not found in DAR: {path}"))?;
         let start = entry.data_offset as usize;
         let end = start + entry.data_size as usize;
-        anyhow::ensure!(end <= self.data.len(), "DAR entry out of bounds: {}", path);
+        anyhow::ensure!(end <= self.data.len(), "DAR entry out of bounds: {path}");
         Ok(self.data[start..end].to_vec())
     }
 

@@ -1,14 +1,13 @@
+use crate::schema::SchemaVersion;
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
-    CallRecord, Chat, ExtractionResult, ForensicTimestamp, Message,
-    MessageContent, WalDelta,
+    CallRecord, Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent, WalDelta,
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
     record::{RecoveredRecord, SqlValue},
 };
 use std::collections::HashMap;
-use crate::schema::SchemaVersion;
 
 /// Extract all forensic artifacts from a msgstore.db byte slice.
 ///
@@ -71,7 +70,10 @@ pub fn extract_from_msgstore(
     }
 
     // Map call records
-    let call_records = by_table.get("call_log").map(|v| v.as_slice()).unwrap_or(&[]);
+    let call_records = by_table
+        .get("call_log")
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
     let calls: Vec<CallRecord> = call_records
         .iter()
         .filter_map(|r| record_to_call(r, &jid_map, tz_offset_secs))
@@ -104,7 +106,10 @@ fn partition_by_table(records: &[RecoveredRecord]) -> HashMap<String, Vec<&Recov
 fn build_jid_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
     let mut map = HashMap::new();
     for r in records {
-        let id = match r.row_id { Some(id) => id, None => continue };
+        let id = match r.row_id {
+            Some(id) => id,
+            None => continue,
+        };
         let raw = match r.values.get(1) {
             Some(SqlValue::Text(s)) => s.clone(),
             _ => continue,
@@ -118,7 +123,10 @@ fn build_jid_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
 fn build_chats(records: &[&RecoveredRecord], jid_map: &HashMap<i64, String>) -> HashMap<i64, Chat> {
     let mut map = HashMap::new();
     for r in records {
-        let id = match r.row_id { Some(id) => id, None => continue };
+        let id = match r.row_id {
+            Some(id) => id,
+            None => continue,
+        };
         let jid_row_id = match r.values.get(1) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
@@ -129,7 +137,16 @@ fn build_chats(records: &[&RecoveredRecord], jid_map: &HashMap<i64, String>) -> 
             _ => None,
         };
         let is_group = subject.is_some();
-        map.insert(id, Chat { id, jid, name: subject, is_group, messages: Vec::new() });
+        map.insert(
+            id,
+            Chat {
+                id,
+                jid,
+                name: subject,
+                is_group,
+                messages: Vec::new(),
+            },
+        );
     }
     map
 }
@@ -164,7 +181,13 @@ fn record_to_message(
     };
     let content = match r.values.get(5) {
         Some(SqlValue::Text(s)) if !s.is_empty() => MessageContent::Text(s.clone()),
-        _ => if msg_type == 0 { MessageContent::Deleted } else { MessageContent::Unknown(msg_type) },
+        _ => {
+            if msg_type == 0 {
+                MessageContent::Deleted
+            } else {
+                MessageContent::Unknown(msg_type)
+            }
+        }
     };
 
     Some(Message {
@@ -231,7 +254,8 @@ mod tests {
         conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
             .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -240,11 +264,16 @@ mod tests {
         let db = make_modern_msgstore();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         assert!(!result.chats.is_empty(), "should have at least one chat");
-        let all_msgs: Vec<_> = result.chats.iter()
-            .flat_map(|c| c.messages.iter()).collect();
+        let all_msgs: Vec<_> = result
+            .chats
+            .iter()
+            .flat_map(|c| c.messages.iter())
+            .collect();
         assert!(!all_msgs.is_empty(), "should have messages");
         assert!(
-            all_msgs.iter().any(|m| matches!(&m.content, MessageContent::Text(s) if s == "Hello there")),
+            all_msgs
+                .iter()
+                .any(|m| matches!(&m.content, MessageContent::Text(s) if s == "Hello there")),
             "should contain text message 'Hello there'"
         );
     }
@@ -270,9 +299,20 @@ mod tests {
     fn test_sender_jid_resolved() {
         let db = make_modern_msgstore();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1 missing");
+        let chat1 = result
+            .chats
+            .iter()
+            .find(|c| c.id == 1)
+            .expect("chat 1 missing");
         // message 2 is received (from_me=0), sender_jid_row_id=1
-        let received = chat1.messages.iter().find(|m| !m.from_me).expect("received msg");
-        assert_eq!(received.sender_jid.as_deref(), Some("4155550100@s.whatsapp.net"));
+        let received = chat1
+            .messages
+            .iter()
+            .find(|m| !m.from_me)
+            .expect("received msg");
+        assert_eq!(
+            received.sender_jid.as_deref(),
+            Some("4155550100@s.whatsapp.net")
+        );
     }
 }

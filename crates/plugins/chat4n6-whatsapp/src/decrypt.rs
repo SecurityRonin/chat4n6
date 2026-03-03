@@ -51,9 +51,7 @@ pub fn decrypt_db(ciphertext: &[u8], key: &[u8], _version: CryptVersion) -> Resu
     let aes_key: &[u8] = match key.len() {
         32 => key,
         n if n >= 158 => &key[126..158],
-        n => bail!(
-            "key must be exactly 32 bytes or a key file of ≥158 bytes, got {n} bytes",
-        ),
+        n => bail!("key must be exactly 32 bytes or a key file of ≥158 bytes, got {n} bytes",),
     };
 
     // --- Ciphertext length validation ---
@@ -74,9 +72,7 @@ pub fn decrypt_db(ciphertext: &[u8], key: &[u8], _version: CryptVersion) -> Resu
     // --- Extract body and GCM tag ---
     let total = ciphertext.len();
     if total < 83 + 16 {
-        bail!(
-            "ciphertext too short to contain both body and GCM tag ({total} bytes)",
-        );
+        bail!("ciphertext too short to contain both body and GCM tag ({total} bytes)",);
     }
     let body = &ciphertext[83..total - 16];
     let tag = &ciphertext[total - 16..];
@@ -92,7 +88,13 @@ pub fn decrypt_db(ciphertext: &[u8], key: &[u8], _version: CryptVersion) -> Resu
     let nonce = Nonce::from_slice(iv); // 12-byte nonce
 
     let plaintext = cipher
-        .decrypt(nonce, Payload { msg: &ct_with_tag, aad: b"" })
+        .decrypt(
+            nonce,
+            Payload {
+                msg: &ct_with_tag,
+                aad: b"",
+            },
+        )
         .map_err(|_| anyhow!("AES-256-GCM decryption failed (wrong key or corrupted file)"))?;
 
     Ok(plaintext)
@@ -207,9 +209,9 @@ mod tests {
         let mut file = Vec::new();
         file.extend_from_slice(&[0u8; 67]); // header
         file.extend_from_slice(&nonce_bytes); // 12-byte nonce at [67..79]
-        file.extend_from_slice(&[0u8; 4]);    // 4-byte padding at [79..83]
-        file.extend_from_slice(body);         // ciphertext body
-        file.extend_from_slice(tag);          // GCM tag
+        file.extend_from_slice(&[0u8; 4]); // 4-byte padding at [79..83]
+        file.extend_from_slice(body); // ciphertext body
+        file.extend_from_slice(tag); // GCM tag
 
         // Decrypt using our function with the 32-byte key directly
         let decrypted =

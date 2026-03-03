@@ -1,7 +1,7 @@
-use anyhow::{bail, Result};
 use crate::btree::walk_table_btree;
-use crate::header::{DbHeader, is_sqlite_header};
+use crate::header::{is_sqlite_header, DbHeader};
 use crate::record::RecoveredRecord;
+use anyhow::{bail, Result};
 use chat4n6_plugin_api::EvidenceSource;
 use std::collections::HashMap;
 
@@ -34,7 +34,14 @@ impl<'a> ForensicEngine<'a> {
     }
 
     fn traverse_btree(&self, root_page: u32, table: &str, records: &mut Vec<RecoveredRecord>) {
-        walk_table_btree(self.data, self.header.page_size, root_page, table, EvidenceSource::Live, records);
+        walk_table_btree(
+            self.data,
+            self.header.page_size,
+            root_page,
+            table,
+            EvidenceSource::Live,
+            records,
+        );
     }
 
     /// Read sqlite_master (page 1) to get table name → root page mappings.
@@ -89,7 +96,8 @@ mod tests {
         )
         .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 

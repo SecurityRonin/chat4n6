@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-use chat4n6_plugin_api::{EvidenceSource, UnallocatedRegion};
 use crate::record::{decode_serial_type, RecoveredRecord, SqlValue};
 use crate::varint::read_varint;
+use chat4n6_plugin_api::{EvidenceSource, UnallocatedRegion};
+use std::collections::HashMap;
 
 // ── Signature database ────────────────────────────────────────────────────────
 
@@ -22,11 +22,8 @@ pub struct SignatureDb {
 impl SignatureDb {
     /// Return patterns for a given table, sorted by col_index.
     pub fn patterns_for(&self, table: &str) -> Vec<&ColumnPattern> {
-        let mut v: Vec<&ColumnPattern> = self
-            .patterns
-            .iter()
-            .filter(|p| p.table == table)
-            .collect();
+        let mut v: Vec<&ColumnPattern> =
+            self.patterns.iter().filter(|p| p.table == table).collect();
         v.sort_by_key(|p| p.col_index);
         v
     }
@@ -58,14 +55,16 @@ pub fn learn_signatures(records: &[RecoveredRecord]) -> SignatureDb {
                 .max_by_key(|&(_, c)| c)
                 .map(|(st, _)| st)
                 .unwrap_or(0);
-            ColumnPattern { table, col_index, serial_type_hint }
+            ColumnPattern {
+                table,
+                col_index,
+                serial_type_hint,
+            }
         })
         .collect();
 
     // Deterministic order for tests
-    patterns.sort_by(|a, b| {
-        a.table.cmp(&b.table).then(a.col_index.cmp(&b.col_index))
-    });
+    patterns.sort_by(|a, b| a.table.cmp(&b.table).then(a.col_index.cmp(&b.col_index)));
 
     SignatureDb { patterns }
 }
@@ -123,11 +122,7 @@ pub fn carve_unallocated(
         return results;
     }
 
-    let col_count = patterns
-        .iter()
-        .map(|p| p.col_index + 1)
-        .max()
-        .unwrap_or(0);
+    let col_count = patterns.iter().map(|p| p.col_index + 1).max().unwrap_or(0);
 
     if col_count == 0 {
         return results;
@@ -138,9 +133,13 @@ pub fn carve_unallocated(
 
     let mut pos = 0;
     while pos + min_len <= data.len() {
-        if let Some((record, consumed)) =
-            try_parse_record(&data[pos..], abs_base + pos as u64, table_hint, col_count, &patterns)
-        {
+        if let Some((record, consumed)) = try_parse_record(
+            &data[pos..],
+            abs_base + pos as u64,
+            table_hint,
+            col_count,
+            &patterns,
+        ) {
             results.push(record);
             pos += consumed;
         } else {
@@ -166,9 +165,8 @@ fn try_parse_record(
 
     // Sanity checks: header must be plausible
     // header_end includes the header_len varint itself
-    if header_end < hl_consumed
-        || header_end > data.len()
-        || header_end > 512  // guard against huge garbage headers
+    if header_end < hl_consumed || header_end > data.len() || header_end > 512
+    // guard against huge garbage headers
     {
         return None;
     }
@@ -194,7 +192,9 @@ fn try_parse_record(
         .iter()
         .enumerate()
         .filter(|&(i, &st)| {
-            patterns.iter().any(|p| p.col_index == i && serial_types_compatible(st, p.serial_type_hint))
+            patterns
+                .iter()
+                .any(|p| p.col_index == i && serial_types_compatible(st, p.serial_type_hint))
         })
         .count();
 
@@ -254,7 +254,7 @@ fn serial_types_compatible(found: u64, hint: u64) -> bool {
         return true;
     }
     // Both blob (even >= 12)
-    if found >= 12 && found % 2 == 0 && hint >= 12 && hint % 2 == 0 {
+    if found >= 12 && found.is_multiple_of(2) && hint >= 12 && hint.is_multiple_of(2) {
         return true;
     }
     false
@@ -297,7 +297,10 @@ mod tests {
     #[test]
     fn test_learn_signatures_empty() {
         let db = learn_signatures(&[]);
-        assert!(db.patterns.is_empty(), "Empty records should yield empty signature db");
+        assert!(
+            db.patterns.is_empty(),
+            "Empty records should yield empty signature db"
+        );
     }
 
     // ── 2. test_learn_signatures_basic ────────────────────────────────────────
@@ -305,16 +308,32 @@ mod tests {
     #[test]
     fn test_learn_signatures_basic() {
         let records = vec![
-            make_record("messages", vec![SqlValue::Int(1), SqlValue::Text("hello".into())]),
-            make_record("messages", vec![SqlValue::Int(2), SqlValue::Text("world".into())]),
-            make_record("messages", vec![SqlValue::Int(3), SqlValue::Text("foo".into())]),
+            make_record(
+                "messages",
+                vec![SqlValue::Int(1), SqlValue::Text("hello".into())],
+            ),
+            make_record(
+                "messages",
+                vec![SqlValue::Int(2), SqlValue::Text("world".into())],
+            ),
+            make_record(
+                "messages",
+                vec![SqlValue::Int(3), SqlValue::Text("foo".into())],
+            ),
         ];
         let db = learn_signatures(&records);
         let pats = db.patterns_for("messages");
-        assert_eq!(pats.len(), 2, "Should have 2 column patterns for 'messages'");
+        assert_eq!(
+            pats.len(),
+            2,
+            "Should have 2 column patterns for 'messages'"
+        );
 
         // col 0 → int → serial type 1 (fits in 1 byte for 1-3)
-        let col0 = pats.iter().find(|p| p.col_index == 0).expect("col 0 pattern");
+        let col0 = pats
+            .iter()
+            .find(|p| p.col_index == 0)
+            .expect("col 0 pattern");
         assert!(
             matches!(col0.serial_type_hint, 1..=6 | 8 | 9),
             "col 0 hint should be an int type, got {}",
@@ -322,7 +341,10 @@ mod tests {
         );
 
         // col 1 → text → odd serial type >= 13
-        let col1 = pats.iter().find(|p| p.col_index == 1).expect("col 1 pattern");
+        let col1 = pats
+            .iter()
+            .find(|p| p.col_index == 1)
+            .expect("col 1 pattern");
         assert!(
             col1.serial_type_hint >= 13 && col1.serial_type_hint % 2 == 1,
             "col 1 hint should be text serial type, got {}",
@@ -394,8 +416,14 @@ mod tests {
         let record_bytes: Vec<u8> = vec![0x02, 0x01, 0x07];
 
         let regions = vec![
-            UnallocatedRegion { offset: 0, data: record_bytes.clone() },
-            UnallocatedRegion { offset: 5000, data: record_bytes.clone() },
+            UnallocatedRegion {
+                offset: 0,
+                data: record_bytes.clone(),
+            },
+            UnallocatedRegion {
+                offset: 5000,
+                data: record_bytes.clone(),
+            },
         ];
 
         let results = recover_layer6(&regions, &sig_db, "tbl");

@@ -41,7 +41,11 @@ pub fn parse_freeblock_chain(page: &[u8], page_size: usize) -> Vec<Freeblock> {
         }
 
         let data = page[fb_offset + 4..fb_offset + size].to_vec();
-        freeblocks.push(Freeblock { offset: fb_offset, size, data });
+        freeblocks.push(Freeblock {
+            offset: fb_offset,
+            size,
+            data,
+        });
         fb_offset = next;
     }
 
@@ -124,7 +128,7 @@ mod tests {
         // 3 pages: page 1 unused, page 2 = trunk, pages 3+4 = leaves (not in db slice)
         let mut db = vec![0u8; page_size * 2];
         let trunk_start = page_size; // (page 2 - 1) * page_size
-        // next_trunk = 0
+                                     // next_trunk = 0
         db[trunk_start..trunk_start + 4].copy_from_slice(&0u32.to_be_bytes());
         // leaf_count = 2
         db[trunk_start + 4..trunk_start + 8].copy_from_slice(&2u32.to_be_bytes());
@@ -158,7 +162,7 @@ mod tests {
     fn test_freeblock_chain_parse() {
         let mut page = vec![0u8; 4096];
         page[0] = 0x0d; // table leaf page type
-        // first freeblock at offset 200
+                        // first freeblock at offset 200
         page[1] = 0x00;
         page[2] = 0xc8;
         // freeblock at 200: next=0, size=20
@@ -184,12 +188,12 @@ mod tests {
         // first freeblock at 200
         page[1] = 0x00;
         page[2] = 0xc8; // first_fb = 200
-        // freeblock at 200: next=300, size=10
+                        // freeblock at 200: next=300, size=10
         page[200] = 0x01;
         page[201] = 0x2c; // next = 300
         page[202] = 0x00;
         page[203] = 0x0a; // size = 10
-        // freeblock at 300: next=0, size=8
+                          // freeblock at 300: next=0, size=8
         page[300] = 0x00;
         page[301] = 0x00; // next = 0
         page[302] = 0x00;
@@ -210,7 +214,7 @@ mod tests {
         // first freeblock at 100
         page[1] = 0x00;
         page[2] = 0x64; // first_fb = 100
-        // freeblock at 100: next=100 (self-referential cycle), size=8
+                        // freeblock at 100: next=100 (self-referential cycle), size=8
         page[100] = 0x00;
         page[101] = 0x64; // next = 100 (cycle!)
         page[102] = 0x00;

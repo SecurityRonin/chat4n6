@@ -21,7 +21,11 @@ impl DbHeader {
         }
         let page_size = {
             let raw = u16::from_be_bytes([data[16], data[17]]) as u32;
-            if raw == 1 { 65536 } else { raw }
+            if raw == 1 {
+                65536
+            } else {
+                raw
+            }
         };
         Some(Self {
             page_size,

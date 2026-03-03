@@ -21,11 +21,7 @@ impl PlaintextDirFs {
 /// Rejects absolute paths (PathBuf::join would silently replace root) and
 /// any path that after lexical normalization escapes the root directory.
 fn checked_join(root: &Path, path: &str) -> Result<PathBuf> {
-    anyhow::ensure!(
-        !Path::new(path).is_absolute(),
-        "absolute path rejected: {}",
-        path
-    );
+    anyhow::ensure!(!Path::new(path).is_absolute(), "absolute path rejected: {path}");
     // Lexically normalize the joined path to resolve `..` components.
     let joined = root.join(path);
     let normalized = joined.components().fold(PathBuf::new(), |mut acc, c| {
@@ -37,11 +33,7 @@ fn checked_join(root: &Path, path: &str) -> Result<PathBuf> {
         }
         acc
     });
-    anyhow::ensure!(
-        normalized.starts_with(root),
-        "path traversal rejected: {}",
-        path
-    );
+    anyhow::ensure!(normalized.starts_with(root), "path traversal rejected: {path}");
     Ok(normalized)
 }
 
@@ -57,9 +49,7 @@ impl ForensicFs for PlaintextDirFs {
             let rel = entry
                 .path()
                 .strip_prefix(&self.root)
-                .with_context(|| {
-                    format!("entry {:?} outside root {:?}", entry.path(), self.root)
-                })?
+                .with_context(|| format!("entry {:?} outside root {:?}", entry.path(), self.root))?
                 .to_string_lossy()
                 .into_owned();
             entries.push(FsEntry {
@@ -97,7 +87,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("data/data/com.whatsapp/databases")).unwrap();
         fs::write(
-            dir.path().join("data/data/com.whatsapp/databases/msgstore.db"),
+            dir.path()
+                .join("data/data/com.whatsapp/databases/msgstore.db"),
             b"SQLite format 3\x00",
         )
         .unwrap();
@@ -116,7 +107,9 @@ mod tests {
     fn test_read_returns_bytes() {
         let dir = make_temp_tree();
         let fs = PlaintextDirFs::new(dir.path()).unwrap();
-        let bytes = fs.read("data/data/com.whatsapp/databases/msgstore.db").unwrap();
+        let bytes = fs
+            .read("data/data/com.whatsapp/databases/msgstore.db")
+            .unwrap();
         assert_eq!(&bytes[..7], b"SQLite ");
     }
 

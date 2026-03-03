@@ -1,6 +1,6 @@
-use chat4n6_plugin_api::EvidenceSource;
 use crate::record::{decode_serial_type, RecoveredRecord, SqlValue};
 use crate::varint::read_varint;
+use chat4n6_plugin_api::EvidenceSource;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CarveMode {
