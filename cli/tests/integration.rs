@@ -2,10 +2,12 @@ use assert_cmd::Command;
 use tempfile::TempDir;
 
 fn template_dir() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
-        .join("crates/chat4n6-report/templates")
+        .expect("CARGO_MANIFEST_DIR has no parent")
+        .join("crates/chat4n6-report/templates");
+    assert!(p.is_dir(), "template directory does not exist: {}", p.display());
+    p
 }
 
 fn setup_whatsapp_fixture() -> TempDir {

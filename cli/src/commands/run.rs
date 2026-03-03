@@ -102,7 +102,9 @@ fn merge_results(
 fn locate_templates() -> Result<PathBuf> {
     // 1. Env var override (production deployments)
     if let Ok(p) = std::env::var("CHAT4N6_TEMPLATES") {
-        let path = PathBuf::from(p);
+        let path = PathBuf::from(&p)
+            .canonicalize()
+            .with_context(|| format!("CHAT4N6_TEMPLATES='{}' cannot be resolved", p))?;
         if path.is_dir() {
             return Ok(path);
         }
