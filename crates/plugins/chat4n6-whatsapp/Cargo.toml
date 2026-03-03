@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "WhatsApp forensic plugin: chat extraction, decryption, and call log recovery"
+readme = "README.md"
 keywords = ["forensics", "whatsapp", "android", "decryption"]
 categories = ["parser-implementations"]
 

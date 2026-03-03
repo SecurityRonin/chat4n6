@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "HTML report generator for chat4n6 forensic extraction results"
+readme = "README.md"
 keywords = ["forensics", "report", "html", "whatsapp"]
 categories = ["template-engine"]
 

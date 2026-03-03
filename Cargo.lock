@@ -218,7 +218,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "chat4n6"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "chat4n6-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chat4n6-plugin-api",
@@ -251,7 +251,7 @@ dependencies = [
 
 [[package]]
 name = "chat4n6-plugin-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "chat4n6-report"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "chat4n6-sqlite-forensics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chat4n6-plugin-api",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "chat4n6-whatsapp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "aes-gcm",

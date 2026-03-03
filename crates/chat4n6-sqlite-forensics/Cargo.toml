@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Zero-copy SQLite forensics library: B-tree walker, WAL parser, and FTS recovery"
+readme = "README.md"
 keywords = ["forensics", "sqlite", "android", "recovery"]
 categories = ["filesystem", "parser-implementations"]
 
