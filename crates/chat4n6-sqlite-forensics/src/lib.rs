@@ -2,6 +2,7 @@ pub mod btree;
 pub mod carver;
 pub mod db;
 pub mod freelist;
+pub mod fts;
 pub mod header;
 pub mod page;
 pub mod record;
