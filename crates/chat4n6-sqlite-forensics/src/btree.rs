@@ -1,6 +1,111 @@
+use crate::page::PageType;
 use crate::record::{decode_serial_type, RecoveredRecord, SqlValue};
 use crate::varint::read_varint;
 use chat4n6_plugin_api::EvidenceSource;
+use std::collections::HashSet;
+
+/// Return the page data slice and B-tree header offset for a 1-based page number.
+///
+/// For page 1 the B-tree header starts at byte 100 (after the SQLite file header).
+/// For all other pages it starts at byte 0.
+/// Returns `None` if the page number is 0 or the slice is out of bounds.
+pub(crate) fn get_page_data(db: &[u8], page_number: u32, page_size: usize) -> Option<(&[u8], usize)> {
+    if page_number == 0 {
+        return None;
+    }
+    let page_start = (page_number as usize - 1) * page_size;
+    let page_end = page_number as usize * page_size;
+    let slice = db.get(page_start..page_end)?;
+    let bhdr = if page_number == 1 { 100 } else { 0 };
+    Some((slice, bhdr))
+}
+
+/// Walk a table B-tree rooted at `root_page`, collecting all leaf records into `records`.
+///
+/// `source` is applied to every record (use `EvidenceSource::Live` for live tables,
+/// `EvidenceSource::FtsOnly` for FTS shadow tables, etc.).
+/// Includes a cycle guard to handle corrupt page pointer loops.
+pub(crate) fn walk_table_btree(
+    db: &[u8],
+    page_size: u32,
+    root_page: u32,
+    table: &str,
+    source: EvidenceSource,
+    records: &mut Vec<RecoveredRecord>,
+) {
+    let mut stack = vec![root_page];
+    let mut visited: HashSet<u32> = HashSet::new();
+    while let Some(page_num) = stack.pop() {
+        if !visited.insert(page_num) {
+            continue; // cycle guard
+        }
+        let Some((page_data, bhdr)) = get_page_data(db, page_num, page_size as usize) else {
+            continue;
+        };
+        if page_data.len() <= bhdr {
+            continue;
+        }
+        match PageType::from_byte(page_data[bhdr]) {
+            Some(PageType::TableLeaf) => {
+                let mut page_records =
+                    parse_table_leaf_page(page_data, bhdr, page_num, page_size, table);
+                for r in &mut page_records {
+                    r.source = source.clone();
+                }
+                records.extend(page_records);
+            }
+            Some(PageType::TableInterior) => {
+                // Interior B-tree page header is 12 bytes from bhdr:
+                //   +0: page type (0x05)
+                //   +1-2: first freeblock
+                //   +3-4: cell count
+                //   +5-6: cell content area
+                //   +7: fragmented bytes
+                //   +8-11: right-most child page number
+                let cell_count = if page_data.len() >= bhdr + 5 {
+                    u16::from_be_bytes([page_data[bhdr + 3], page_data[bhdr + 4]]) as usize
+                } else {
+                    0
+                };
+                if page_data.len() >= bhdr + 12 {
+                    let right = u32::from_be_bytes([
+                        page_data[bhdr + 8],
+                        page_data[bhdr + 9],
+                        page_data[bhdr + 10],
+                        page_data[bhdr + 11],
+                    ]);
+                    if right != 0 {
+                        stack.push(right);
+                    }
+                }
+                let ptr_array_start = bhdr + 12;
+                for i in 0..cell_count {
+                    let ptr_off = ptr_array_start + i * 2;
+                    if ptr_off + 2 > page_data.len() {
+                        break;
+                    }
+                    let cell_off = u16::from_be_bytes([
+                        page_data[ptr_off],
+                        page_data[ptr_off + 1],
+                    ]) as usize;
+                    if cell_off + 4 > page_data.len() {
+                        continue;
+                    }
+                    let left = u32::from_be_bytes([
+                        page_data[cell_off],
+                        page_data[cell_off + 1],
+                        page_data[cell_off + 2],
+                        page_data[cell_off + 3],
+                    ]);
+                    if left != 0 {
+                        stack.push(left);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Parse all cells from a table leaf page (0x0D).
 ///
