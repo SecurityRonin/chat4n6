@@ -1,7 +1,13 @@
 [package]
 name = "chat4n6-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "DAR archive parser and filesystem abstraction for chat4n6"
+keywords = ["forensics", "dar", "android", "filesystem"]
+categories = ["filesystem", "parser-implementations"]
 
 [dependencies]
 anyhow = { workspace = true }

@@ -4,29 +4,33 @@ use anyhow::{Context, Result};
 use chat4n6_plugin_api::{Chat, EvidenceSource, ExtractionResult, MessageContent};
 use chrono::Utc;
 use paginator::paginate;
+use rust_embed::Embed;
 use serde_json::Value;
 use std::path::Path;
 use tera::{Context as TeraCtx, Tera};
 
 const PAGE_SIZE: usize = 500;
 
+#[derive(Embed)]
+#[folder = "templates/"]
+struct Templates;
+
 pub struct ReportGenerator {
     tera: Tera,
 }
 
 impl ReportGenerator {
-    /// Create a new generator. `template_dir` must point to the `templates/` directory.
-    pub fn new(template_dir: &Path) -> Result<Self> {
-        let pattern = template_dir
-            .join("**/*.html")
-            .to_string_lossy()
-            .into_owned();
-        let tera = Tera::new(&pattern).with_context(|| {
-            format!(
-                "failed to load Tera templates from {}",
-                template_dir.display()
-            )
-        })?;
+    /// Create a new generator. Templates are embedded in the binary at compile time.
+    pub fn new() -> Result<Self> {
+        let mut tera = Tera::default();
+        for file_path in Templates::iter() {
+            let file = Templates::get(&file_path)
+                .expect("iter() returned a path that get() can't find");
+            let content = std::str::from_utf8(file.data.as_ref())
+                .with_context(|| format!("template {file_path} is not valid UTF-8"))?;
+            tera.add_raw_template(&file_path, content)
+                .with_context(|| format!("failed to parse template {file_path}"))?;
+        }
         Ok(Self { tera })
     }
 
@@ -303,15 +307,10 @@ mod tests {
         }
     }
 
-    fn template_dir() -> std::path::PathBuf {
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        manifest.join("templates")
-    }
-
     #[test]
     fn test_report_creates_index_html() {
         let out = TempDir::new().unwrap();
-        let gen = ReportGenerator::new(&template_dir()).expect("template load");
+        let gen = ReportGenerator::new().expect("template load");
         gen.render("TestCase", &make_test_result(), out.path())
             .unwrap();
         assert!(out.path().join("index.html").exists());
@@ -320,7 +319,7 @@ mod tests {
     #[test]
     fn test_report_creates_carve_json() {
         let out = TempDir::new().unwrap();
-        let gen = ReportGenerator::new(&template_dir()).expect("template load");
+        let gen = ReportGenerator::new().expect("template load");
         gen.render("TestCase", &make_test_result(), out.path())
             .unwrap();
         assert!(out.path().join("carve-results.json").exists());
@@ -329,7 +328,7 @@ mod tests {
     #[test]
     fn test_report_creates_chat_page() {
         let out = TempDir::new().unwrap();
-        let gen = ReportGenerator::new(&template_dir()).expect("template load");
+        let gen = ReportGenerator::new().expect("template load");
         gen.render("TestCase", &make_test_result(), out.path())
             .unwrap();
         assert!(out.path().join("chat_1_1.html").exists());

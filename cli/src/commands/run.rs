@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use chat4n6_core::PlaintextDirFs;
 use chat4n6_plugin_api::ForensicPlugin;
 use chat4n6_report::ReportGenerator;
@@ -62,9 +62,7 @@ pub fn run(args: RunArgs) -> Result<()> {
     }
 
     // --- Report ---
-    let template_dir = locate_templates()?;
-    let generator =
-        ReportGenerator::new(&template_dir).context("failed to load report templates")?;
+    let generator = ReportGenerator::new().context("failed to load report templates")?;
     generator
         .render(&args.case_name, &combined, &args.output)
         .context("report generation failed")?;
@@ -97,26 +95,3 @@ fn merge_results(
     }
 }
 
-fn locate_templates() -> Result<PathBuf> {
-    // 1. Env var override (production deployments)
-    if let Ok(p) = std::env::var("CHAT4N6_TEMPLATES") {
-        let path = PathBuf::from(&p)
-            .canonicalize()
-            .with_context(|| format!("CHAT4N6_TEMPLATES='{p}' cannot be resolved"))?;
-        if path.is_dir() {
-            return Ok(path);
-        }
-        bail!("CHAT4N6_TEMPLATES='{}' is not a directory", path.display());
-    }
-    // 2. Sibling of the binary: <binary_dir>/templates/
-    if let Ok(exe) = std::env::current_exe() {
-        let candidate = exe.parent().unwrap_or(&exe).join("templates");
-        if candidate.is_dir() {
-            return Ok(candidate);
-        }
-    }
-    bail!(
-        "Cannot locate templates/. Set CHAT4N6_TEMPLATES env var or place templates/ \
-         next to the chat4n6 binary."
-    )
-}

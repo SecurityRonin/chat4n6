@@ -1,7 +1,13 @@
 [package]
 name = "chat4n6-plugin-api"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Shared plugin API types for the chat4n6 forensic toolkit"
+keywords = ["forensics", "whatsapp", "plugin", "android"]
+categories = ["data-structures"]
 
 [dependencies]
 anyhow = { workspace = true }

@@ -1,3 +1,10 @@
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/SecurityRonin/chat4n6"
+authors = ["4n6h4x0r"]
+
 [workspace]
 members = [
     "crates/chat4n6-plugin-api",
@@ -10,6 +17,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+rust-embed = { version = "8", features = ["debug-embed"] }
 anyhow = "1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }

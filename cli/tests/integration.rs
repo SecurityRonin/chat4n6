@@ -1,19 +1,6 @@
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-fn template_dir() -> std::path::PathBuf {
-    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("CARGO_MANIFEST_DIR has no parent")
-        .join("crates/chat4n6-report/templates");
-    assert!(
-        p.is_dir(),
-        "template directory does not exist: {}",
-        p.display()
-    );
-    p
-}
-
 fn setup_whatsapp_fixture() -> TempDir {
     let root = TempDir::new().unwrap();
     let db_dir = root.path().join("data/data/com.whatsapp/databases");
@@ -44,8 +31,7 @@ fn test_run_produces_report() {
     let fixture = setup_whatsapp_fixture();
     let output = TempDir::new().unwrap();
     let mut cmd = Command::cargo_bin("chat4n6").unwrap();
-    cmd.env("CHAT4N6_TEMPLATES", template_dir())
-        .args([
+    cmd.args([
             "run",
             "--input",
             fixture.path().to_str().unwrap(),

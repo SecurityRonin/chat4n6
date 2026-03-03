@@ -1,7 +1,13 @@
 [package]
 name = "chat4n6-whatsapp"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "WhatsApp forensic plugin: chat extraction, decryption, and call log recovery"
+keywords = ["forensics", "whatsapp", "android", "decryption"]
+categories = ["parser-implementations"]
 
 [dependencies]
 anyhow = { workspace = true }

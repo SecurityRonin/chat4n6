@@ -38,12 +38,38 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
-        env:
-          # Required for the CLI integration test to locate HTML templates
-          CHAT4N6_TEMPLATES: ${{ github.workspace }}/crates/chat4n6-report/templates
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
       - name: Format check
         run: cargo fmt --all -- --check
+
+  build-windows:
+    name: Windows Release Binary
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            windows-cargo-
+
+      - name: Build release binary
+        run: cargo build --release -p chat4n6
+
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat4n6-windows-x86_64
+          path: target/release/chat4n6.exe

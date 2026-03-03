@@ -1,12 +1,19 @@
 [package]
 name = "chat4n6-report"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "HTML report generator for chat4n6 forensic extraction results"
+keywords = ["forensics", "report", "html", "whatsapp"]
+categories = ["template-engine"]
 
 [dependencies]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 chat4n6-plugin-api = { path = "../chat4n6-plugin-api" }
+rust-embed = { workspace = true }
 tera = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
