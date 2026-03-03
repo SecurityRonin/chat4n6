@@ -12,7 +12,7 @@ categories = ["template-engine"]
 [dependencies]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-chat4n6-plugin-api = { path = "../chat4n6-plugin-api" }
+chat4n6-plugin-api = { path = "../chat4n6-plugin-api", version = "0.1" }
 rust-embed = { workspace = true }
 tera = "1"
 serde = { workspace = true }

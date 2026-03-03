@@ -15,11 +15,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-chat4n6-plugin-api = { path = "../crates/chat4n6-plugin-api" }
-chat4n6-core = { path = "../crates/chat4n6-core" }
-chat4n6-sqlite-forensics = { path = "../crates/chat4n6-sqlite-forensics" }
-chat4n6-whatsapp = { path = "../crates/plugins/chat4n6-whatsapp" }
-chat4n6-report = { path = "../crates/chat4n6-report" }
+chat4n6-plugin-api = { path = "../crates/chat4n6-plugin-api", version = "0.1" }
+chat4n6-core = { path = "../crates/chat4n6-core", version = "0.1" }
+chat4n6-sqlite-forensics = { path = "../crates/chat4n6-sqlite-forensics", version = "0.1" }
+chat4n6-whatsapp = { path = "../crates/plugins/chat4n6-whatsapp", version = "0.1" }
+chat4n6-report = { path = "../crates/chat4n6-report", version = "0.1" }
 clap = { version = "4", features = ["derive"] }
 indicatif = "0.17"
 serde_json = { workspace = true }

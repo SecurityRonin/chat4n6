@@ -12,8 +12,8 @@ categories = ["parser-implementations"]
 [dependencies]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-chat4n6-plugin-api = { path = "../../chat4n6-plugin-api" }
-chat4n6-sqlite-forensics = { path = "../../chat4n6-sqlite-forensics" }
+chat4n6-plugin-api = { path = "../../chat4n6-plugin-api", version = "0.1" }
+chat4n6-sqlite-forensics = { path = "../../chat4n6-sqlite-forensics", version = "0.1" }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 aes = "0.8"

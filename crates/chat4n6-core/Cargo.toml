@@ -12,7 +12,7 @@ categories = ["filesystem", "parser-implementations"]
 [dependencies]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-chat4n6-plugin-api = { path = "../chat4n6-plugin-api" }
+chat4n6-plugin-api = { path = "../chat4n6-plugin-api", version = "0.1" }
 nom = { workspace = true }
 memmap2 = "0.9"
 log = { workspace = true }
