@@ -17,7 +17,16 @@ pub struct DarFs {
 
 impl DarFs {
     /// Open a DAR archive file and parse its catalog.
+    ///
+    /// MVP: loads the entire archive into memory. Archives larger than 2 GiB
+    /// will be rejected — use a memory-mapped implementation for production use.
     pub fn open(path: &Path) -> Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        anyhow::ensure!(
+            metadata.len() <= 2 * 1024 * 1024 * 1024,
+            "DAR archive too large for in-memory loading ({} bytes); mmap support pending",
+            metadata.len()
+        );
         let data = std::fs::read(path)?;
         // For MVP: build an empty catalog (full parsing is iterative).
         // Real implementation would parse the terminator, locate the catalog,

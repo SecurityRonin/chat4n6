@@ -18,7 +18,7 @@ impl DarVersion {
         match bytes[0] {
             0xd2 if bytes[1] == 0xab => Ok(DarVersion::V8),
             0xd3 if bytes[1] == 0xab => Ok(DarVersion::V9),
-            _ => Ok(DarVersion::V8),
+            _ => bail!("unrecognized DAR magic: {:#04x} {:#04x}", bytes[0], bytes[1]),
         }
     }
 }
@@ -101,6 +101,11 @@ mod tests {
         // 1 zero byte + 1 zero value byte = value 0
         let result = decode_infinint(&[0x00, 0x00]).unwrap();
         assert_eq!(result, (0u64, 2));
+    }
+
+    #[test]
+    fn test_detect_dar_magic_unknown_errors() {
+        assert!(DarVersion::from_magic(b"\xff\xff\x00\x00").is_err());
     }
 
     #[test]
