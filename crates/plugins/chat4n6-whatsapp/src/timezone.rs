@@ -32,7 +32,8 @@ fn parse_numeric_offset(s: &str) -> Option<i32> {
     let mut parts = rest.splitn(2, ':');
     let h: i32 = parts.next()?.parse().ok()?;
     let m: i32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    if h > 14 || m >= 60 {
+    // UTC+14:00 is the maximum (Kiribati); +14:xx with any minutes doesn't exist.
+    if h > 14 || (h == 14 && m != 0) || m >= 60 {
         return None;
     }
     Some(sign * (h * 3600 + m * 60))
@@ -74,5 +75,10 @@ mod tests {
     #[test]
     fn test_invalid_numeric_returns_none() {
         assert!(resolve_timezone_offset("08:00").is_none()); // missing sign
+    }
+
+    #[test]
+    fn test_invalid_plus14_30_returns_none() {
+        assert!(resolve_timezone_offset("+14:30").is_none());
     }
 }
