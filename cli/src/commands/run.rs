@@ -27,6 +27,36 @@ pub struct RunArgs {
 }
 
 pub fn run(args: RunArgs) -> Result<()> {
+    // Give a clear error if the user passes a .dar file directly.
+    // DAR archives are not yet natively supported; extract first with:
+    //   dar -x <basename> -R <output_dir>
+    if args.input.is_file() {
+        let ext = args
+            .input
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if ext == "dar" {
+            anyhow::bail!(
+                "{} is a DAR archive. Native DAR reading is not yet supported.\n\
+                 Extract it first with:\n\
+                 \n  dar -x \"{}\" -R /path/to/output\n\
+                 \nThen re-run with --input pointing to the extracted directory.",
+                args.input.display(),
+                args.input
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    // strip trailing slice number: "userdata.1" → "userdata"
+                    .and_then(|s| s.rsplit_once('.').map(|(base, _)| base).or(Some(s)))
+                    .unwrap_or("archive")
+            );
+        }
+        anyhow::bail!(
+            "{} is a file, not a directory. --input must be an extracted Android filesystem tree.",
+            args.input.display()
+        );
+    }
+
     // --- Filesystem ---
     let fs = PlaintextDirFs::new(&args.input)
         .with_context(|| format!("cannot open input: {}", args.input.display()))?;
