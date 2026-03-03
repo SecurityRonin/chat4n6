@@ -1,0 +1,18 @@
+[package]
+name = "chat4n6-report"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chat4n6-plugin-api = { path = "../chat4n6-plugin-api" }
+tera = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

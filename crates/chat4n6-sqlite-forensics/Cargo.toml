@@ -1,0 +1,16 @@
+[package]
+name = "chat4n6-sqlite-forensics"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chat4n6-plugin-api = { path = "../chat4n6-plugin-api" }
+rayon = { workspace = true }
+sha2 = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+rusqlite = { version = "0.31", features = ["backup"] }

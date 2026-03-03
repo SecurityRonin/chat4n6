@@ -1,0 +1,15 @@
+[package]
+name = "chat4n6-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chat4n6-plugin-api = { path = "../chat4n6-plugin-api" }
+nom = { workspace = true }
+memmap2 = "0.9"
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
