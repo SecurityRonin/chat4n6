@@ -7,10 +7,24 @@ It lingers in SQLite freelists, write-ahead logs, the in-app search index, and
 unallocated disk space — often intact and recoverable, if you know where to look.
 
 `chat4n6` is a free, open-source command-line tool that systematically recovers
-this evidence from Android forensic images (DAR archives from Passware Kit Mobile).
-It goes six layers deep into each WhatsApp database, surfaces every recoverable
-artifact, tags each record with its evidence source, and produces a paginated HTML
-report ready for review or court presentation.
+this evidence from Android filesystem images. It goes six layers deep into each
+WhatsApp database, surfaces every recoverable artifact, tags each record with its
+evidence source, and produces a paginated HTML report ready for review or court
+presentation.
+
+---
+
+## Installation
+
+**Linux / macOS** — requires Rust 1.75 or later ([rustup.rs](https://rustup.rs)):
+
+```bash
+cargo install chat4n6
+```
+
+**Windows** — download the pre-built binary from the
+[GitHub Actions artifacts](https://github.com/SecurityRonin/chat4n6/actions)
+(latest `build-windows` run → `chat4n6-windows-x86_64`).
 
 ---
 
@@ -27,7 +41,6 @@ Most forensic tools read what SQLite openly offers. `chat4n6` digs deeper:
 | FTS index (deleted-after-search) | Almost never | Yes |
 | Unallocated space carving | Sometimes | Yes — with confidence scoring |
 | Carved SQLite DBs from unallocated | No | Yes |
-| Rollback journals (zeroed headers) | No | Yes |
 | Schema version history (ALTER TABLE) | No | Yes |
 
 Every recovered record is tagged with its evidence source (`[LIVE]`, `[WAL-PENDING]`,
@@ -35,33 +48,35 @@ Every recovered record is tagged with its evidence source (`[LIVE]`, `[WAL-PENDI
 confidence percentage derived from live-record signature learning — information that
 matters when presenting evidence.
 
-Reports are paginated HTML with inline thumbnails — no JavaScript, no external
-dependencies, court-ready out of the box.
+Reports are paginated HTML — no JavaScript, no external dependencies, court-ready
+out of the box.
 
 ---
 
 ## Quick Start
 
 ```bash
-# Install (requires Rust 1.75+)
-cargo install chat4n6
+# Run full analysis on a plaintext Android filesystem tree
+chat4n6 run --input /path/to/android/root --output ./case001-report
 
-# Run full analysis
-chat4n6 run --input case001.dar --output ./case001-report
-
-# With timezone and decryption key
+# With timezone (accepts offset or IANA name)
 chat4n6 run \
-  --input case001.dar \
+  --input /path/to/android/root \
   --output ./case001-report \
-  --timezone "Asia/Manila" \
-  --key-file ./whatsapp.key
+  --case-name "Case 2025-001" \
+  --timezone "Asia/Manila"
+
+# Skip unallocated space carving (faster, still runs layers 1–5)
+chat4n6 run --input /path/to/android/root --output ./report --no-unalloc
 
 # Open the report
-open ./case001-report/index.html
+open ./case001-report/index.html   # macOS
+xdg-open ./case001-report/index.html  # Linux
+start ./case001-report/index.html  # Windows
 ```
 
-That's it. `chat4n6 run` handles everything: DAR parsing, database decryption,
-6-layer SQLite recovery, and HTML report generation.
+`chat4n6 run` handles everything: filesystem access, 6-layer SQLite recovery,
+and HTML report generation in a single pass.
 
 ---
 
@@ -69,109 +84,51 @@ That's it. `chat4n6 run` handles everything: DAR parsing, database decryption,
 
 ```
 case001-report/
-├── index.html              ← Case dashboard with evidence summary
-├── chats/                  ← One folder per conversation, paginated
-├── calls/                  ← Full call log (audio + video, group calls)
-├── media_gallery/          ← Extracted images, videos, voice notes
-├── deleted/
-│   ├── wal_delta.html      ← What changed between WAL and main DB
-│   ├── fts_recovered.html  ← Messages recovered from search index
-│   └── carved_unalloc.html ← Carved records with confidence scores
-├── carved_dbs/             ← Databases reconstructed from unallocated space
-├── media/                  ← Extracted media files
+├── index.html              ← Case dashboard: chat list, counts, evidence summary
+├── chat_<id>_<page>.html   ← Paginated conversation views (500 messages/page)
+├── calls.html              ← Full call log (audio + video)
+├── deleted.html            ← All non-LIVE records across every chat
 └── carve-results.json      ← Machine-readable output for scripting
 ```
 
 ---
 
-## Input Requirements
+## Input
 
-`chat4n6` accepts DAR archives (v8 and v9) produced by **Passware Kit Mobile**.
-The DAR format preserves the Android filesystem including unallocated space,
-which is essential for deep recovery.
+`chat4n6` accepts a plaintext directory tree of the Android filesystem — the
+kind produced when you extract a DAR archive from Passware Kit Mobile, or any
+tool that preserves the directory structure.
 
-If you already have a decrypted directory of WhatsApp database files, pass the
-directory path directly:
+The WhatsApp databases are expected at:
+```
+<root>/data/data/com.whatsapp/databases/
+```
+
+If WhatsApp backup databases are encrypted (`.crypt14`, `.crypt15`), pass the
+extracted key file:
 
 ```bash
-chat4n6 run --input /path/to/extracted/com.whatsapp/databases/ --output ./report
+chat4n6 run --input /path/to/root --output ./report --key-file ./key
 ```
+
+The key file is found on-device at `/data/data/com.whatsapp/files/key`.
 
 ---
 
 ## Supported Artifacts
 
-**Messages:** text, images, video, audio, voice notes, stickers (animated and static),
-documents, contact cards, location shares, system messages, deleted messages (type 15)
-
-**Reactions:** emoji reactions with reactor identity and timestamp
-
-**Quoted messages:** preserves the text of messages that were deleted after being quoted
+**Messages:** text, images, video, audio, voice notes, stickers, documents,
+contact cards, location shares, system messages, deleted messages
 
 **Calls:** direction, type (audio/video), duration, group calls, timestamps
 
 **Contacts:** display names, JIDs, phone numbers from `wa.db`
 
-**Linked devices:** companion device records from `companion_devices.db`
-
 ---
 
-## Advanced Usage
+## Evidence Tags
 
-<details>
-<summary>Subcommands (run stages separately)</summary>
-
-```bash
-# Stage 1: Parse DAR and locate databases
-chat4n6 extract --input case001.dar --output ./work
-
-# Stage 2: Run forensic recovery
-chat4n6 carve --input ./work --output ./work
-
-# Stage 3: Generate report (fast — no re-carving)
-chat4n6 report --from ./work/carve-results.json --output ./report --timezone "UTC+8"
-```
-
-Separating stages lets you adjust report parameters (timezone, page size, confidence
-threshold) without re-running the slow unallocated space carving.
-
-</details>
-
-<details>
-<summary>Tuning recovery</summary>
-
-```bash
-# Skip unallocated carving for speed (still runs layers 1-5)
-chat4n6 run --input case001.dar --output ./report --no-unalloc
-
-# Only include carved records above 70% confidence
-chat4n6 run --input case001.dar --output ./report --confidence 0.7
-
-# Adjust records per HTML page (default: 500)
-chat4n6 run --input case001.dar --output ./report --page-size 200
-```
-
-</details>
-
-<details>
-<summary>Encrypted databases</summary>
-
-WhatsApp encrypts its backup databases (`.crypt14`, `.crypt15`). The decryption key
-is stored on the device at `/data/data/com.whatsapp/files/key`.
-
-If Passware Kit Mobile extracted the key, pass it directly:
-```bash
-chat4n6 run --input case001.dar --output ./report --key-file ./key
-```
-
-If the key file is inside the DAR archive, `chat4n6` will locate it automatically.
-
-</details>
-
-<details>
-<summary>Understanding evidence tags</summary>
-
-Every message and artifact in the report carries a source tag:
+Every message and call record in the report carries a source tag:
 
 | Tag | Meaning |
 |---|---|
@@ -179,15 +136,13 @@ Every message and artifact in the report carries a source tag:
 | `[WAL-PENDING]` | In the WAL file, not yet written to main DB |
 | `[WAL-HISTORIC]` | Was in the WAL but superseded — indicates modification or deletion |
 | `[FREELIST]` | Recovered from SQLite freelist (deleted but space not reused) |
-| `[FTS-ONLY]` | Present in WhatsApp's search index but deleted from message table |
+| `[FTS-ONLY]` | In WhatsApp's search index but deleted from message table |
 | `[CARVED-UNALLOC]` | Carved from unallocated space — includes confidence % |
 | `[CARVED-DB]` | From a database reconstructed from unallocated space |
 
 Confidence percentages on carved records are derived from statistical analysis of
-live records — a 94% confidence record matches the serial type pattern seen in 94%
-of live records in that table.
-
-</details>
+live records — a 94% record matches the serial type pattern of 94% of live records
+in that table.
 
 ---
 
@@ -210,7 +165,7 @@ cargo build --release
 ./target/release/chat4n6 --help
 ```
 
-Requires Rust 1.75 or later. No system dependencies (pure Rust, no SQLite C library).
+No system dependencies — pure Rust, no SQLite C library required.
 
 ---
 
