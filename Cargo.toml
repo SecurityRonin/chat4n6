@@ -32,3 +32,4 @@ base64 = { version = "0.22", features = ["alloc"] }
 rayon = "1"
 log = "0.4"
 env_logger = "0.11"
+memmap2 = "0.9"

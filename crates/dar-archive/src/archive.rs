@@ -13,6 +13,7 @@ pub struct DarEntry {
     pub data_offset: u64,
 }
 
+// DarArchive intentionally omits Debug and Clone — memmap2::Mmap does not implement those traits.
 pub struct DarArchive {
     mmaps: Vec<Mmap>,
     entries: Vec<DarEntry>,
@@ -43,7 +44,7 @@ impl DarArchive {
     }
 
     fn load_catalog(&mut self, _slice_index: usize) -> Result<()> {
-        // Stub — implemented in Task 3
+        // TODO(Task 3): implement catalog parsing
         Ok(())
     }
 }

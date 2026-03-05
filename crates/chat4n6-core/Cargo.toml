@@ -15,7 +15,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 chat4n6-plugin-api = { path = "../chat4n6-plugin-api", version = "0.1" }
 nom = { workspace = true }
-memmap2 = "0.9"
+memmap2 = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
