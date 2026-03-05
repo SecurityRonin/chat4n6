@@ -1,0 +1,49 @@
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
+use anyhow::{Context, Result};
+use memmap2::Mmap;
+
+#[derive(Debug, Clone)]
+pub struct DarEntry {
+    pub path: PathBuf,
+    pub size: u64,
+    pub is_dir: bool,
+    pub permissions: u32,
+    pub slice_index: usize,
+    pub data_offset: u64,
+}
+
+pub struct DarArchive {
+    mmaps: Vec<Mmap>,
+    entries: Vec<DarEntry>,
+}
+
+impl DarArchive {
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("cannot open {}", path.display()))?;
+        // SAFETY: file is read-only and not modified while mapped.
+        let mmap = unsafe { Mmap::map(&file) }
+            .with_context(|| format!("cannot mmap {}", path.display()))?;
+        let mut archive = Self { mmaps: vec![mmap], entries: Vec::new() };
+        archive.load_catalog(0)?;
+        Ok(archive)
+    }
+
+    pub fn entries(&self) -> &[DarEntry] {
+        &self.entries
+    }
+
+    pub fn read<'a>(&'a self, entry: &DarEntry) -> Result<Cow<'a, [u8]>> {
+        let mmap = &self.mmaps[entry.slice_index];
+        let start = entry.data_offset as usize;
+        let end = start + entry.size as usize;
+        anyhow::ensure!(end <= mmap.len(), "entry data out of bounds: {}", entry.path.display());
+        Ok(Cow::Borrowed(&mmap[start..end]))
+    }
+
+    fn load_catalog(&mut self, _slice_index: usize) -> Result<()> {
+        // Stub — implemented in Task 3
+        Ok(())
+    }
+}
