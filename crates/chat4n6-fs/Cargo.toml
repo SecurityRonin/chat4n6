@@ -1,0 +1,21 @@
+[package]
+name = "chat4n6-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "ForensicFs adapters (plaintext dir, DAR archive, iOS backup) for chat4n6"
+readme = "README.md"
+keywords = ["forensics", "filesystem", "dar", "ios"]
+categories = ["filesystem"]
+
+[dependencies]
+anyhow = { workspace = true }
+chat4n6-plugin-api = { path = "../chat4n6-plugin-api", version = "0.1" }
+dar-archive = { path = "../dar-archive", version = "0.1" }
+ios-backup = { path = "../ios-backup", version = "0.1" }
+
+[dev-dependencies]
+tempfile = "3"
+rusqlite = { version = "0.31", features = ["bundled"] }
