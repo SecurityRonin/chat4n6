@@ -43,8 +43,13 @@ impl DarArchive {
         Ok(Cow::Borrowed(&mmap[start..end]))
     }
 
-    fn load_catalog(&mut self, _slice_index: usize) -> Result<()> {
-        // TODO(Task 3): implement catalog parsing
+    fn load_catalog(&mut self, slice_index: usize) -> Result<()> {
+        let data: &[u8] = &self.mmaps[slice_index];
+        let pos = crate::scanner::find_zzzzz(data)
+            .ok_or_else(|| anyhow::anyhow!("no zzzzz terminator found in slice {slice_index}"))?;
+        let catalog_data = &data[pos + 5..];
+        let mut new_entries = crate::catalog::parse_catalog(catalog_data, slice_index)?;
+        self.entries.append(&mut new_entries);
         Ok(())
     }
 }
