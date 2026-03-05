@@ -17,3 +17,4 @@ memmap2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+memmap2 = { workspace = true }
