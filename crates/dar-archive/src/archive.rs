@@ -31,6 +31,45 @@ impl DarArchive {
         Ok(archive)
     }
 
+    /// Open a multi-slice archive given the basename (no slice number, no extension).
+    ///
+    /// Example: `open_slices(Path::new("/path/to/userdata"))` opens
+    /// `userdata.1.dar`, `userdata.2.dar`, … until no next slice is found.
+    pub fn open_slices(basename: &Path) -> Result<Self> {
+        let parent = basename.parent().unwrap_or(Path::new("."));
+        let stem = basename
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow::anyhow!("invalid basename: {}", basename.display()))?;
+
+        let mut mmaps = Vec::new();
+        let mut slice_num = 1usize;
+        loop {
+            let slice_path = parent.join(format!("{stem}.{slice_num}.dar"));
+            if !slice_path.exists() {
+                break;
+            }
+            let file = std::fs::File::open(&slice_path)
+                .with_context(|| format!("cannot open {}", slice_path.display()))?;
+            // SAFETY: read-only mapping; file not modified while mapped.
+            let mmap = unsafe { Mmap::map(&file) }
+                .with_context(|| format!("cannot mmap {}", slice_path.display()))?;
+            mmaps.push(mmap);
+            slice_num += 1;
+        }
+        anyhow::ensure!(
+            !mmaps.is_empty(),
+            "no slices found for basename: {}",
+            basename.display()
+        );
+
+        let mut archive = Self { mmaps, entries: Vec::new() };
+        for i in 0..archive.mmaps.len() {
+            archive.load_catalog(i)?;
+        }
+        Ok(archive)
+    }
+
     pub fn entries(&self) -> &[DarEntry] {
         &self.entries
     }
