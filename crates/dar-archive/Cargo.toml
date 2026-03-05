@@ -12,6 +12,7 @@ categories = ["parser-implementations"]
 
 [dependencies]
 anyhow = { workspace = true }
+log = { workspace = true }
 thiserror = { workspace = true }
 memmap2 = { workspace = true }
 

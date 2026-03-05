@@ -26,6 +26,10 @@ pub fn parse_catalog(data: &[u8], slice_index: usize) -> Result<Vec<DarEntry>> {
         }
         match parse_one_entry(&data[pos..], slice_index) {
             Ok((entry, consumed)) => {
+                if consumed == 0 {
+                    log::warn!("catalog parse: zero-byte advance at offset 0x{pos:x}, stopping");
+                    break;
+                }
                 pos += consumed;
                 if let Some(e) = entry {
                     entries.push(e);
@@ -33,7 +37,7 @@ pub fn parse_catalog(data: &[u8], slice_index: usize) -> Result<Vec<DarEntry>> {
             }
             Err(e) => {
                 // Graceful degradation: stop at parse error rather than propagating
-                eprintln!("catalog parse stopped at offset 0x{pos:x}: {e}");
+                log::warn!("catalog parse stopped at offset 0x{pos:x}: {e}");
                 break;
             }
         }
@@ -67,13 +71,15 @@ fn parse_one_entry(data: &[u8], slice_index: usize) -> Result<(Option<DarEntry>,
         .to_owned();
     pos = name_end;
 
+    // Mask off bit 7: DAR may use it as a "saved" flag (entry data present in archive vs.
+    // catalog-only). The lower 7 bits identify the entry type.
     match type_byte & 0x7F {
         t if t == TYPE_DIR => {
             Ok((Some(DarEntry {
                 path: PathBuf::from(&name),
                 size: 0,
                 is_dir: true,
-                permissions: 0o755,
+                permissions: 0o755, // TODO: parse real permissions from DAR catalog entry attributes
                 slice_index,
                 data_offset: 0,
             }), pos))
@@ -89,7 +95,7 @@ fn parse_one_entry(data: &[u8], slice_index: usize) -> Result<(Option<DarEntry>,
                 path: PathBuf::from(&name),
                 size,
                 is_dir: false,
-                permissions: 0o644,
+                permissions: 0o644, // TODO: parse real permissions from DAR catalog entry attributes
                 slice_index,
                 data_offset,
             }), pos))
@@ -176,12 +182,37 @@ mod tests {
         assert_eq!(file.data_offset, 512);
     }
 
+    /// Same as synthetic_catalog but without the TYPE_END terminator byte at the end.
+    fn synthetic_catalog_no_end() -> Vec<u8> {
+        let mut data = synthetic_catalog();
+        data.pop(); // remove the trailing TYPE_END byte
+        data
+    }
+
     #[test]
     fn test_parse_stops_at_second_zzzzz() {
-        let mut data = synthetic_catalog();
+        let mut data = synthetic_catalog_no_end();
         data.extend_from_slice(b"zzzzz");
         data.push(TYPE_FILE); // garbage after zzzzz — must be ignored
         let entries = parse_catalog(&data, 0).unwrap();
         assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_skips_unknown_type() {
+        let mut buf = Vec::new();
+        buf.push(0x7F); // unknown type (not FILE or DIR)
+        buf.extend(enc(3)); // name len = 3
+        buf.extend_from_slice(b"foo");
+        // After unknown type entry (skipped), a file entry follows
+        buf.push(TYPE_FILE);
+        buf.extend(enc(5)); // name len = 5
+        buf.extend_from_slice(b"bar.c");
+        buf.extend(enc(100)); // size = 100
+        buf.extend(enc(0));   // data_offset = 0
+        buf.push(TYPE_END);
+        let entries = parse_catalog(&buf, 0).unwrap();
+        assert_eq!(entries.len(), 1, "unknown type should be skipped, file should be parsed");
+        assert_eq!(entries[0].path.to_str().unwrap(), "bar.c");
     }
 }
