@@ -1,0 +1,19 @@
+[package]
+name = "ios-backup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Pure-Rust reader for iOS device backups (unencrypted)"
+readme = "README.md"
+keywords = ["ios", "backup", "itunes", "forensics"]
+categories = ["parser-implementations"]
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
