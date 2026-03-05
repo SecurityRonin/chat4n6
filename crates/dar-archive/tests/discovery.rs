@@ -12,6 +12,10 @@ const DAR_PATH: &str = "/path/to/userdata.1.dar"; // ← update before running
 #[test]
 #[ignore = "requires real .dar fixture; run manually for format discovery"]
 fn dump_catalog_bytes() {
+    if !std::path::Path::new(DAR_PATH).exists() {
+        eprintln!("Skipping: DAR_PATH={DAR_PATH:?} does not exist. Update the constant before running.");
+        return;
+    }
     let file = File::open(DAR_PATH).expect("open dar file");
     let mmap = unsafe { Mmap::map(&file) }.expect("mmap");
     let data: &[u8] = &mmap;
