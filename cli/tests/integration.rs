@@ -1,4 +1,4 @@
-use assert_cmd::Command;
+use assert_cmd::cmd::Command;
 use tempfile::TempDir;
 
 fn setup_whatsapp_fixture() -> TempDir {

@@ -64,6 +64,11 @@ impl IosBackup {
     /// Read the backing file for an entry.
     /// Backing file path: `<backup_dir>/<file_id[0..2]>/<file_id>`
     pub fn read(&self, entry: &BackupEntry) -> Result<Vec<u8>> {
+        anyhow::ensure!(
+            entry.file_id.len() >= 2,
+            "file_id too short (expected 40-char SHA-1 hex): {:?}",
+            entry.file_id
+        );
         let sub = &entry.file_id[..2];
         let path = self.backup_dir.join(sub).join(&entry.file_id);
         std::fs::read(&path)

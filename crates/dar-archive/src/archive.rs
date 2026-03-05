@@ -75,6 +75,11 @@ impl DarArchive {
     }
 
     pub fn read<'a>(&'a self, entry: &DarEntry) -> Result<Cow<'a, [u8]>> {
+        anyhow::ensure!(
+            !entry.is_dir,
+            "cannot read directory entry: {}",
+            entry.path.display()
+        );
         let mmap = &self.mmaps[entry.slice_index];
         let start = entry.data_offset as usize;
         let end = start + entry.size as usize;

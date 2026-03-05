@@ -25,9 +25,10 @@ impl ForensicFs for IosBackupFs {
             .iter()
             .map(|e| format!("{}/{}", e.domain, e.relative_path))
             .filter(|vp| {
-                vp.starts_with(&prefix) && {
-                    let remainder = &vp[prefix.len()..];
-                    !remainder.is_empty() && !remainder.contains('/')
+                if prefix.is_empty() {
+                    true // list("") returns all entries
+                } else {
+                    vp.starts_with(&prefix)
                 }
             })
             .map(|vp| FsEntry { path: vp, size: 0, is_dir: false })
@@ -112,19 +113,17 @@ mod tests {
     }
 
     #[test]
-    fn test_list_filters_direct_children() {
+    fn test_list_returns_matching_entries() {
         let tmp = tempfile::tempdir().unwrap();
         let fs = IosBackupFs::open(&make_backup(&tmp)).unwrap();
-        // "AppDomain-net.whatsapp.WhatsApp/Documents/ChatStorage.sqlite"
-        // Listing "AppDomain-net.whatsapp.WhatsApp/Documents" should return 0 entries
-        // (since the virtual path has "Documents" as part of relative_path, not a separate dir level)
-        // Listing "AppDomain-net.whatsapp.WhatsApp" should return 0 entries
-        // (because remainder "Documents/ChatStorage.sqlite" contains a slash)
-        let entries = fs.list("AppDomain-net.whatsapp.WhatsApp").unwrap();
-        assert_eq!(entries.len(), 0, "no direct children — relative path has slash");
-
-        // Listing root should also return 0 (full virtual path has slashes in remainder)
-        let root_entries = fs.list("").unwrap();
-        assert_eq!(root_entries.len(), 0, "no direct children from root — virtual path has slashes");
+        // list("") should return all entries
+        let all = fs.list("").unwrap();
+        assert_eq!(all.len(), 1, "list(\"\") should return all 1 entry");
+        // list("AppDomain-net.whatsapp.WhatsApp") should return entries with that domain prefix
+        let domain_entries = fs.list("AppDomain-net.whatsapp.WhatsApp").unwrap();
+        assert_eq!(domain_entries.len(), 1, "domain prefix should match 1 entry");
+        // list("AppDomain-nonexistent") should return no entries
+        let none = fs.list("AppDomain-nonexistent").unwrap();
+        assert_eq!(none.len(), 0);
     }
 }
