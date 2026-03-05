@@ -1,15 +1,15 @@
 use anyhow::{Context, Result};
-use chat4n6_core::PlaintextDirFs;
+use chat4n6_fs::{DarFs, IosBackupFs, PlaintextDirFs};
 use chat4n6_plugin_api::ForensicPlugin;
 use chat4n6_report::ReportGenerator;
 use chat4n6_whatsapp::WhatsAppPlugin;
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Args)]
 pub struct RunArgs {
-    /// Input directory (plaintext Android filesystem tree)
+    /// Input: extracted Android filesystem directory, iOS backup directory, or .dar archive file
     #[arg(short, long)]
     pub input: PathBuf,
     /// Output directory for report files
@@ -27,43 +27,9 @@ pub struct RunArgs {
 }
 
 pub fn run(args: RunArgs) -> Result<()> {
-    // Give a clear error if the user passes a .dar file directly.
-    // DAR archives are not yet natively supported; extract first with:
-    //   dar -x <basename> -R <output_dir>
-    if args.input.is_file() {
-        let ext = args
-            .input
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        if ext == "dar" {
-            anyhow::bail!(
-                "{} is a DAR archive. Native DAR reading is not yet supported.\n\
-                 Extract it first with:\n\
-                 \n  dar -x \"{}\" -R /path/to/output\n\
-                 \nThen re-run with --input pointing to the extracted directory.",
-                args.input.display(),
-                args.input
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    // strip trailing slice number: "userdata.1" → "userdata"
-                    .and_then(|s| s.rsplit_once('.').map(|(base, _)| base).or(Some(s)))
-                    .unwrap_or("archive")
-            );
-        }
-        anyhow::bail!(
-            "{} is a file, not a directory. --input must be an extracted Android filesystem tree.",
-            args.input.display()
-        );
-    }
-
-    // --- Filesystem ---
-    let fs = PlaintextDirFs::new(&args.input)
-        .with_context(|| format!("cannot open input: {}", args.input.display()))?;
-
+    let fs = open_fs(&args.input)?;
     let plugins: Vec<Box<dyn ForensicPlugin>> = vec![Box::new(WhatsAppPlugin)];
 
-    // --- Detect and extract ---
     let bar = ProgressBar::new(plugins.len() as u64);
     bar.set_style(
         ProgressStyle::default_bar()
@@ -77,9 +43,9 @@ pub fn run(args: RunArgs) -> Result<()> {
 
     for plugin in &plugins {
         bar.set_message(plugin.name().to_string());
-        if plugin.detect(&fs) {
+        if plugin.detect(&*fs) {
             let result = plugin
-                .extract(&fs, tz_offset)
+                .extract(&*fs, tz_offset)
                 .with_context(|| format!("plugin '{}' extraction failed", plugin.name()))?;
             merge_results(&mut combined, result);
         }
@@ -91,7 +57,6 @@ pub fn run(args: RunArgs) -> Result<()> {
         eprintln!("Warning: no artifacts found in {:?}", args.input);
     }
 
-    // --- Report ---
     let generator = ReportGenerator::new().context("failed to load report templates")?;
     generator
         .render(&args.case_name, &combined, &args.output)
@@ -101,6 +66,47 @@ pub fn run(args: RunArgs) -> Result<()> {
     println!("  index.html");
     println!("  carve-results.json");
     Ok(())
+}
+
+/// Open the correct filesystem abstraction for `input`.
+///
+/// Detection order:
+/// 1. File with `.dar` extension → DarFs (slice number stripped from basename)
+/// 2. Directory containing `Manifest.db` → IosBackupFs
+/// 3. Directory → PlaintextDirFs
+fn open_fs(input: &Path) -> Result<Box<dyn chat4n6_plugin_api::ForensicFs>> {
+    if input.is_file() {
+        let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext == "dar" {
+            // Strip trailing slice number: "userdata.1" → "userdata"
+            let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let base_name = stem.rsplit_once('.').map(|(b, _)| b).unwrap_or(stem);
+            let basename = input
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(base_name);
+            return Ok(Box::new(
+                DarFs::open_slices(&basename)
+                    .with_context(|| format!("cannot open DAR archive: {}", input.display()))?,
+            ));
+        }
+        anyhow::bail!(
+            "{} is a file, not a directory. \
+             --input must be a .dar archive, an iOS backup directory, \
+             or an extracted Android filesystem tree.",
+            input.display()
+        );
+    }
+    if input.join("Manifest.db").exists() {
+        return Ok(Box::new(
+            IosBackupFs::open(input)
+                .with_context(|| format!("cannot open iOS backup: {}", input.display()))?,
+        ));
+    }
+    Ok(Box::new(
+        PlaintextDirFs::new(input)
+            .with_context(|| format!("cannot open input: {}", input.display()))?,
+    ))
 }
 
 fn resolve_tz_arg(tz: Option<&str>) -> Result<Option<i32>> {
@@ -124,4 +130,3 @@ fn merge_results(
         dst.timezone_offset_seconds = src.timezone_offset_seconds;
     }
 }
-
