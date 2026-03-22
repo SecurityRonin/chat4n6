@@ -28,7 +28,7 @@ ForensicEngine::new(db, wal?, journal?)
   +-- recover_layer6()          Unallocated space carving        [existing, enhanced]
   +-- recover_layer7()          Intra-page gap scanning          [NEW]
   +-- recover_layer8()          Rollback journal parsing         [NEW]
-  +-- recover_all(WalMode)      All layers + deduplication
+  +-- recover_all()             All layers + deduplication
 ```
 
 ### WalMode
@@ -80,8 +80,18 @@ reconstruct the database state.
 - Enables timeline analysis ("this record was modified in transaction N")
 
 **Checksum validation:**
-- Verify cumulative frame checksums per SQLite WAL spec
+- WAL magic determines byte order: `0x377f0682` = big-endian, `0x377f0683` = native
+- Cumulative checksum algorithm (from SQLite source):
+  ```
+  s0 = s1 = 0  (or previous frame's s0, s1)
+  for each u32 word pair (a, b) in frame header + page data:
+    s0 += a + s1
+    s1 += b + s0
+  frame is valid if (s0, s1) match stored checksum
+  ```
 - Invalid frames logged and skipped (do not fail the whole recovery)
+- Post-checkpoint frames (stale salt) are still parsed forensically — they
+  contain historical data from before the last checkpoint
 
 ### New EvidenceSource Variant
 
@@ -94,10 +104,28 @@ pub enum EvidenceSource {
     Freelist,
     FtsOnly,
     CarvedUnalloc { confidence_pct: u8 },
+    CarvedIntraPage { confidence_pct: u8 }, // NEW: from intra-page gap or freeblock
     CarvedDb,
-    Journal,        // NEW: from rollback journal
+    CarvedOverflow,  // NEW: orphaned overflow chain
+    Journal,         // NEW: from rollback journal
+    IndexRecovery,   // NEW: from deleted index B-tree entries
 }
 ```
+
+## Index B-tree Recovery
+
+Index pages (page types `0x0A` interior, `0x02` leaf) contain copies of indexed
+column values. When a row is deleted, the index entry may persist longer than the
+table entry (or vice versa). Recovering deleted index entries is a well-known
+forensic technique used by Undark and FQLite.
+
+**Integration:** During Layer 1 B-tree walking, also walk index B-trees (identified
+from `sqlite_master` entries with `type='index'`). Index leaf cells have no row_id
+in the cell itself (it's in the payload), and the payload format differs from
+table cells. Tag recovered index records as `EvidenceSource::IndexRecovery`.
+
+**Value:** Can recover column values even when the table page has been overwritten,
+if the index page survives.
 
 ## Layer 3: Freelist Page Content Recovery
 
@@ -132,17 +160,26 @@ truncated.
 ### Design
 
 **Overflow detection during B-tree walking:**
-- Calculate `max_local = (usable_size - 12) * 64 / 255 - 23`
-- If cell payload_size > bytes available in the local cell, last 4 bytes of
-  local storage = first overflow page number
+- Calculate usable size: `U = page_size - reserved_space` (reserved from header byte 20)
+- Calculate `max_local = (U - 12) * 64 / 255 - 23`
+- Calculate `min_local = (U - 12) * 32 / 255 - 23`
+- Actual local payload: if `payload_size <= max_local`, all local. Otherwise:
+  `local_size = min_local + (payload_size - min_local) % (U - 4)`
+  If `local_size > max_local`, then `local_size = min_local`.
+- Last 4 bytes of local storage = first overflow page number (u32 big-endian)
 - Follow chain: each overflow page has `[next_overflow:u32][content...]`
+  where content is `U - 4` bytes (except possibly the last page)
 - Reassemble full payload, re-parse record with complete data
 
 **Orphaned overflow recovery (Layer 4 proper):**
 - Scan for overflow pages not referenced by any live cell
-- Overflow pages have a distinctive structure: `[next:u32]` followed by data
+- Overflow pages have NO magic bytes, so false positive risk is high
+- Mitigation: only consider pages that (a) are not in any B-tree or freelist,
+  (b) have a `next` pointer that is either 0 or points to another unaccounted page,
+  (c) form a chain that terminates cleanly (next=0)
 - Attempt to reassemble chains and parse as record payloads
-- Tag as `EvidenceSource::CarvedUnalloc` with lower confidence
+- Validate reassembled payload against `SchemaSignature` patterns
+- Tag as `EvidenceSource::CarvedOverflow` with lower confidence
 
 **Integration with Layer 1:**
 - `walk_table_btree()` gains overflow-following capability
@@ -178,6 +215,16 @@ When SQLite deletes a record, it either:
    each page from the B-tree walk)
 3. Validate candidates with plausibility checks
 4. Deduplicate against live records from the same page
+
+**Relationship to existing freeblock parsing:** The existing `parse_freeblock_chain()`
+in `carver.rs` handles freeblocks within pages (linked list via `[next:u16][size:u16]`
+headers). Layer 7 adds two things: (a) scanning the **unallocated gap** region
+which is NOT part of the freeblock chain (records whose space was reclaimed by
+moving `cell_content_start` but whose bytes remain), and (b) enhancing the existing
+freeblock carving with `SchemaSignature`-based validation for higher confidence
+and lower false positives. Layer 3 is distinct: it recovers content from **freelist
+pages** (entire pages freed at the database level, tracked in the freelist trunk/leaf
+chain).
 
 **This is the single most productive recovery source** per Sanderson's research.
 Most recently deleted records are found here because the page hasn't been reused
@@ -228,6 +275,11 @@ fn boyer_moore_search(haystack: &[u8], pattern: &SerialTypePattern) -> Vec<usize
 
 Scans raw bytes for matches. Much faster than byte-by-byte comparison for
 repeated searches across large regions.
+
+**Note:** For multi-pattern matching (scanning for all table signatures
+simultaneously), Aho-Corasick may be more efficient than running Boyer-Moore
+per pattern. Start with Boyer-Moore per-table (simpler, matches FQLite approach),
+and optimize to Aho-Corasick if profiling shows it's a bottleneck.
 
 ### Plausibility Checks (from FQLite paper)
 
@@ -280,8 +332,18 @@ Parse SQLite rollback journal files (`.db-journal`).
 - Extract records, tag as `EvidenceSource::Journal`
 - These represent the state before an uncommitted transaction
 
+**Multi-section journals:**
+- A rollback journal can contain multiple sections (one per transaction attempt)
+- Each section has its own header with page_count and nonce
+- After the pages for one section, the next section header follows
+- Walk all sections sequentially; each section's pages represent a different
+  pre-modification snapshot
+- Pages from later sections may overlap earlier ones (same page_number, different
+  content) — keep all versions for forensic completeness
+
 **Checksum validation:**
-- Verify per-page checksums using the journal header nonce
+- Per-page checksum: `sum(u32 words in page data) + nonce` (truncated to u32)
+- Verify per-page checksums using the section's nonce value
 - Invalid pages logged and skipped
 
 ## ForensicEngine API Changes
@@ -360,13 +422,20 @@ TDD throughout. Each layer gets:
 
 **Key test scenarios:**
 - WAL: create DB in WAL mode, insert, delete, verify both states visible
+- WAL edge cases: zero-length WAL, truncated WAL (partial last frame), stale salt frames
 - Freelist: delete enough records to trigger page freeing, verify content recovery
 - Gap: delete single records, verify intra-page gap carving finds them
-- Overflow: insert large BLOBs, verify full reassembly
+- Overflow: insert large BLOBs (> max_local), verify full reassembly
 - Journal: create DB in journal mode, begin transaction, verify pre-image recovery
+- Journal multi-section: multiple transaction attempts in single journal
 - Dedup: verify carved records matching live records are removed
 - FQLite patterns: verify schema-to-pattern compilation, Boyer-Moore correctness
-- Plausibility: verify false positive rejection
+- Plausibility: verify false positive rejection (random bytes should not parse)
+- Page size variations: test with 1024, 4096, 8192, 65536 byte pages
+- Corrupted DB: truncated file, invalid header, zero-page-count
+- Encrypted DB early detection: fail fast with clear error on encrypted DBs
+- Auto-vacuum: databases with no freelist (truncated pages)
+- Index recovery: delete rows, verify index entries survive and are recovered
 
 ## Implementation Order
 
