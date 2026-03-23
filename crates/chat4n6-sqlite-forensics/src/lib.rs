@@ -4,6 +4,7 @@ pub mod context;
 pub mod db;
 pub mod dedup;
 pub mod freelist;
+pub mod freeblock;
 pub mod fts;
 pub mod gap;
 pub mod header;
