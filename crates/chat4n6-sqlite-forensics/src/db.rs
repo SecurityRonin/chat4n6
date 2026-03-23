@@ -1,10 +1,12 @@
 use crate::btree::walk_table_btree;
+use crate::context::RecoveryContext;
 use crate::dedup::deduplicate;
 use crate::freelist::recover_freelist_content;
 use crate::fts::recover_layer5;
 use crate::gap::scan_page_gaps;
 use crate::header::{is_sqlite_header, DbHeader};
 use crate::journal::parse_journal;
+use crate::pragma::{parse_pragma_info, AutoVacuumMode, SecureDeleteMode};
 use crate::record::RecoveredRecord;
 use crate::schema_sig::SchemaSignature;
 use crate::wal::recover_layer2_enhanced;
@@ -181,10 +183,25 @@ impl<'a> ForensicEngine<'a> {
         Ok(sigs)
     }
 
-    /// Orchestrator: run all recovery layers and deduplicate.
-    pub fn recover_all(&self) -> Result<RecoveryResult> {
+    /// Build a shared RecoveryContext from the current engine state.
+    pub fn build_context(&self) -> Result<RecoveryContext<'_>> {
         let table_roots = self.read_sqlite_master()?;
         let signatures = self.build_schema_signatures()?;
+        let pragma_info = parse_pragma_info(&self.header, self.data);
+
+        Ok(RecoveryContext {
+            db: self.data,
+            page_size: self.header.page_size,
+            header: &self.header,
+            table_roots,
+            schema_signatures: signatures,
+            pragma_info,
+        })
+    }
+
+    /// Orchestrator: run all recovery layers and deduplicate.
+    pub fn recover_all(&self) -> Result<RecoveryResult> {
+        let ctx = self.build_context()?;
         let mut all = Vec::new();
         let mut stats = RecoveryStats::default();
 
@@ -196,7 +213,7 @@ impl<'a> ForensicEngine<'a> {
         // Layer 2: WAL (if provided)
         if let Some(wal) = self.wal_data {
             let wal_records = recover_layer2_enhanced(
-                self.data, wal, self.header.page_size, self.wal_mode, &table_roots,
+                ctx.db, wal, ctx.page_size, self.wal_mode, &ctx.table_roots,
             );
             stats.wal_pending = wal_records
                 .iter()
@@ -210,24 +227,36 @@ impl<'a> ForensicEngine<'a> {
         }
 
         // Layer 3: Freelist content
-        let freelist = recover_freelist_content(self.data, self.header.page_size, &signatures);
-        stats.freelist_recovered = freelist.len();
-        all.extend(freelist);
+        // Skip if auto_vacuum == Full: the freelist is actively managed and
+        // reclaimed pages are immediately reused, so forensic recovery yields
+        // nothing meaningful and may produce false positives.
+        if ctx.pragma_info.auto_vacuum != AutoVacuumMode::Full {
+            let freelist =
+                recover_freelist_content(ctx.db, ctx.page_size, &ctx.schema_signatures);
+            stats.freelist_recovered = freelist.len();
+            all.extend(freelist);
+        }
 
         // Layer 5: FTS shadow tables
-        let fts = recover_layer5(self.data, self.header.page_size);
+        let fts = recover_layer5(ctx.db, ctx.page_size);
         stats.fts_recovered = fts.len();
         all.extend(fts);
 
         // Layer 7: Intra-page gaps
-        let roots_vec: Vec<_> = table_roots.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        let gaps = scan_page_gaps(self.data, self.header.page_size, &roots_vec, &signatures);
-        stats.gap_carved = gaps.len();
-        all.extend(gaps);
+        // Skip if secure_delete != Off: SQLite zeroes or overwrites freed cell
+        // space, so gap-carved data is gone and carving would only find zeros.
+        if ctx.pragma_info.secure_delete == SecureDeleteMode::Off {
+            let roots_vec: Vec<_> =
+                ctx.table_roots.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            let gaps = scan_page_gaps(ctx.db, ctx.page_size, &roots_vec, &ctx.schema_signatures);
+            stats.gap_carved = gaps.len();
+            all.extend(gaps);
+        }
 
         // Layer 8: Journal (if provided)
         if let Some(journal) = self.journal_data {
-            let journal_records = parse_journal(journal, self.header.page_size, &signatures);
+            let journal_records =
+                parse_journal(journal, ctx.page_size, &ctx.schema_signatures);
             stats.journal_recovered = journal_records.len();
             all.extend(journal_records);
         }
