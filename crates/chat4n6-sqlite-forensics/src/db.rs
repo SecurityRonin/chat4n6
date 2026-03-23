@@ -1,6 +1,13 @@
 use crate::btree::walk_table_btree;
+use crate::dedup::deduplicate;
+use crate::freelist::recover_freelist_content;
+use crate::fts::recover_layer5;
+use crate::gap::scan_page_gaps;
 use crate::header::{is_sqlite_header, DbHeader};
+use crate::journal::parse_journal;
 use crate::record::RecoveredRecord;
+use crate::schema_sig::SchemaSignature;
+use crate::wal::recover_layer2_enhanced;
 use anyhow::{bail, Result};
 use chat4n6_plugin_api::EvidenceSource;
 use std::collections::HashMap;
@@ -16,6 +23,25 @@ impl Default for WalMode {
     fn default() -> Self {
         Self::Both
     }
+}
+
+#[derive(Debug)]
+pub struct RecoveryResult {
+    pub records: Vec<RecoveredRecord>,
+    pub stats: RecoveryStats,
+}
+
+#[derive(Debug, Default)]
+pub struct RecoveryStats {
+    pub live_count: usize,
+    pub wal_pending: usize,
+    pub wal_deleted: usize,
+    pub freelist_recovered: usize,
+    pub overflow_reassembled: usize,
+    pub fts_recovered: usize,
+    pub gap_carved: usize,
+    pub journal_recovered: usize,
+    pub duplicates_removed: usize,
 }
 
 pub struct ForensicEngine<'a> {
@@ -133,6 +159,86 @@ impl<'a> ForensicEngine<'a> {
 
         Ok(tables)
     }
+
+    fn build_schema_signatures(&self) -> Result<Vec<SchemaSignature>> {
+        let mut sigs = Vec::new();
+        let mut master_records = Vec::new();
+        self.traverse_btree(1, "sqlite_master", &mut master_records);
+        for r in &master_records {
+            if r.values.len() >= 5 {
+                use crate::record::SqlValue;
+                if let (SqlValue::Text(obj_type), SqlValue::Text(name), SqlValue::Text(sql)) =
+                    (&r.values[0], &r.values[1], &r.values[4])
+                {
+                    if obj_type == "table" {
+                        if let Some(sig) = SchemaSignature::from_create_sql(name, sql) {
+                            sigs.push(sig);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(sigs)
+    }
+
+    /// Orchestrator: run all recovery layers and deduplicate.
+    pub fn recover_all(&self) -> Result<RecoveryResult> {
+        let table_roots = self.read_sqlite_master()?;
+        let signatures = self.build_schema_signatures()?;
+        let mut all = Vec::new();
+        let mut stats = RecoveryStats::default();
+
+        // Layer 1: Live records
+        let live = self.recover_layer1()?;
+        stats.live_count = live.len();
+        all.extend(live);
+
+        // Layer 2: WAL (if provided)
+        if let Some(wal) = self.wal_data {
+            let wal_records = recover_layer2_enhanced(
+                self.data, wal, self.header.page_size, self.wal_mode, &table_roots,
+            );
+            stats.wal_pending = wal_records
+                .iter()
+                .filter(|r| r.source == EvidenceSource::WalPending)
+                .count();
+            stats.wal_deleted = wal_records
+                .iter()
+                .filter(|r| r.source == EvidenceSource::WalDeleted)
+                .count();
+            all.extend(wal_records);
+        }
+
+        // Layer 3: Freelist content
+        let freelist = recover_freelist_content(self.data, self.header.page_size, &signatures);
+        stats.freelist_recovered = freelist.len();
+        all.extend(freelist);
+
+        // Layer 5: FTS shadow tables
+        let fts = recover_layer5(self.data, self.header.page_size);
+        stats.fts_recovered = fts.len();
+        all.extend(fts);
+
+        // Layer 7: Intra-page gaps
+        let roots_vec: Vec<_> = table_roots.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let gaps = scan_page_gaps(self.data, self.header.page_size, &roots_vec, &signatures);
+        stats.gap_carved = gaps.len();
+        all.extend(gaps);
+
+        // Layer 8: Journal (if provided)
+        if let Some(journal) = self.journal_data {
+            let journal_records = parse_journal(journal, self.header.page_size, &signatures);
+            stats.journal_recovered = journal_records.len();
+            all.extend(journal_records);
+        }
+
+        // Deduplication
+        let before = all.len();
+        deduplicate(&mut all);
+        stats.duplicates_removed = before - all.len();
+
+        Ok(RecoveryResult { records: all, stats })
+    }
 }
 
 #[cfg(test)]
@@ -239,5 +345,47 @@ mod tests {
         let engine = ForensicEngine::new(&db, None).unwrap();
         let roots = engine.table_roots().unwrap();
         assert!(roots.contains_key("messages"));
+    }
+
+    #[test]
+    fn test_recover_all_runs_all_layers() {
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let result = engine.recover_all().unwrap();
+        assert!(!result.records.is_empty());
+        assert!(result.stats.live_count > 0);
+        assert_eq!(result.stats.duplicates_removed, 0); // no dupes in clean DB
+    }
+
+    #[test]
+    fn test_recover_all_with_wal() {
+        let (db, wal) = make_wal_mode_db();
+        if wal.is_empty() {
+            return;
+        }
+        let engine = ForensicEngine::new(&db, None).unwrap().with_wal(&wal);
+        let result = engine.recover_all().unwrap();
+        assert!(result.stats.live_count > 0);
+        // WAL should contribute some records
+        assert!(!result.records.is_empty());
+    }
+
+    #[test]
+    fn test_recover_all_stats_populated() {
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let result = engine.recover_all().unwrap();
+        // live_count should match layer1
+        let layer1 = engine.recover_layer1().unwrap();
+        assert_eq!(result.stats.live_count, layer1.len());
+    }
+
+    #[test]
+    fn test_recovery_result_empty_journal() {
+        let db = create_test_db();
+        let journal = vec![0u8; 512]; // invalid journal, should produce 0 records
+        let engine = ForensicEngine::new(&db, None).unwrap().with_journal(&journal);
+        let result = engine.recover_all().unwrap();
+        assert_eq!(result.stats.journal_recovered, 0);
     }
 }
