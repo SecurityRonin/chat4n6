@@ -44,6 +44,10 @@ pub struct RecoveryStats {
     pub gap_carved: usize,
     pub journal_recovered: usize,
     pub duplicates_removed: usize,
+    pub freeblock_recovered: usize,
+    pub wal_only_tables_found: usize,
+    pub rowid_gaps_detected: usize,
+    pub layers_skipped: Vec<String>,
 }
 
 pub struct ForensicEngine<'a> {
@@ -235,6 +239,11 @@ impl<'a> ForensicEngine<'a> {
                 recover_freelist_content(ctx.db, ctx.page_size, &ctx.schema_signatures);
             stats.freelist_recovered = freelist.len();
             all.extend(freelist);
+        } else {
+            stats.layers_skipped.push(format!(
+                "freelist: auto_vacuum={:?}",
+                ctx.pragma_info.auto_vacuum
+            ));
         }
 
         // Layer 5: FTS shadow tables
@@ -251,7 +260,41 @@ impl<'a> ForensicEngine<'a> {
             let gaps = scan_page_gaps(ctx.db, ctx.page_size, &roots_vec, &ctx.schema_signatures);
             stats.gap_carved = gaps.len();
             all.extend(gaps);
+        } else {
+            stats.layers_skipped.push(format!(
+                "gap: secure_delete={:?}",
+                ctx.pragma_info.secure_delete
+            ));
         }
+
+        // Layer 8a: Freeblock recovery (skip if secure_delete != Off)
+        if ctx.pragma_info.secure_delete == SecureDeleteMode::Off {
+            let freeblock = crate::freeblock::recover_freeblocks(&ctx);
+            stats.freeblock_recovered = freeblock.len();
+            all.extend(freeblock);
+        } else {
+            stats.layers_skipped.push(format!(
+                "freeblock: secure_delete={:?}",
+                ctx.pragma_info.secure_delete
+            ));
+        }
+
+        // Layer 8b: WAL-only table detection (informational — records already
+        // recovered via WAL layer)
+        if let Some(wal) = self.wal_data {
+            let wal_only = crate::wal_enhanced::detect_wal_only_tables(&ctx, wal);
+            stats.wal_only_tables_found = wal_only.len();
+        }
+
+        // Layer 8c: ROWID gap detection (informational — gaps are metadata,
+        // not additional records added to `all`)
+        let live_records: Vec<_> = all
+            .iter()
+            .filter(|r| r.source == EvidenceSource::Live)
+            .cloned()
+            .collect();
+        let gaps = crate::rowid_gap::detect_rowid_gaps(&live_records, &ctx.table_roots);
+        stats.rowid_gaps_detected = gaps.len();
 
         // Layer 8: Journal (if provided)
         if let Some(journal) = self.journal_data {
@@ -431,7 +474,8 @@ mod tests {
             + s.freelist_recovered
             + s.fts_recovered
             + s.gap_carved
-            + s.journal_recovered;
+            + s.journal_recovered
+            + s.freeblock_recovered;
         assert_eq!(
             result.records.len(),
             layer_sum - s.duplicates_removed,
