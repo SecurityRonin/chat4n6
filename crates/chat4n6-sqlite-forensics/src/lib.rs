@@ -4,6 +4,7 @@ pub mod db;
 pub mod dedup;
 pub mod freelist;
 pub mod fts;
+pub mod gap;
 pub mod header;
 pub mod page;
 pub mod record;
