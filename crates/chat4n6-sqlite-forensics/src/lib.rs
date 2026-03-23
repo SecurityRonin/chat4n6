@@ -17,5 +17,6 @@ pub mod rowid_gap;
 pub mod schema_sig;
 pub mod unalloc;
 pub mod varint;
+pub mod verify;
 pub mod wal;
 pub mod wal_enhanced;
