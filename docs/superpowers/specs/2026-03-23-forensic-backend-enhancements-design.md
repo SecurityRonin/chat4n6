@@ -120,6 +120,7 @@ New file: `tests/robustness.rs`
 ```rust
 /// Shared immutable state for all recovery layers.
 /// Built once by ForensicEngine::build_context(), read by all layers.
+/// All fields are populated during build_context() — no lazy/staged construction.
 pub struct RecoveryContext<'a> {
     /// Raw database bytes
     pub db: &'a [u8],
@@ -133,10 +134,10 @@ pub struct RecoveryContext<'a> {
     pub schema_signatures: Vec<SchemaSignature>,
     /// Forensic pragma information parsed from header bytes
     pub pragma_info: PragmaInfo,
-    /// Page-to-table ownership map (populated by Phase 3 page_map module)
-    pub page_map: Option<PageMap>,
-    /// WAL page overlay for non-destructive replay (populated when WAL is attached)
-    pub wal_overlay: Option<HashMap<u32, Vec<u8>>>,
+    /// Page-to-table ownership map (built via full B-tree traversal in build_context)
+    pub page_map: PageMap,
+    /// WAL page overlay for non-destructive replay (empty HashMap if no WAL attached)
+    pub wal_overlay: HashMap<u32, Vec<u8>>,
 }
 ```
 
@@ -162,7 +163,7 @@ pub struct PragmaInfo {
 
 pub enum SecureDeleteMode { Off, On, Fast }
 pub enum AutoVacuumMode { None, Full, Incremental }
-pub enum JournalMode { Delete, Truncate, Persist, Wal, Off, Memory }
+pub enum JournalMode { Wal, NonWal }
 pub enum TextEncoding { Utf8, Utf16le, Utf16be }
 ```
 
@@ -172,12 +173,17 @@ pub enum TextEncoding { Utf8, Utf16le, Utf16be }
 |-------|--------------|-------|-------|
 | text_encoding | 56 | 4 | 1=UTF-8, 2=UTF-16le, 3=UTF-16be |
 | user_version | 60 | 4 | Big-endian u32 |
-| auto_vacuum | 52 | 4 | 0=None, 1=Full, 2=Incremental (largest root page for auto_vacuum) |
+| auto_vacuum (enabled) | 52 | 4 | Largest root b-tree page number. 0 = auto_vacuum disabled. Non-zero = enabled. |
+| auto_vacuum (mode) | 64 | 4 | Incremental vacuum flag. Only meaningful when offset 52 is non-zero. 0 = Full, non-zero = Incremental. |
 | schema_format | 44 | 4 | 1-4, controls rowid storage |
-| secure_delete | — | — | Cannot be read from header alone; inferred heuristically or defaulted to Off |
-| journal_mode | 18-19 | 2 | Read/write version numbers hint at WAL mode (2=WAL) |
+| secure_delete | — | — | Cannot be read from header alone; runtime-only setting. Defaulted to Off. |
+| journal_mode | 18-19 | 2 | Read/write version numbers. Both=2 → WAL mode. Both=1 → non-WAL (default to Delete). Other combinations → unknown, default to Delete. |
 
-**Note on secure_delete**: SQLite does not persist this pragma in the header. It's a runtime-only setting. We default to `Off` (the SQLite default) and allow the user to override. The verification report should note this assumption.
+**Note on secure_delete**: SQLite does not persist this pragma in the header. It's a runtime-only setting. We default to `Off` (the SQLite default) and allow the user to override via `ForensicEngine::with_secure_delete_mode()`. The verification report should note this assumption.
+
+**Note on journal_mode**: Only WAL vs non-WAL is detectable from the header (offsets 18-19). For non-WAL databases, the specific mode (Delete/Truncate/Persist/Off) cannot be determined from the header alone. We default to `Delete` and document the limitation. The JournalMode enum is reduced to `Wal` and `NonWal` to avoid false precision.
+
+**Note on DbHeader extension**: `parse_pragma_info()` reads raw `db` bytes directly at the needed offsets rather than extending DbHeader. This keeps DbHeader focused on its current responsibility (page geometry and freelist pointers) and avoids touching existing code in Phase 2.
 
 ### Migration Strategy
 
@@ -207,6 +213,31 @@ pub enum TextEncoding { Utf8, Utf16le, Utf16be }
 | `auto_vacuum = Incremental` | — | Freelist may have pages pending vacuum |
 
 Skipped layers log a message explaining why and record it in `RecoveryStats`.
+
+### Extended RecoveryStats
+
+Phase 3 adds new fields to the existing `RecoveryStats` struct:
+
+```rust
+#[derive(Debug, Default)]
+pub struct RecoveryStats {
+    // Existing fields (Phase 2 preserves these)
+    pub live_count: usize,
+    pub wal_pending: usize,
+    pub wal_deleted: usize,
+    pub freelist_recovered: usize,
+    pub overflow_reassembled: usize,
+    pub fts_recovered: usize,
+    pub gap_carved: usize,
+    pub journal_recovered: usize,
+    pub duplicates_removed: usize,
+    // New fields (Phase 3)
+    pub freeblock_recovered: usize,
+    pub wal_only_tables_found: usize,
+    pub rowid_gaps_detected: usize,
+    pub layers_skipped: Vec<String>,  // e.g., ["freelist: secure_delete=On"]
+}
+```
 
 ---
 
@@ -291,6 +322,8 @@ pub fn recover_freeblocks(ctx: &RecoveryContext) -> Vec<RecoveredRecord>;
 
 **Improvement over bring2lite**: We scan the entire freeblock for multiple records, not just the first one. bring2lite acknowledged this limitation.
 
+**Relationship with existing carver.rs**: The existing `carver.rs` module performs generic byte-pattern carving without schema awareness. `freeblock.rs` is a specialized replacement for freeblock-specific recovery that uses schema validation (from `schema_sig.rs`'s existing `SchemaSignature::try_parse_record()` and `is_compatible()`) for higher accuracy. The existing `carver.rs` remains for non-freeblock carving (e.g., unallocated regions). `freeblock.rs` does NOT reimplement schema validation — it reuses `SchemaSignature` from `schema_sig.rs`.
+
 ### 3.4 wal_enhanced.rs — WAL Frame Classification + WAL-Only Tables
 
 **Purpose**: Two capabilities in one module.
@@ -356,10 +389,11 @@ pub fn detect_rowid_gaps(
 
 **Algorithm**:
 1. Group live records by table name
-2. Sort by rowid (from `RecoveredRecord.rowid`)
-3. Detect gaps > 1 between consecutive rowids
-4. Attach neighboring records for timestamp estimation
-5. Skip tables using `WITHOUT ROWID` (detectable from schema SQL)
+2. Filter to records where `record.row_id.is_some()` (skip records without rowid)
+3. Sort by `row_id` (from `RecoveredRecord.row_id: Option<i64>`)
+4. Detect gaps > 1 between consecutive row_id values
+5. Attach neighboring records for timestamp estimation
+6. Skip tables using `WITHOUT ROWID` (detectable from schema SQL containing "WITHOUT ROWID")
 
 ### 3.6 verify.rs — Verification Report Generation
 
@@ -421,7 +455,9 @@ pub fn build_verification_report(
 
 **Location**: `tests/fixtures/nemetz/` (Git LFS)
 
-**Contents**: 77 SQLite databases from DFRWS 2018 corpus + anti-forensic extension from IMF 2018.
+**Contents**: 77 SQLite databases from DFRWS 2018 corpus + anti-forensic extension (~50-60 DBs) from IMF 2018. Total size approximately 5-10 MB. Downloaded from https://digitalcorpora.org/corpora/sql/sqlite-forensic-corpus/ (public domain).
+
+**Git LFS setup**: Add `tests/fixtures/nemetz/**/*.db` to `.gitattributes` with `filter=lfs diff=lfs merge=lfs -text`. CI runners must have `git lfs` installed.
 
 **Test file**: `tests/nemetz_benchmark.rs`
 
@@ -458,6 +494,8 @@ fn anti_forensic_corpus_no_crash() {
     // Recovery rate may be 0% — that's fine, robustness is the goal
 }
 ```
+
+**Test gating**: Nemetz benchmark tests are gated with `#[ignore]` by default (they require Git LFS checkout). Run explicitly with `cargo test -- --ignored` or in CI where LFS is available. The non-degradation and no-false-positives tests use programmatically generated DBs and run unconditionally.
 
 **CI integration**: Recovery rate printed in CI output. Future: track as a metric over time to detect regressions.
 
