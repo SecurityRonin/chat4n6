@@ -1,5 +1,6 @@
 pub mod btree;
 pub mod carver;
+pub mod context;
 pub mod db;
 pub mod dedup;
 pub mod freelist;
@@ -8,6 +9,7 @@ pub mod gap;
 pub mod header;
 pub mod journal;
 pub mod page;
+pub mod pragma;
 pub mod record;
 pub mod schema_sig;
 pub mod unalloc;
