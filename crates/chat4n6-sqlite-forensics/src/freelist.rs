@@ -143,7 +143,7 @@ pub fn recover_freelist_content(
         if bhdr_offset < page_data.len() {
             if let Some(PageType::TableLeaf) = PageType::from_byte(page_data[bhdr_offset]) {
                 let mut leaf_records = parse_table_leaf_page(
-                    page_data, bhdr_offset, page_num, page_size, "unknown",
+                    db, page_data, bhdr_offset, page_num, page_size, "unknown",
                 );
                 if !leaf_records.is_empty() {
                     for r in &mut leaf_records {

@@ -52,7 +52,7 @@ pub(crate) fn walk_table_btree(
         match PageType::from_byte(page_data[bhdr]) {
             Some(PageType::TableLeaf) => {
                 let mut page_records =
-                    parse_table_leaf_page(page_data, bhdr, page_num, page_size, table);
+                    parse_table_leaf_page(db, page_data, bhdr, page_num, page_size, table);
                 for r in &mut page_records {
                     r.source = source.clone();
                 }
@@ -152,7 +152,7 @@ pub(crate) fn walk_table_btree_with_overlay(
         match PageType::from_byte(page_data[bhdr]) {
             Some(PageType::TableLeaf) => {
                 let mut page_records =
-                    parse_table_leaf_page(&page_data, bhdr, page_num, page_size, table);
+                    parse_table_leaf_page(db, &page_data, bhdr, page_num, page_size, table);
                 for r in &mut page_records {
                     r.source = EvidenceSource::Live;
                 }
@@ -202,13 +202,61 @@ pub(crate) fn walk_table_btree_with_overlay(
     }
 }
 
+/// Follow an overflow page chain and collect all overflow payload data.
+///
+/// `first_overflow_page` is the 1-based page number of the first overflow page.
+/// `remaining` is the number of payload bytes still to be collected from overflow.
+/// Returns a Vec containing the overflow bytes (up to `remaining` bytes).
+fn follow_overflow_chain(
+    db: &[u8],
+    first_overflow_page: u32,
+    page_size: usize,
+    remaining: usize,
+) -> Vec<u8> {
+    let mut result = Vec::with_capacity(remaining);
+    let mut current_page = first_overflow_page;
+    let mut left = remaining;
+    let mut visited = std::collections::HashSet::new();
+
+    while current_page != 0 && left > 0 {
+        if !visited.insert(current_page) {
+            break; // cycle guard
+        }
+        let page_start = (current_page as usize - 1) * page_size;
+        let page_end = page_start + page_size;
+        let Some(page_data) = db.get(page_start..page_end) else {
+            break;
+        };
+        if page_data.len() < 4 {
+            break;
+        }
+
+        let next_page =
+            u32::from_be_bytes([page_data[0], page_data[1], page_data[2], page_data[3]]);
+        let usable_on_overflow = page_size - 4;
+        let to_copy = left.min(usable_on_overflow);
+        if let Some(overflow_data) = page_data.get(4..4 + to_copy) {
+            result.extend_from_slice(overflow_data);
+            left -= to_copy;
+        } else {
+            break;
+        }
+
+        current_page = next_page;
+    }
+
+    result
+}
+
 /// Parse all cells from a table leaf page (0x0D).
 ///
+/// `db` is the full database byte slice, used to follow overflow page chains.
 /// `page_data` is the full page slice from byte 0 of the page.
 /// `bhdr` is the offset within `page_data` where the B-tree page header starts
 /// (100 for page 1 due to the SQLite file header, 0 for all other pages).
 /// Cell offsets in the pointer array are always relative to byte 0 of `page_data`.
 pub fn parse_table_leaf_page(
+    db: &[u8],
     page_data: &[u8],
     bhdr: usize,
     page_number: u32,
@@ -231,6 +279,17 @@ pub fn parse_table_leaf_page(
     // Cell pointer array starts immediately after the 8-byte leaf header
     let ptr_array_start = bhdr + 8;
 
+    // Overflow thresholds for a table B-tree leaf page.
+    // From SQLite file format spec section 2.3.1:
+    //   X = U - 35  (max bytes stored inline before overflowing)
+    //   M = ((U-12)*32/255) - 23  (minimum inline bytes when overflow occurs)
+    //   K = M + ((P-M) % (U-4))  where P = total payload size
+    //   If K <= X: store K bytes inline; else store M bytes inline.
+    // where U = usable page size (assuming 0 reserved bytes).
+    let usable = page_size as usize;
+    let max_local = usable - 35; // X: table leaf threshold
+    let min_local = (usable - 12) * 32 / 255 - 23; // M
+
     for i in 0..cell_count {
         let ptr_offset = ptr_array_start + i * 2;
         if ptr_offset + 2 > page_data.len() {
@@ -245,7 +304,7 @@ pub fn parse_table_leaf_page(
 
         // Parse cell: [payload_length varint][row_id varint][payload]
         let mut pos = cell_offset;
-        let (_payload_len, pl_consumed) = match read_varint(page_data, pos) {
+        let (payload_len, pl_consumed) = match read_varint(page_data, pos) {
             Some(v) => v,
             None => continue,
         };
@@ -258,34 +317,93 @@ pub fn parse_table_leaf_page(
         pos += rid_consumed;
         let row_id = row_id_raw as i64;
 
-        // Parse the record header
-        let payload_start = pos;
-        let (header_len, hl_consumed) = match read_varint(page_data, pos) {
+        // Determine whether this cell spills to overflow pages.
+        // If so, assemble the full payload into an owned Vec and parse from that.
+        // Otherwise parse directly from page_data at `pos`.
+        let payload_len_usize = payload_len as usize;
+        let owned_payload: Option<Vec<u8>>;
+
+        if payload_len_usize > max_local {
+            // Calculate how many bytes are stored inline on this page (K or M).
+            let mut local_size = min_local + (payload_len_usize - min_local) % (usable - 4);
+            if local_size > max_local {
+                local_size = min_local;
+            }
+
+            // Inline payload is page_data[pos .. pos+local_size].
+            // The 4-byte overflow page pointer immediately follows in the cell body.
+            let local_end = pos + local_size;
+            let overflow_ptr_pos = local_end;
+
+            if overflow_ptr_pos + 4 <= page_data.len() {
+                let overflow_page = u32::from_be_bytes([
+                    page_data[overflow_ptr_pos],
+                    page_data[overflow_ptr_pos + 1],
+                    page_data[overflow_ptr_pos + 2],
+                    page_data[overflow_ptr_pos + 3],
+                ]);
+
+                let local_end_clamped = local_end.min(page_data.len());
+                let local_bytes = &page_data[pos..local_end_clamped];
+                // Bytes still needed from overflow chain = total payload minus inline bytes.
+                let overflow_remaining = payload_len_usize - local_size;
+
+                let overflow_data = follow_overflow_chain(
+                    db,
+                    overflow_page,
+                    page_size as usize,
+                    overflow_remaining,
+                );
+
+                let mut full = Vec::with_capacity(payload_len_usize);
+                full.extend_from_slice(local_bytes);
+                full.extend(overflow_data);
+                owned_payload = Some(full);
+            } else {
+                // Can't read overflow pointer — fall back to inline-only parsing.
+                owned_payload = None;
+            }
+        } else {
+            owned_payload = None;
+        }
+
+        // payload_slice points into the assembled payload (owned) or page_data (inline).
+        // record_start is where the SQLite record format begins within payload_slice.
+        let payload_slice: &[u8] = match owned_payload.as_deref() {
+            Some(s) => s,
+            None => page_data,
+        };
+        let record_start = if owned_payload.is_some() { 0 } else { pos };
+
+        // Parse the record header: [header_len varint][serial_type varints...]
+        let payload_start = record_start;
+        let (header_len, hl_consumed) = match read_varint(payload_slice, record_start) {
             Some(v) => v,
             None => continue,
         };
-        pos += hl_consumed;
+        let mut hdr_pos = record_start + hl_consumed;
 
-        // Parse serial types from header
         let header_end = payload_start + header_len as usize;
-        if header_end > page_data.len() {
+        if header_end > payload_slice.len() {
             continue; // truncated/malformed cell — skip rather than emit null-filled record
         }
+
+        // Parse serial types
         let mut serial_types = Vec::new();
-        while pos < header_end && pos < page_data.len() {
-            let (st, consumed) = match read_varint(page_data, pos) {
+        while hdr_pos < header_end && hdr_pos < payload_slice.len() {
+            let (st, consumed) = match read_varint(payload_slice, hdr_pos) {
                 Some(v) => v,
                 None => break,
             };
             serial_types.push(st);
-            pos += consumed;
+            hdr_pos += consumed;
         }
 
-        // Parse values
+        // Decode values
         let mut values = Vec::new();
         let mut data_pos = header_end;
         for &st in &serial_types {
-            match decode_serial_type(st, page_data, data_pos) {
+            match decode_serial_type(st, payload_slice, data_pos) {
                 Some((val, consumed)) => {
                     data_pos += consumed;
                     values.push(val);
@@ -310,4 +428,68 @@ pub fn parse_table_leaf_page(
     }
 
     records
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    fn make_db_with_overflow() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA page_size=4096; PRAGMA journal_mode=DELETE;")
+            .unwrap();
+        conn.execute_batch("CREATE TABLE docs (body TEXT);").unwrap();
+        let big_text = "X".repeat(8000); // exceeds table leaf X threshold (4061) for 4096 page
+        conn.execute("INSERT INTO docs VALUES (?)", rusqlite::params![big_text])
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn test_overflow_record_reassembly() {
+        let db = make_db_with_overflow();
+        let engine = crate::db::ForensicEngine::new(&db, None).unwrap();
+        let records = engine.recover_layer1().unwrap();
+        let docs: Vec<_> = records.iter().filter(|r| r.table == "docs").collect();
+        assert_eq!(docs.len(), 1, "should have one docs record");
+        if let crate::record::SqlValue::Text(s) = &docs[0].values[0] {
+            assert_eq!(
+                s.len(),
+                8000,
+                "overflow text should be fully reassembled, got {} bytes",
+                s.len()
+            );
+            assert!(s.chars().all(|c| c == 'X'), "text should be all X's");
+        } else {
+            panic!("expected Text value, got {:?}", docs[0].values[0]);
+        }
+    }
+
+    #[test]
+    fn test_non_overflow_records_still_work() {
+        // Ensure normal records (no overflow) still parse correctly.
+        // Table has id INTEGER PRIMARY KEY (stored as rowid, NULL sentinel in payload)
+        // and text TEXT as values[1].
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE msgs (id INTEGER PRIMARY KEY, text TEXT);
+             INSERT INTO msgs VALUES (1, 'short text');",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+        let engine = crate::db::ForensicEngine::new(&db, None).unwrap();
+        let records = engine.recover_layer1().unwrap();
+        let msgs: Vec<_> = records.iter().filter(|r| r.table == "msgs").collect();
+        assert_eq!(msgs.len(), 1);
+        // id INTEGER PRIMARY KEY is stored as NULL in the payload (rowid alias);
+        // the text column is at values[1].
+        assert_eq!(
+            msgs[0].values[1],
+            crate::record::SqlValue::Text("short text".into())
+        );
+    }
 }

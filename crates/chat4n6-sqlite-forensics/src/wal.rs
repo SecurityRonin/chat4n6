@@ -129,7 +129,7 @@ pub fn recover_layer2(
             }
             let bhdr = if frame.page_number == 1 { 100 } else { 0 };
             let mut page_records =
-                parse_table_leaf_page(wal_page, bhdr, frame.page_number, page_size, table_name);
+                parse_table_leaf_page(db, wal_page, bhdr, frame.page_number, page_size, table_name);
             for r in &mut page_records {
                 r.source = EvidenceSource::WalPending;
             }
@@ -180,6 +180,7 @@ pub fn recover_layer3_deltas(
                 None => {
                     // Page absent in main DB — all WAL rows are additions
                     let wal_records = parse_table_leaf_page(
+                        db,
                         wal_page,
                         bhdr,
                         frame.page_number,
@@ -199,9 +200,9 @@ pub fn recover_layer3_deltas(
             }
 
             let wal_records =
-                parse_table_leaf_page(wal_page, bhdr, frame.page_number, page_size, table_name);
+                parse_table_leaf_page(db, wal_page, bhdr, frame.page_number, page_size, table_name);
             let db_records =
-                parse_table_leaf_page(db_page, bhdr, frame.page_number, page_size, table_name);
+                parse_table_leaf_page(db, db_page, bhdr, frame.page_number, page_size, table_name);
 
             let wal_ids: HashMap<i64, _> = wal_records
                 .iter()
