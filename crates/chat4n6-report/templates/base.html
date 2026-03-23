@@ -21,6 +21,11 @@ main{max-width:1200px;margin:0 auto;padding:1rem 2rem}
 .badge-fts-only{background:#00695c}
 .badge-carved-unalloc{background:#ad1457}
 .badge-carved-db{background:#37474f}
+.badge-wal-deleted{background:#e65100}
+.badge-carved-intra-page{background:#880e4f}
+.badge-carved-overflow{background:#4a148c}
+.badge-journal{background:#1b5e20}
+.badge-index-recovery{background:#0d47a1}
 table{width:100%;border-collapse:collapse;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 th{background:#1a1a2e;color:#fff;padding:.5rem;text-align:left;font-size:.85rem}
 td{padding:.4rem .5rem;border-bottom:1px solid #eee;font-size:.85rem;vertical-align:top}
@@ -32,6 +37,13 @@ tr:hover{background:#f0f4ff}
 .pagination a,.pagination span{padding:.3rem .7rem;border:1px solid #ccc;border-radius:3px;text-decoration:none;font-size:.85rem}
 .pagination .active{background:#1a1a2e;color:#fff;border-color:#1a1a2e}
 h2{border-bottom:2px solid #1a1a2e;padding-bottom:.3rem}
+.search-bar{margin:.8rem 0;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.search-bar input[type="text"]{padding:.4rem .6rem;border:1px solid #ccc;border-radius:4px;font-size:.85rem;min-width:250px}
+.search-bar label{font-size:.8rem;cursor:pointer;user-select:none}
+.search-bar label input{margin-right:.2rem}
+.filter-group{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
+.media-path{font-family:monospace;font-size:.8rem;word-break:break-all}
+.quoted-block{background:#e8e8e8;border-left:3px solid #1a1a2e;padding:.2rem .5rem;margin-bottom:.3rem;font-size:.8rem;color:#555;border-radius:2px}
 </style>
 </head>
 <body>
@@ -42,6 +54,7 @@ h2{border-bottom:2px solid #1a1a2e;padding-bottom:.3rem}
 <nav>
   <a href="index.html">Overview</a>
   <a href="calls.html">Calls</a>
+  <a href="gallery.html">Media</a>
   <a href="deleted.html">Deleted/Carved</a>
 </nav>
 <main>

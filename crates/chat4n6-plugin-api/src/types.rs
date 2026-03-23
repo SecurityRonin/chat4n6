@@ -7,10 +7,15 @@ pub enum EvidenceSource {
     Live,
     WalPending,
     WalHistoric,
+    WalDeleted,
     Freelist,
     FtsOnly,
     CarvedUnalloc { confidence_pct: u8 },
+    CarvedIntraPage { confidence_pct: u8 },
+    CarvedOverflow,
     CarvedDb,
+    Journal,
+    IndexRecovery,
 }
 
 impl fmt::Display for EvidenceSource {
@@ -19,12 +24,19 @@ impl fmt::Display for EvidenceSource {
             Self::Live => write!(f, "LIVE"),
             Self::WalPending => write!(f, "WAL-PENDING"),
             Self::WalHistoric => write!(f, "WAL-HISTORIC"),
+            Self::WalDeleted => write!(f, "WAL-DELETED"),
             Self::Freelist => write!(f, "FREELIST"),
             Self::FtsOnly => write!(f, "FTS-ONLY"),
             Self::CarvedUnalloc { confidence_pct } => {
                 write!(f, "CARVED-UNALLOC {confidence_pct}%")
             }
+            Self::CarvedIntraPage { confidence_pct } => {
+                write!(f, "CARVED-INTRA-PAGE {confidence_pct}%")
+            }
+            Self::CarvedOverflow => write!(f, "CARVED-OVERFLOW"),
             Self::CarvedDb => write!(f, "CARVED-DB"),
+            Self::Journal => write!(f, "JOURNAL"),
+            Self::IndexRecovery => write!(f, "INDEX-RECOVERY"),
         }
     }
 }
@@ -91,6 +103,48 @@ pub struct Reaction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum CallResult {
+    Unknown,
+    Connected,
+    Rejected,
+    Unavailable,
+    Missed,
+    Cancelled,
+}
+
+impl Default for CallResult {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+impl From<i64> for CallResult {
+    fn from(v: i64) -> Self {
+        match v {
+            1 => Self::Connected,
+            2 => Self::Rejected,
+            3 => Self::Unavailable,
+            4 => Self::Missed,
+            5 => Self::Cancelled,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl fmt::Display for CallResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown => write!(f, "Unknown"),
+            Self::Connected => write!(f, "Connected"),
+            Self::Rejected => write!(f, "Rejected"),
+            Self::Unavailable => write!(f, "Unavailable"),
+            Self::Missed => write!(f, "Missed"),
+            Self::Cancelled => write!(f, "Cancelled"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CallRecord {
     pub call_id: i64,
     pub participants: Vec<String>,
@@ -98,6 +152,7 @@ pub struct CallRecord {
     pub video: bool,
     pub group_call: bool,
     pub duration_secs: u32,
+    pub call_result: CallResult,
     pub timestamp: ForensicTimestamp,
     pub source: EvidenceSource,
 }

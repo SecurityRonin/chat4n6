@@ -1,8 +1,10 @@
+pub mod manifest;
 pub mod paginator;
 
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{Chat, EvidenceSource, ExtractionResult, MessageContent};
 use chrono::Utc;
+use manifest::ForensicManifest;
 use paginator::paginate;
 use rust_embed::Embed;
 use serde_json::Value;
@@ -49,7 +51,7 @@ impl ReportGenerator {
 
         let base_ctx = BaseCtx {
             case_name: case_name.to_string(),
-            generated_at_utc: generated_at,
+            generated_at_utc: generated_at.clone(),
             timezone_label,
         };
 
@@ -64,6 +66,9 @@ impl ReportGenerator {
         // --- calls.html ---
         self.render_calls(&base_ctx, result, output_dir)?;
 
+        // --- gallery.html ---
+        self.render_gallery(&base_ctx, result, output_dir)?;
+
         // --- deleted.html ---
         self.render_deleted(&base_ctx, result, output_dir)?;
 
@@ -71,6 +76,21 @@ impl ReportGenerator {
         let json_path = output_dir.join("carve-results.json");
         let json = serde_json::to_string_pretty(result)?;
         std::fs::write(json_path, json)?;
+
+        // --- manifest.json (chain of custody) ---
+        let mut manifest = ForensicManifest::new(case_name, &generated_at);
+        for entry in std::fs::read_dir(output_dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name != "manifest.json" {
+                    let data = std::fs::read(entry.path())?;
+                    manifest.add_output_hash(&name, &data);
+                }
+            }
+        }
+        let manifest_json = serde_json::to_string_pretty(&manifest)?;
+        std::fs::write(output_dir.join("manifest.json"), manifest_json)?;
 
         Ok(())
     }
@@ -135,6 +155,14 @@ impl ReportGenerator {
                     let deleted = matches!(m.content, MessageContent::Deleted);
                     let source_str = m.source.to_string();
                     let source_class = source_class(&m.source);
+
+                    let quoted = m.quoted_message.as_ref().map(|q| {
+                        serde_json::json!({
+                            "sender": q.sender_jid,
+                            "content": render_content(&q.content),
+                        })
+                    });
+
                     serde_json::json!({
                         "timestamp_utc": m.timestamp.utc_str(),
                         "from_me": m.from_me,
@@ -143,6 +171,7 @@ impl ReportGenerator {
                         "deleted": deleted,
                         "source": source_str,
                         "source_class": source_class,
+                        "quoted": quoted,
                     })
                 })
                 .collect();
@@ -174,6 +203,7 @@ impl ReportGenerator {
                     "from_me": c.from_me,
                     "video": c.video,
                     "duration_secs": c.duration_secs,
+                    "call_result": c.call_result.to_string(),
                     "source": c.source.to_string(),
                     "source_class": source_class(&c.source),
                 })
@@ -186,6 +216,45 @@ impl ReportGenerator {
             .render("calls.html", &ctx)
             .context("render calls.html")?;
         std::fs::write(out.join("calls.html"), html)?;
+        Ok(())
+    }
+
+    fn render_gallery(&self, base: &BaseCtx, result: &ExtractionResult, out: &Path) -> Result<()> {
+        let mut ctx = TeraCtx::new();
+        ctx.insert("case_name", &base.case_name);
+        ctx.insert("generated_at_utc", &base.generated_at_utc);
+        ctx.insert("timezone_label", &base.timezone_label);
+
+        let media_items: Vec<Value> = result
+            .chats
+            .iter()
+            .flat_map(|chat| {
+                let chat_name = chat.name.as_deref().unwrap_or(&chat.jid).to_string();
+                chat.messages.iter().filter_map(move |m| {
+                    if let MessageContent::Media(ref media) = m.content {
+                        Some(serde_json::json!({
+                            "chat_name": chat_name,
+                            "timestamp_utc": m.timestamp.utc_str(),
+                            "from_me": m.from_me,
+                            "mime_type": media.mime_type,
+                            "file_path": media.file_path,
+                            "caption": media.extracted_name,
+                            "source": m.source.to_string(),
+                            "source_class": source_class(&m.source),
+                        }))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        ctx.insert("media_items", &media_items);
+
+        let html = self
+            .tera
+            .render("gallery.html", &ctx)
+            .context("render gallery.html")?;
+        std::fs::write(out.join("gallery.html"), html)?;
         Ok(())
     }
 
@@ -261,10 +330,15 @@ fn source_class(source: &EvidenceSource) -> String {
         EvidenceSource::Live => "live",
         EvidenceSource::WalPending => "wal-pending",
         EvidenceSource::WalHistoric => "wal-historic",
+        EvidenceSource::WalDeleted => "wal-deleted",
         EvidenceSource::Freelist => "freelist",
         EvidenceSource::FtsOnly => "fts-only",
         EvidenceSource::CarvedUnalloc { .. } => "carved-unalloc",
+        EvidenceSource::CarvedIntraPage { .. } => "carved-intra-page",
+        EvidenceSource::CarvedOverflow => "carved-overflow",
         EvidenceSource::CarvedDb => "carved-db",
+        EvidenceSource::Journal => "journal",
+        EvidenceSource::IndexRecovery => "index-recovery",
     }
     .to_string()
 }
@@ -273,11 +347,25 @@ fn source_class(source: &EvidenceSource) -> String {
 mod tests {
     use super::*;
     use chat4n6_plugin_api::{
-        Chat, EvidenceSource, ExtractionResult, ForensicTimestamp, Message, MessageContent,
+        CallRecord, CallResult, Chat, EvidenceSource, ExtractionResult, ForensicTimestamp,
+        MediaRef, Message, MessageContent,
     };
+    use manifest::ForensicManifest;
     use tempfile::TempDir;
 
     fn make_test_result() -> ExtractionResult {
+        let quoted = Message {
+            id: 0,
+            chat_id: 1,
+            sender_jid: Some("other@s.whatsapp.net".to_string()),
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(1710513100000, 0),
+            content: MessageContent::Text("original message".to_string()),
+            reactions: vec![],
+            quoted_message: None,
+            source: EvidenceSource::Live,
+            row_offset: 0,
+        };
         let msg = Message {
             id: 1,
             chat_id: 1,
@@ -285,6 +373,25 @@ mod tests {
             from_me: true,
             timestamp: ForensicTimestamp::from_millis(1710513127000, 0),
             content: MessageContent::Text("Hello forensics".to_string()),
+            reactions: vec![],
+            quoted_message: Some(Box::new(quoted)),
+            source: EvidenceSource::Live,
+            row_offset: 0,
+        };
+        let media_msg = Message {
+            id: 2,
+            chat_id: 1,
+            sender_jid: Some("other@s.whatsapp.net".to_string()),
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(1710513300000, 0),
+            content: MessageContent::Media(MediaRef {
+                file_path: "Media/WhatsApp Images/IMG-001.jpg".to_string(),
+                mime_type: "image/jpeg".to_string(),
+                file_size: 102400,
+                extracted_name: Some("Beach photo".to_string()),
+                thumbnail_b64: None,
+                duration_secs: None,
+            }),
             reactions: vec![],
             quoted_message: None,
             source: EvidenceSource::Live,
@@ -295,12 +402,22 @@ mod tests {
             jid: "test@s.whatsapp.net".to_string(),
             name: None,
             is_group: false,
-            messages: vec![msg],
+            messages: vec![msg, media_msg],
         };
         ExtractionResult {
             chats: vec![chat],
             contacts: vec![],
-            calls: vec![],
+            calls: vec![CallRecord {
+                call_id: 1,
+                participants: vec!["other@s.whatsapp.net".to_string()],
+                from_me: true,
+                video: false,
+                group_call: false,
+                duration_secs: 60,
+                call_result: CallResult::Connected,
+                timestamp: ForensicTimestamp::from_millis(1710513200000, 0),
+                source: EvidenceSource::Live,
+            }],
             wal_deltas: vec![],
             timezone_offset_seconds: Some(0),
             schema_version: 200,
@@ -339,5 +456,186 @@ mod tests {
         assert_eq!(format_tz_label(8 * 3600), "UTC+08:00");
         assert_eq!(format_tz_label(0), "UTC+00:00");
         assert_eq!(format_tz_label(-5 * 3600), "UTC-05:00");
+    }
+
+    // ── E9: chain of custody manifest tests ──────────────────────────────
+
+    #[test]
+    fn test_sha256_hex_known_value() {
+        use manifest::sha256_hex;
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn test_sha256_hex_hello() {
+        use manifest::sha256_hex;
+        assert_eq!(
+            sha256_hex(b"hello"),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    #[test]
+    fn test_manifest_new() {
+        let m = ForensicManifest::new("Test Case", "2024-01-01 00:00:00");
+        assert_eq!(m.tool_name, "chat4n6");
+        assert_eq!(m.case_name, "Test Case");
+        assert!(m.input_hashes.is_empty());
+        assert!(m.output_hashes.is_empty());
+    }
+
+    #[test]
+    fn test_manifest_add_hashes() {
+        let mut m = ForensicManifest::new("Test", "now");
+        m.add_input_hash("msgstore.db", b"fake db data");
+        m.add_output_hash("index.html", b"<html></html>");
+        assert_eq!(m.input_hashes.len(), 1);
+        assert_eq!(m.output_hashes.len(), 1);
+        assert!(m.input_hashes.contains_key("msgstore.db"));
+        assert!(m.output_hashes.contains_key("index.html"));
+    }
+
+    #[test]
+    fn test_manifest_serializes_to_json() {
+        let mut m = ForensicManifest::new("Test Case", "2024-01-01");
+        m.add_input_hash("test.db", b"data");
+        let json = serde_json::to_string_pretty(&m).unwrap();
+        assert!(json.contains("chat4n6"));
+        assert!(json.contains("Test Case"));
+        assert!(json.contains("test.db"));
+    }
+
+    #[test]
+    fn test_render_creates_manifest_json() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let manifest_path = out.path().join("manifest.json");
+        assert!(manifest_path.exists(), "manifest.json should be created");
+        let manifest: ForensicManifest =
+            serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest.case_name, "Test");
+        assert!(!manifest.output_hashes.is_empty());
+        assert!(manifest.output_hashes.contains_key("index.html"));
+        assert!(manifest.output_hashes.contains_key("carve-results.json"));
+    }
+
+    // ── E4: call_result in report tests ──────────────────────────────────
+
+    #[test]
+    fn test_calls_html_contains_call_result() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let calls_html = std::fs::read_to_string(out.path().join("calls.html")).unwrap();
+        assert!(
+            calls_html.contains("Connected"),
+            "calls.html should contain call result 'Connected'"
+        );
+    }
+
+    // ── E8: gallery tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_gallery_html_created() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        assert!(out.path().join("gallery.html").exists(), "gallery.html should be created");
+    }
+
+    #[test]
+    fn test_gallery_contains_media_item() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let gallery = std::fs::read_to_string(out.path().join("gallery.html")).unwrap();
+        // Tera auto-escapes / to &#x2F;
+        assert!(gallery.contains("image&#x2F;jpeg"), "gallery should list the media MIME type");
+        assert!(gallery.contains("IMG-001.jpg"), "gallery should list the media file path");
+        assert!(gallery.contains("Beach photo"), "gallery should show the caption");
+    }
+
+    #[test]
+    fn test_chat_page_renders_media_as_bracket_notation() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let chat = std::fs::read_to_string(out.path().join("chat_1_1.html")).unwrap();
+        // Tera auto-escapes / to &#x2F;
+        assert!(
+            chat.contains("[Media: image&#x2F;jpeg]"),
+            "media messages should render as [Media: mime]"
+        );
+    }
+
+    // ── E7: interactive report tests ────────────────────────────────────
+
+    #[test]
+    fn test_chat_page_has_search_input() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let chat = std::fs::read_to_string(out.path().join("chat_1_1.html")).unwrap();
+        assert!(chat.contains("id=\"msg-search\""), "chat page should have search input");
+        assert!(chat.contains("filterMessages"), "chat page should have filter JS function");
+    }
+
+    #[test]
+    fn test_chat_page_has_source_filters() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let chat = std::fs::read_to_string(out.path().join("chat_1_1.html")).unwrap();
+        assert!(chat.contains("src-filter"), "chat page should have source filter checkboxes");
+        assert!(chat.contains("data-source="), "rows should have data-source attribute");
+    }
+
+    #[test]
+    fn test_chat_page_renders_quoted_message() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let chat = std::fs::read_to_string(out.path().join("chat_1_1.html")).unwrap();
+        assert!(
+            chat.contains("quoted-block"),
+            "quoted messages should render with quoted-block class"
+        );
+        assert!(
+            chat.contains("original message"),
+            "quoted content should appear"
+        );
+    }
+
+    #[test]
+    fn test_index_has_search() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        assert!(index.contains("id=\"chat-search\""), "index should have chat search input");
+        assert!(index.contains("filterChats"), "index should have filter JS function");
+    }
+
+    #[test]
+    fn test_calls_has_search() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let calls = std::fs::read_to_string(out.path().join("calls.html")).unwrap();
+        assert!(calls.contains("id=\"call-search\""), "calls should have search input");
+        assert!(calls.contains("filterCalls"), "calls should have filter JS function");
+    }
+
+    #[test]
+    fn test_nav_has_gallery_link() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("Test", &make_test_result(), out.path()).unwrap();
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        assert!(index.contains("gallery.html"), "nav should link to gallery");
     }
 }
