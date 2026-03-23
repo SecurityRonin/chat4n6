@@ -431,6 +431,257 @@ pub fn parse_table_leaf_page(
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+    use chat4n6_plugin_api::EvidenceSource;
+
+    // ---------------------------------------------------------------------------
+    // Fixtures
+    // ---------------------------------------------------------------------------
+
+    fn create_simple_db() -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);
+             INSERT INTO items VALUES (1, 'alpha');
+             INSERT INTO items VALUES (2, 'beta');",
+        )
+        .unwrap();
+        drop(conn);
+        std::fs::read(&path).unwrap()
+    }
+
+    fn create_empty_table_db() -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE empty_tbl (id INTEGER PRIMARY KEY, val TEXT);",
+        )
+        .unwrap();
+        drop(conn);
+        std::fs::read(&path).unwrap()
+    }
+
+    fn create_multi_page_db() -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA page_size=1024;").unwrap();
+        conn.execute_batch("CREATE TABLE big (id INTEGER PRIMARY KEY, data TEXT);")
+            .unwrap();
+        for i in 0..200i64 {
+            conn.execute(
+                "INSERT INTO big VALUES (?, ?)",
+                rusqlite::params![i, format!("record_{:04}_padding_to_make_it_longer", i)],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        std::fs::read(&path).unwrap()
+    }
+
+    // ---------------------------------------------------------------------------
+    // walk_table_btree tests
+    // ---------------------------------------------------------------------------
+
+    /// Walk sqlite_master (page 1) on a simple DB and find the "items" table entry.
+    #[test]
+    fn test_walk_table_btree_simple() {
+        let db = create_simple_db();
+        // Read page_size from header bytes 16-17 (big-endian u16)
+        let page_size = u16::from_be_bytes([db[16], db[17]]) as u32;
+        let page_size = if page_size == 1 { 65536u32 } else { page_size };
+
+        // sqlite_master is at root page 1; walk it for the "sqlite_master" table name
+        let mut records = Vec::new();
+        walk_table_btree(&db, page_size, 1, "sqlite_master", EvidenceSource::Live, &mut records);
+
+        // There should be at least one entry for the "items" table definition
+        assert!(
+            !records.is_empty(),
+            "Expected at least one sqlite_master record, got 0"
+        );
+        // At least one record's values should contain a Text("items") somewhere
+        let found = records.iter().any(|r| {
+            r.values.iter().any(|v| {
+                if let crate::record::SqlValue::Text(s) = v {
+                    s == "items"
+                } else {
+                    false
+                }
+            })
+        });
+        assert!(found, "Expected to find 'items' entry in sqlite_master records");
+    }
+
+    /// Walking an empty table returns 0 records.
+    #[test]
+    fn test_walk_table_btree_empty_table() {
+        let db = create_empty_table_db();
+        let page_size = {
+            let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
+            if raw == 1 { 65536 } else { raw }
+        };
+
+        // Find empty_tbl root page from sqlite_master
+        let mut master_records = Vec::new();
+        walk_table_btree(
+            &db,
+            page_size,
+            1,
+            "sqlite_master",
+            EvidenceSource::Live,
+            &mut master_records,
+        );
+
+        // Locate the rootpage (values[3] in sqlite_master: type, name, tbl_name, rootpage, sql)
+        let root_page = master_records
+            .iter()
+            .find(|r| {
+                r.values.get(1).map_or(false, |v| {
+                    matches!(v, crate::record::SqlValue::Text(s) if s == "empty_tbl")
+                })
+            })
+            .and_then(|r| {
+                if let Some(crate::record::SqlValue::Int(n)) = r.values.get(3) {
+                    Some(*n as u32)
+                } else {
+                    None
+                }
+            })
+            .expect("empty_tbl not found in sqlite_master");
+
+        let mut records = Vec::new();
+        walk_table_btree(&db, page_size, root_page, "empty_tbl", EvidenceSource::Live, &mut records);
+        assert_eq!(records.len(), 0, "Empty table should yield 0 records");
+    }
+
+    /// Walk a 200-row table with 1024-byte pages — all 200 records are recovered.
+    #[test]
+    fn test_walk_table_btree_multi_page() {
+        let db = create_multi_page_db();
+        let page_size = {
+            let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
+            if raw == 1 { 65536 } else { raw }
+        };
+
+        // Get big table root page from sqlite_master
+        let mut master_records = Vec::new();
+        walk_table_btree(
+            &db,
+            page_size,
+            1,
+            "sqlite_master",
+            EvidenceSource::Live,
+            &mut master_records,
+        );
+
+        let root_page = master_records
+            .iter()
+            .find(|r| {
+                r.values.get(1).map_or(false, |v| {
+                    matches!(v, crate::record::SqlValue::Text(s) if s == "big")
+                })
+            })
+            .and_then(|r| {
+                if let Some(crate::record::SqlValue::Int(n)) = r.values.get(3) {
+                    Some(*n as u32)
+                } else {
+                    None
+                }
+            })
+            .expect("big table not found in sqlite_master");
+
+        let mut records = Vec::new();
+        walk_table_btree(&db, page_size, root_page, "big", EvidenceSource::Live, &mut records);
+        assert_eq!(records.len(), 200, "Expected all 200 records, got {}", records.len());
+    }
+
+    /// Requesting a non-existent root page must not panic and must yield empty results.
+    #[test]
+    fn test_walk_table_btree_invalid_root_page() {
+        let db = create_simple_db();
+        let page_size = {
+            let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
+            if raw == 1 { 65536 } else { raw }
+        };
+
+        let mut records = Vec::new();
+        walk_table_btree(&db, page_size, 9999, "ghost", EvidenceSource::Live, &mut records);
+        assert_eq!(records.len(), 0, "Out-of-range root page must yield empty results");
+    }
+
+    // ---------------------------------------------------------------------------
+    // get_overlay_page tests
+    // ---------------------------------------------------------------------------
+
+    /// A page not present in the overlay is fetched from the DB bytes.
+    #[test]
+    fn test_get_overlay_page_not_in_overlay() {
+        let db = create_simple_db();
+        let page_size = {
+            let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
+            if raw == 1 { 65536 } else { raw }
+        };
+        let overlay: HashMap<u32, Vec<u8>> = HashMap::new();
+        // Page 1 exists in DB; overlay has nothing — should return Some from DB
+        let result = get_overlay_page(&db, 1, page_size as usize, &overlay);
+        assert!(result.is_some(), "Page 1 should be found in DB even without overlay");
+        let (data, bhdr) = result.unwrap();
+        assert_eq!(bhdr, 100, "Page 1 bhdr must be 100");
+        assert_eq!(data.len(), page_size as usize);
+    }
+
+    /// A page present in the overlay is returned from the overlay (not DB).
+    #[test]
+    fn test_get_overlay_page_in_overlay() {
+        let db = create_simple_db();
+        let page_size = {
+            let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
+            if raw == 1 { 65536 } else { raw }
+        };
+        // Build a fake overlay page with a recognizable sentinel byte pattern
+        let mut fake_page = vec![0xAAu8; page_size as usize];
+        fake_page[0] = 0xBB;
+        let mut overlay: HashMap<u32, Vec<u8>> = HashMap::new();
+        overlay.insert(2, fake_page.clone());
+
+        let result = get_overlay_page(&db, 2, page_size as usize, &overlay);
+        assert!(result.is_some(), "Page 2 should be returned from overlay");
+        let (data, bhdr) = result.unwrap();
+        assert_eq!(bhdr, 0, "Non-page-1 bhdr must be 0");
+        assert_eq!(data[0], 0xBB, "Overlay data should take precedence");
+        assert_eq!(data.len(), page_size as usize);
+    }
+
+    // ---------------------------------------------------------------------------
+    // follow_overflow_chain — tested indirectly via parse_table_leaf_page
+    // (the function is private; direct access from this module is possible because
+    //  this mod is inline in btree.rs, so we call super::follow_overflow_chain)
+    // ---------------------------------------------------------------------------
+
+    /// first_overflow_page == 0 → empty result (loop doesn't execute).
+    #[test]
+    fn test_follow_overflow_chain_no_overflow() {
+        let db = vec![0u8; 4096];
+        let result = follow_overflow_chain(&db, 0, 4096, 100);
+        assert!(result.is_empty(), "first_page=0 must yield empty vec");
+    }
+
+    /// Overflow page number beyond DB EOF → graceful empty result, no panic.
+    #[test]
+    fn test_follow_overflow_chain_beyond_db() {
+        let db = vec![0u8; 4096]; // only 1 page
+        // Ask for page 9999 which is well past EOF
+        let result = follow_overflow_chain(&db, 9999, 4096, 100);
+        assert!(result.is_empty(), "Out-of-bounds overflow page must yield empty vec");
+    }
+}
+
+#[cfg(test)]
 mod overflow_tests {
     fn make_db_with_overflow() -> Vec<u8> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
