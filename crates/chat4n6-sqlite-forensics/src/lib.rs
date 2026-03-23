@@ -13,6 +13,7 @@ pub mod page;
 pub mod page_map;
 pub mod pragma;
 pub mod record;
+pub mod rowid_gap;
 pub mod schema_sig;
 pub mod unalloc;
 pub mod varint;
