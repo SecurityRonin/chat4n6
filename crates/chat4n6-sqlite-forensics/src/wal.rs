@@ -1,7 +1,9 @@
-use crate::btree::parse_table_leaf_page;
+use crate::btree::{parse_table_leaf_page, walk_table_btree, walk_table_btree_with_overlay};
+use crate::db::WalMode;
+use crate::dedup::record_hash;
 use crate::record::RecoveredRecord;
 use chat4n6_plugin_api::{EvidenceSource, WalDelta, WalDeltaStatus};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const WAL_MAGIC_1: u32 = 0x377f0682;
 pub const WAL_MAGIC_2: u32 = 0x377f0683;
@@ -239,6 +241,99 @@ pub fn recover_layer3_deltas(
         .collect()
 }
 
+/// Build a page overlay from WAL frames. Last-writer-wins per page number.
+///
+/// Iterates all frames in file order across all salt groups and inserts
+/// each frame's page data into the overlay map, overwriting any earlier entry
+/// for the same page number.
+pub fn build_wal_overlay(wal: &[u8], page_size: u32) -> HashMap<u32, Vec<u8>> {
+    let mut overlay: HashMap<u32, Vec<u8>> = HashMap::new();
+    let frames = parse_wal_frames(wal, page_size);
+
+    // Collect all frames in their BTreeMap order (by salt1) and file order within groups.
+    // For strict last-writer-wins by absolute file position, we use page_data_offset
+    // as the ordering key.
+    let mut all_frames: Vec<&WalFrame> = frames.values().flatten().collect();
+    // Sort by page_data_offset so later frames (higher offset) overwrite earlier ones.
+    all_frames.sort_by_key(|f| f.page_data_offset);
+
+    for frame in all_frames {
+        if let Some(page_bytes) =
+            wal.get(frame.page_data_offset..frame.page_data_offset + page_size as usize)
+        {
+            overlay.insert(frame.page_number, page_bytes.to_vec());
+        }
+    }
+    overlay
+}
+
+/// Enhanced Layer 2: WAL replay with differential analysis.
+///
+/// - `WalMode::Ignore`: returns empty.
+/// - `WalMode::Apply`: walks B-tree with overlay only; tags all records `WalPending`.
+/// - `WalMode::Both`: differential analysis — records only in WAL view are `WalPending`,
+///   records only in raw DB view are `WalDeleted` (deleted by WAL transaction).
+pub fn recover_layer2_enhanced(
+    db: &[u8],
+    wal: &[u8],
+    page_size: u32,
+    mode: WalMode,
+    table_roots: &HashMap<String, u32>,
+) -> Vec<RecoveredRecord> {
+    if mode == WalMode::Ignore {
+        return Vec::new();
+    }
+
+    let overlay = build_wal_overlay(wal, page_size);
+    if overlay.is_empty() {
+        return Vec::new();
+    }
+
+    // Walk B-trees through overlay to get WAL-applied view.
+    let mut wal_view = Vec::new();
+    for (table, root) in table_roots {
+        walk_table_btree_with_overlay(db, page_size, *root, table, &overlay, &mut wal_view);
+    }
+
+    if mode == WalMode::Apply {
+        for r in &mut wal_view {
+            r.source = EvidenceSource::WalPending;
+        }
+        return wal_view;
+    }
+
+    // WalMode::Both — differential analysis.
+    let mut raw_view = Vec::new();
+    for (table, root) in table_roots {
+        walk_table_btree(db, page_size, *root, table, EvidenceSource::Live, &mut raw_view);
+    }
+
+    let wal_hashes: HashSet<[u8; 32]> = wal_view.iter().map(record_hash).collect();
+    let raw_hashes: HashSet<[u8; 32]> = raw_view.iter().map(record_hash).collect();
+
+    let mut results = Vec::new();
+
+    // Records only in WAL view → WalPending (new/modified by WAL transaction).
+    for mut r in wal_view {
+        let h = record_hash(&r);
+        if !raw_hashes.contains(&h) {
+            r.source = EvidenceSource::WalPending;
+            results.push(r);
+        }
+    }
+
+    // Records only in raw view → WalDeleted (deleted by WAL transaction).
+    for mut r in raw_view {
+        let h = record_hash(&r);
+        if !wal_hashes.contains(&h) {
+            r.source = EvidenceSource::WalDeleted;
+            results.push(r);
+        }
+    }
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +426,64 @@ mod integration_tests {
         let frames = parse_wal_frames(&wal, page_size);
         assert_eq!(frames.get(&100).unwrap().len(), 2);
         assert_eq!(frames.get(&200).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_build_wal_overlay() {
+        let page_size = 4096u32;
+        let page_data = vec![0xABu8; page_size as usize];
+        let wal = make_wal_bytes(page_size, &[(2, 1, 42, &page_data)]);
+        let overlay = build_wal_overlay(&wal, page_size);
+        assert_eq!(overlay.len(), 1);
+        assert!(overlay.contains_key(&2));
+        assert_eq!(overlay[&2].len(), page_size as usize);
+    }
+
+    #[test]
+    fn test_build_wal_overlay_last_writer_wins() {
+        let page_size = 4096u32;
+        let page1 = vec![0xAAu8; page_size as usize];
+        let page2 = vec![0xBBu8; page_size as usize];
+        let wal = make_wal_bytes(
+            page_size,
+            &[
+                (2, 0, 42, &page1),
+                (2, 1, 42, &page2), // same page, later frame — should win
+            ],
+        );
+        let overlay = build_wal_overlay(&wal, page_size);
+        assert_eq!(overlay.len(), 1);
+        assert_eq!(overlay[&2][0], 0xBB, "last writer should win");
+    }
+
+    #[test]
+    fn test_build_wal_overlay_empty_wal() {
+        let overlay = build_wal_overlay(&[], 4096);
+        assert!(overlay.is_empty());
+    }
+
+    #[test]
+    fn test_recover_layer2_enhanced_ignore_mode() {
+        let page_size = 4096u32;
+        let page_data = vec![0u8; page_size as usize];
+        let wal = make_wal_bytes(page_size, &[(1, 1, 42, &page_data)]);
+        let table_roots = std::collections::HashMap::new();
+        let results =
+            recover_layer2_enhanced(&[], &wal, page_size, WalMode::Ignore, &table_roots);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_recover_layer2_enhanced_empty_overlay() {
+        // No WAL header → empty overlay → should return empty
+        let table_roots = std::collections::HashMap::new();
+        let results = recover_layer2_enhanced(
+            &[],
+            &[],
+            4096,
+            WalMode::Both,
+            &table_roots,
+        );
+        assert!(results.is_empty());
     }
 }

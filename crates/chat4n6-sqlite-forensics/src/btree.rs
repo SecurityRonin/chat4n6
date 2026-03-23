@@ -2,7 +2,7 @@ use crate::page::PageType;
 use crate::record::{decode_serial_type, RecoveredRecord, SqlValue};
 use crate::varint::read_varint;
 use chat4n6_plugin_api::EvidenceSource;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Return the page data slice and B-tree header offset for a 1-based page number.
 ///
@@ -66,6 +66,99 @@ pub(crate) fn walk_table_btree(
                 //   +5-6: cell content area
                 //   +7: fragmented bytes
                 //   +8-11: right-most child page number
+                let cell_count = if page_data.len() >= bhdr + 5 {
+                    u16::from_be_bytes([page_data[bhdr + 3], page_data[bhdr + 4]]) as usize
+                } else {
+                    0
+                };
+                if page_data.len() >= bhdr + 12 {
+                    let right = u32::from_be_bytes([
+                        page_data[bhdr + 8],
+                        page_data[bhdr + 9],
+                        page_data[bhdr + 10],
+                        page_data[bhdr + 11],
+                    ]);
+                    if right != 0 {
+                        stack.push(right);
+                    }
+                }
+                let ptr_array_start = bhdr + 12;
+                for i in 0..cell_count {
+                    let ptr_off = ptr_array_start + i * 2;
+                    if ptr_off + 2 > page_data.len() {
+                        break;
+                    }
+                    let cell_off =
+                        u16::from_be_bytes([page_data[ptr_off], page_data[ptr_off + 1]]) as usize;
+                    if cell_off + 4 > page_data.len() {
+                        continue;
+                    }
+                    let left = u32::from_be_bytes([
+                        page_data[cell_off],
+                        page_data[cell_off + 1],
+                        page_data[cell_off + 2],
+                        page_data[cell_off + 3],
+                    ]);
+                    if left != 0 {
+                        stack.push(left);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Get page data, checking the WAL overlay first.
+/// Returns owned data for overlay pages, borrowed (cloned to owned) for DB pages.
+pub(crate) fn get_overlay_page(
+    db: &[u8],
+    page_number: u32,
+    page_size: usize,
+    overlay: &HashMap<u32, Vec<u8>>,
+) -> Option<(Vec<u8>, usize)> {
+    if let Some(page_data) = overlay.get(&page_number) {
+        let bhdr_offset = if page_number == 1 { 100 } else { 0 };
+        Some((page_data.clone(), bhdr_offset))
+    } else {
+        let (slice, bhdr) = get_page_data(db, page_number, page_size)?;
+        Some((slice.to_vec(), bhdr))
+    }
+}
+
+/// Walk a table B-tree using WAL overlay for page data.
+/// The overlay provides WAL-version pages; DB provides baseline pages for non-overridden pages.
+pub(crate) fn walk_table_btree_with_overlay(
+    db: &[u8],
+    page_size: u32,
+    root_page: u32,
+    table: &str,
+    overlay: &HashMap<u32, Vec<u8>>,
+    records: &mut Vec<RecoveredRecord>,
+) {
+    let mut stack = vec![root_page];
+    let mut visited: HashSet<u32> = HashSet::new();
+    while let Some(page_num) = stack.pop() {
+        if !visited.insert(page_num) {
+            continue;
+        }
+        let Some((page_data, bhdr)) = get_overlay_page(db, page_num, page_size as usize, overlay)
+        else {
+            continue;
+        };
+        if page_data.len() <= bhdr {
+            continue;
+        }
+        match PageType::from_byte(page_data[bhdr]) {
+            Some(PageType::TableLeaf) => {
+                let mut page_records =
+                    parse_table_leaf_page(&page_data, bhdr, page_num, page_size, table);
+                for r in &mut page_records {
+                    r.source = EvidenceSource::Live;
+                }
+                records.extend(page_records);
+            }
+            Some(PageType::TableInterior) => {
                 let cell_count = if page_data.len() >= bhdr + 5 {
                     u16::from_be_bytes([page_data[bhdr + 3], page_data[bhdr + 4]]) as usize
                 } else {
