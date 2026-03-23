@@ -255,4 +255,20 @@ mod tests {
         let results = parse_journal(b"not a journal at all", 4096, &[]);
         assert!(results.is_empty());
     }
+
+    #[test]
+    fn test_parse_journal_valid_header_page_count_zero() {
+        // A valid journal header with page_count=0 — no page records follow, so
+        // parse_journal must return empty without panicking.
+        let mut journal = vec![0u8; JOURNAL_HEADER_SIZE];
+        journal[..8].copy_from_slice(&JOURNAL_MAGIC);
+        // page_count = 0 (bytes 8-11)
+        journal[8..12].copy_from_slice(&0u32.to_be_bytes());
+        // sector_size = 512 (bytes 20-23)
+        journal[20..24].copy_from_slice(&512u32.to_be_bytes());
+        // page_size = 4096 (bytes 24-27)
+        journal[24..28].copy_from_slice(&4096u32.to_be_bytes());
+        let results = parse_journal(&journal, 4096, &[]);
+        assert!(results.is_empty(), "page_count=0 should yield no records");
+    }
 }

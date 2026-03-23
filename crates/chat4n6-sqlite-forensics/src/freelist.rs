@@ -302,6 +302,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_recover_freelist_content_clean_db() {
+        // A clean DB with no freelist: db[32..36] == 0 (no trunk page).
+        // recover_freelist_content must not panic and must return empty.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);
+             INSERT INTO t VALUES (1, 'hello');",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+        // Verify there really is no freelist trunk in this clean DB.
+        assert!(db.len() >= 36);
+        let trunk = u32::from_be_bytes([db[32], db[33], db[34], db[35]]);
+        assert_eq!(trunk, 0, "expected clean DB to have no freelist trunk");
+        let recovered = recover_freelist_content(&db, 4096, &[]);
+        assert!(recovered.is_empty(), "clean DB should yield no freelist records");
+    }
+
+    #[test]
+    fn test_recover_freelist_trunk_beyond_db() {
+        // Craft a DB header where the trunk page number (bytes 32-35) points
+        // far beyond the actual slice.  The walker must not panic.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let mut db = std::fs::read(tmp.path()).unwrap();
+        // Overwrite trunk page pointer with 9999 — well beyond db.len().
+        db[32..36].copy_from_slice(&9999u32.to_be_bytes());
+        let recovered = recover_freelist_content(&db, 4096, &[]);
+        // Should return empty without panicking.
+        assert!(recovered.is_empty(), "out-of-bounds trunk should yield no records");
+    }
+
     fn make_db_with_freed_pages() -> Vec<u8> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(

@@ -405,6 +405,25 @@ mod tests {
         assert!(found.is_empty(), "Empty region should yield no results");
     }
 
+    // ── 4b. test_carve_unallocated_all_zeros_region ───────────────────────────
+
+    #[test]
+    fn test_carve_unallocated_all_zeros_region() {
+        // A region filled entirely with zero bytes cannot contain a valid SQLite
+        // record (header_len varint of 0 is degenerate), so carve_unallocated
+        // must return empty without panicking.
+        let live = vec![make_record("test_table", vec![SqlValue::Int(1)])];
+        let sig_db = learn_signatures(&live);
+
+        let region = UnallocatedRegion {
+            offset: 0,
+            data: vec![0u8; 64],
+        };
+
+        let found = carve_unallocated(&region, &sig_db, "test_table");
+        assert!(found.is_empty(), "All-zeros region should yield no results");
+    }
+
     // ── 5. test_recover_layer6_combines_regions ───────────────────────────────
 
     #[test]

@@ -367,6 +367,15 @@ mod tests {
     }
 
     #[test]
+    fn test_gap_scan_empty_table_roots() {
+        // With an empty table_roots slice, scan_page_gaps has nothing to iterate
+        // and must return empty without panicking.
+        let db = make_db_with_deletions();
+        let recovered = scan_page_gaps(&db, 4096, &[], &[]);
+        assert!(recovered.is_empty(), "empty table_roots must yield no results");
+    }
+
+    #[test]
     fn test_gap_scan_recovers_deleted_records() {
         let db = make_db_with_deletions();
         let engine = ForensicEngine::new(&db, None).unwrap();
