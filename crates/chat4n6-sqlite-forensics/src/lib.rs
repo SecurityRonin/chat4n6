@@ -9,6 +9,7 @@ pub mod gap;
 pub mod header;
 pub mod journal;
 pub mod page;
+pub mod page_map;
 pub mod pragma;
 pub mod record;
 pub mod schema_sig;
