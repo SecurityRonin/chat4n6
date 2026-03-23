@@ -36,4 +36,43 @@ mod tests {
         assert_eq!(PageType::from_byte(0x00), Some(PageType::OverflowOrDropped));
         assert_eq!(PageType::from_byte(0x99), None);
     }
+
+    #[test]
+    fn test_page_type_index_interior() {
+        assert_eq!(PageType::from_byte(0x02), Some(PageType::IndexInterior));
+    }
+
+    #[test]
+    fn test_page_type_invalid_bytes() {
+        assert_eq!(PageType::from_byte(0x01), None);
+        assert_eq!(PageType::from_byte(0x03), None);
+        assert_eq!(PageType::from_byte(0xFF), None);
+        assert_eq!(PageType::from_byte(0x0B), None);
+        assert_eq!(PageType::from_byte(0x0E), None);
+    }
+
+    #[test]
+    fn test_is_leaf_table_leaf() {
+        assert!(PageType::TableLeaf.is_leaf());
+    }
+
+    #[test]
+    fn test_is_leaf_index_leaf() {
+        assert!(PageType::IndexLeaf.is_leaf());
+    }
+
+    #[test]
+    fn test_is_not_leaf_table_interior() {
+        assert!(!PageType::TableInterior.is_leaf());
+    }
+
+    #[test]
+    fn test_is_not_leaf_index_interior() {
+        assert!(!PageType::IndexInterior.is_leaf());
+    }
+
+    #[test]
+    fn test_is_not_leaf_overflow_or_dropped() {
+        assert!(!PageType::OverflowOrDropped.is_leaf());
+    }
 }

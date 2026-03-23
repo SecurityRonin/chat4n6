@@ -65,4 +65,76 @@ mod tests {
         assert!(DbHeader::parse(b"not sqlite").is_none());
         assert!(DbHeader::parse(b"SQLite format 3\x00").is_none()); // too short (< 100 bytes)
     }
+
+    #[test]
+    fn test_page_size_65536() {
+        let mut buf = vec![0u8; 100];
+        buf[..16].copy_from_slice(b"SQLite format 3\x00");
+        buf[16] = 0x00;
+        buf[17] = 0x01; // raw value 1 → 65536
+        let hdr = DbHeader::parse(&buf).unwrap();
+        assert_eq!(hdr.page_size, 65536);
+    }
+
+    #[test]
+    fn test_page_size_512() {
+        let mut buf = vec![0u8; 100];
+        buf[..16].copy_from_slice(b"SQLite format 3\x00");
+        buf[16] = 0x02;
+        buf[17] = 0x00; // 512
+        let hdr = DbHeader::parse(&buf).unwrap();
+        assert_eq!(hdr.page_size, 512);
+    }
+
+    #[test]
+    fn test_header_truncated_99_bytes() {
+        let mut buf = vec![0u8; 99];
+        buf[..16].copy_from_slice(b"SQLite format 3\x00");
+        assert!(DbHeader::parse(&buf).is_none());
+    }
+
+    #[test]
+    fn test_header_exactly_100_bytes() {
+        let mut buf = vec![0u8; 100];
+        buf[..16].copy_from_slice(b"SQLite format 3\x00");
+        buf[16] = 0x10; // 4096
+        assert!(DbHeader::parse(&buf).is_some());
+    }
+
+    #[test]
+    fn test_is_sqlite_header_empty() {
+        assert!(!is_sqlite_header(&[]));
+    }
+
+    #[test]
+    fn test_is_sqlite_header_15_bytes() {
+        assert!(!is_sqlite_header(b"SQLite format 3"));
+    }
+
+    #[test]
+    fn test_is_sqlite_header_near_miss() {
+        assert!(!is_sqlite_header(b"SQLite format 3\x01"));
+    }
+
+    #[test]
+    fn test_header_freelist_fields() {
+        let mut buf = vec![0u8; 100];
+        buf[..16].copy_from_slice(b"SQLite format 3\x00");
+        buf[16] = 0x10;
+        buf[32..36].copy_from_slice(&5u32.to_be_bytes());
+        buf[36..40].copy_from_slice(&3u32.to_be_bytes());
+        let hdr = DbHeader::parse(&buf).unwrap();
+        assert_eq!(hdr.freelist_trunk_page, 5);
+        assert_eq!(hdr.freelist_page_count, 3);
+    }
+
+    #[test]
+    fn test_header_text_encoding() {
+        let mut buf = vec![0u8; 100];
+        buf[..16].copy_from_slice(b"SQLite format 3\x00");
+        buf[16] = 0x10;
+        buf[56..60].copy_from_slice(&2u32.to_be_bytes());
+        let hdr = DbHeader::parse(&buf).unwrap();
+        assert_eq!(hdr.text_encoding, 2);
+    }
 }
