@@ -274,6 +274,22 @@ pub fn recover_layer6(
         .collect()
 }
 
+// ── Context-aware wrapper ─────────────────────────────────────────────────────
+
+use crate::context::RecoveryContext;
+
+/// Context-aware wrapper for recover_layer6.
+/// `regions`, `sig_db`, and `table_hint` are not stored in RecoveryContext and
+/// must be supplied by the caller.
+pub fn recover_unallocated_with_context(
+    _ctx: &RecoveryContext,
+    regions: &[UnallocatedRegion],
+    sig_db: &SignatureDb,
+    table_hint: &str,
+) -> Vec<RecoveredRecord> {
+    recover_layer6(regions, sig_db, table_hint)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

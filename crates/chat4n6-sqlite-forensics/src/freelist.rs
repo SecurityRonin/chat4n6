@@ -174,6 +174,15 @@ pub fn recover_freelist_content(
     results
 }
 
+// ── Context-aware wrapper ─────────────────────────────────────────────────────
+
+use crate::context::RecoveryContext;
+
+/// Context-aware wrapper for recover_freelist_content.
+pub fn recover_freelist_with_context(ctx: &RecoveryContext) -> Vec<RecoveredRecord> {
+    recover_freelist_content(ctx.db, ctx.page_size, &ctx.schema_signatures)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

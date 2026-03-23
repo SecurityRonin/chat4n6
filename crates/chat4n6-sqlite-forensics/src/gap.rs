@@ -325,6 +325,16 @@ fn collect_leaf_pages(db: &[u8], page_size: u32, root_page: u32) -> Vec<u32> {
     leaves
 }
 
+// ── Context-aware wrapper ─────────────────────────────────────────────────────
+
+use crate::context::RecoveryContext;
+
+/// Context-aware wrapper for scan_page_gaps.
+pub fn scan_gaps_with_context(ctx: &RecoveryContext) -> Vec<RecoveredRecord> {
+    let roots_vec: Vec<_> = ctx.table_roots.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    scan_page_gaps(ctx.db, ctx.page_size, &roots_vec, &ctx.schema_signatures)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -153,6 +153,16 @@ pub fn parse_journal(
     results
 }
 
+// ── Context-aware wrapper ─────────────────────────────────────────────────────
+
+use crate::context::RecoveryContext;
+
+/// Context-aware wrapper for parse_journal.
+/// `journal` is the raw journal file bytes (not stored in RecoveryContext).
+pub fn parse_journal_with_context(ctx: &RecoveryContext, journal: &[u8]) -> Vec<RecoveredRecord> {
+    parse_journal(journal, ctx.page_size, &ctx.schema_signatures)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -190,6 +190,15 @@ pub fn recover_layer5(db_bytes: &[u8], page_size: u32) -> Vec<RecoveredRecord> {
     all_records
 }
 
+// ── Context-aware wrapper ─────────────────────────────────────────────────────
+
+use crate::context::RecoveryContext;
+
+/// Context-aware wrapper for recover_layer5.
+pub fn recover_fts_with_context(ctx: &RecoveryContext) -> Vec<RecoveredRecord> {
+    recover_layer5(ctx.db, ctx.page_size)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
