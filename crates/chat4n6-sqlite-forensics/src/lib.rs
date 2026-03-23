@@ -6,6 +6,7 @@ pub mod freelist;
 pub mod fts;
 pub mod gap;
 pub mod header;
+pub mod journal;
 pub mod page;
 pub mod record;
 pub mod schema_sig;
