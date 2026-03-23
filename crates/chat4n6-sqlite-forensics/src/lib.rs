@@ -17,3 +17,4 @@ pub mod schema_sig;
 pub mod unalloc;
 pub mod varint;
 pub mod wal;
+pub mod wal_enhanced;
