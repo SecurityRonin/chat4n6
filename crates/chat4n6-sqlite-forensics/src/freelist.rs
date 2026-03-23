@@ -1,3 +1,9 @@
+use crate::btree::{get_page_data, parse_table_leaf_page};
+use crate::page::PageType;
+use crate::record::RecoveredRecord;
+use crate::schema_sig::SchemaSignature;
+use chat4n6_plugin_api::EvidenceSource;
+
 pub struct Freeblock {
     pub offset: usize,
     pub size: usize,
@@ -112,9 +118,66 @@ pub fn walk_freelist_chain(db: &[u8], trunk_page: u32, page_size: u32) -> Vec<u3
     pages
 }
 
+/// Recover records from freelist pages.
+/// Strategy 1: try parsing freed page as B-tree leaf (preserves rowid).
+/// Strategy 2: schema-aware carving on raw page bytes.
+pub fn recover_freelist_content(
+    db: &[u8],
+    page_size: u32,
+    signatures: &[SchemaSignature],
+) -> Vec<RecoveredRecord> {
+    // Read freelist trunk page from DB header bytes 32-35
+    if db.len() < 36 {
+        return Vec::new();
+    }
+    let trunk_page = u32::from_be_bytes([db[32], db[33], db[34], db[35]]);
+    let free_pages = walk_freelist_chain(db, trunk_page, page_size);
+    let mut results = Vec::new();
+
+    for page_num in free_pages {
+        let Some((page_data, bhdr_offset)) = get_page_data(db, page_num, page_size as usize) else {
+            continue;
+        };
+
+        // Strategy 1: try parsing as B-tree table leaf (0x0D)
+        if bhdr_offset < page_data.len() {
+            if let Some(PageType::TableLeaf) = PageType::from_byte(page_data[bhdr_offset]) {
+                let mut leaf_records = parse_table_leaf_page(
+                    page_data, bhdr_offset, page_num, page_size, "unknown",
+                );
+                if !leaf_records.is_empty() {
+                    for r in &mut leaf_records {
+                        r.source = EvidenceSource::Freelist;
+                    }
+                    results.extend(leaf_records);
+                    continue;
+                }
+            }
+        }
+
+        // Strategy 2: schema-aware carving on the raw page bytes
+        let page_abs = (page_num as u64 - 1) * page_size as u64;
+        for sig in signatures {
+            for c in sig.scan_region(page_data) {
+                results.push(RecoveredRecord {
+                    table: sig.table_name.clone(),
+                    row_id: c.row_id,
+                    values: c.values,
+                    source: EvidenceSource::Freelist,
+                    offset: page_abs + c.byte_offset as u64,
+                    confidence: c.confidence,
+                });
+            }
+        }
+    }
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema_sig::SchemaSignature;
 
     #[test]
     fn test_freelist_chain_empty() {
@@ -222,5 +285,41 @@ mod tests {
 
         let freeblocks = parse_freeblock_chain(&page, 4096);
         assert_eq!(freeblocks.len(), 1); // parse one block, then stop on cycle
+    }
+
+    #[test]
+    fn test_freelist_content_recovery() {
+        let db = make_db_with_freed_pages();
+        let sig = SchemaSignature::from_create_sql(
+            "items",
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER)",
+        ).unwrap();
+        let recovered = recover_freelist_content(&db, 1024, &[sig]);
+        // Should find records from freed pages
+        assert!(!recovered.is_empty(), "should recover records from freelist pages");
+        for r in &recovered {
+            assert_eq!(r.source, EvidenceSource::Freelist);
+        }
+    }
+
+    fn make_db_with_freed_pages() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA page_size=1024; PRAGMA journal_mode=DELETE; PRAGMA auto_vacuum=NONE; PRAGMA secure_delete=OFF;"
+        ).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER);"
+        ).unwrap();
+        // Insert enough records to fill multiple pages, then delete them all
+        for i in 0..200 {
+            conn.execute(
+                "INSERT INTO items VALUES (?, ?, ?)",
+                rusqlite::params![i, format!("item_{:04}", i), i * 10],
+            ).unwrap();
+        }
+        conn.execute_batch("DELETE FROM items;").unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
     }
 }
