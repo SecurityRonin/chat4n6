@@ -388,4 +388,40 @@ mod tests {
         let result = engine.recover_all().unwrap();
         assert_eq!(result.stats.journal_recovered, 0);
     }
+
+    #[test]
+    fn test_recover_all_stats_arithmetic() {
+        // records.len() == sum(all layer counts) - duplicates_removed
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let result = engine.recover_all().unwrap();
+        let s = &result.stats;
+        let layer_sum = s.live_count
+            + s.wal_pending
+            + s.wal_deleted
+            + s.freelist_recovered
+            + s.fts_recovered
+            + s.gap_carved
+            + s.journal_recovered;
+        assert_eq!(
+            result.records.len(),
+            layer_sum - s.duplicates_removed,
+            "records.len() must equal sum of layer counts minus duplicates_removed"
+        );
+    }
+
+    #[test]
+    fn test_engine_with_wal_and_journal_no_panic() {
+        // Attaching both WAL and journal simultaneously must not panic.
+        let db = create_test_db();
+        let fake_wal = vec![0u8; 64];
+        let fake_journal = vec![0u8; 512];
+        let engine = ForensicEngine::new(&db, None)
+            .unwrap()
+            .with_wal(&fake_wal)
+            .with_journal(&fake_journal);
+        // Both attachments present — recover_all must complete without panic.
+        let result = engine.recover_all();
+        assert!(result.is_ok(), "recover_all must not panic with both WAL and journal attached");
+    }
 }

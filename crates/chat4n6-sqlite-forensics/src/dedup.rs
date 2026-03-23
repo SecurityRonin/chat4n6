@@ -133,4 +133,39 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert!(records[0].confidence > 0.9);
     }
+
+    #[test]
+    fn test_deduplicate_all_live_unchanged() {
+        // All live records — none should be removed regardless of value equality.
+        let r1 = make_record("t", vec![SqlValue::Int(1)], EvidenceSource::Live);
+        let r2 = make_record("t", vec![SqlValue::Int(2)], EvidenceSource::Live);
+        let r3 = make_record("t", vec![SqlValue::Int(3)], EvidenceSource::Live);
+        let mut records = vec![r1, r2, r3];
+        deduplicate(&mut records);
+        assert_eq!(records.len(), 3, "all live records must survive dedup");
+    }
+
+    #[test]
+    fn test_deduplicate_single_record_unchanged() {
+        // A single record should never be removed.
+        let r = make_record("t", vec![SqlValue::Text("only".into())], EvidenceSource::Freelist);
+        let mut records = vec![r];
+        deduplicate(&mut records);
+        assert_eq!(records.len(), 1, "single record must survive dedup");
+    }
+
+    #[test]
+    fn test_deduplicate_all_carved_same_hash_keeps_highest_confidence() {
+        // Multiple carved records with identical values — highest confidence wins.
+        let mut low = make_record("t", vec![SqlValue::Int(7)], EvidenceSource::Freelist);
+        low.confidence = 0.3;
+        let mut mid = make_record("t", vec![SqlValue::Int(7)], EvidenceSource::Freelist);
+        mid.confidence = 0.6;
+        let mut high = make_record("t", vec![SqlValue::Int(7)], EvidenceSource::Freelist);
+        high.confidence = 0.9;
+        let mut records = vec![low, mid, high];
+        deduplicate(&mut records);
+        assert_eq!(records.len(), 1, "only the highest-confidence carved record should survive");
+        assert!(records[0].confidence > 0.8, "surviving record must be the highest-confidence one");
+    }
 }

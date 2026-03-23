@@ -268,6 +268,48 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_create_table_with_constraints() {
+        // INTEGER PRIMARY KEY is the rowid alias → skipped; NAME TEXT NOT NULL UNIQUE and
+        // VAL REAL DEFAULT 0.0 are real columns.
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, val REAL DEFAULT 0.0)",
+        )
+        .unwrap();
+        assert_eq!(sig.table_name, "t");
+        assert_eq!(sig.column_count, 2);
+        assert_eq!(
+            sig.type_hints,
+            vec![ColumnTypeHint::Text, ColumnTypeHint::Real]
+        );
+    }
+
+    #[test]
+    fn test_parse_all_text_columns() {
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (a TEXT, b TEXT, c TEXT)",
+        )
+        .unwrap();
+        assert_eq!(sig.column_count, 3);
+        assert_eq!(
+            sig.type_hints,
+            vec![ColumnTypeHint::Text, ColumnTypeHint::Text, ColumnTypeHint::Text]
+        );
+    }
+
+    #[test]
+    fn test_parse_no_columns_returns_none() {
+        // An empty column list is pathological — from_create_sql should return None or
+        // a zero-column signature. Either is acceptable; we just verify it doesn't panic.
+        let result = SchemaSignature::from_create_sql("t", "CREATE TABLE t ()");
+        // May return Some with 0 columns or None; must not panic.
+        if let Some(sig) = result {
+            assert_eq!(sig.column_count, 0);
+        }
+    }
+
+    #[test]
     fn test_is_compatible_integer() {
         assert!(SchemaSignature::is_compatible(&ColumnTypeHint::Integer, 0));
         assert!(SchemaSignature::is_compatible(&ColumnTypeHint::Integer, 1));

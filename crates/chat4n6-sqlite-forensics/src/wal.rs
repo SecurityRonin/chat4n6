@@ -487,4 +487,28 @@ mod integration_tests {
         );
         assert!(results.is_empty());
     }
+
+    #[test]
+    fn test_empty_wal_zero_frames() {
+        // Valid WAL header but zero frames → parse_wal_frames returns empty map.
+        let page_size = 4096u32;
+        let wal = make_wal_bytes(page_size, &[]);
+        let frames = parse_wal_frames(&wal, page_size);
+        assert!(frames.is_empty(), "zero frames should yield empty frame map");
+    }
+
+    #[test]
+    fn test_recover_layer2_enhanced_wal_mode_ignore_returns_empty() {
+        // WalMode::Ignore must always return empty regardless of WAL content.
+        let page_size = 4096u32;
+        let page_data = vec![0xABu8; page_size as usize];
+        let wal = make_wal_bytes(page_size, &[(1, 1, 99, &page_data)]);
+        let mut roots = std::collections::HashMap::new();
+        roots.insert("t".to_string(), 1u32);
+        let results = recover_layer2_enhanced(&[], &wal, page_size, WalMode::Ignore, &roots);
+        assert!(
+            results.is_empty(),
+            "WalMode::Ignore must return empty regardless of frame content"
+        );
+    }
 }
