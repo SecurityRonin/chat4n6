@@ -1,6 +1,7 @@
 pub mod btree;
 pub mod carver;
 pub mod db;
+pub mod dedup;
 pub mod freelist;
 pub mod fts;
 pub mod header;
