@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use chat4n6_fs::{DarFs, IosBackupFs, PlaintextDirFs};
 use chat4n6_plugin_api::ForensicPlugin;
 use chat4n6_report::ReportGenerator;
+use chat4n6_signal::SignalPlugin;
+use chat4n6_telegram::TelegramPlugin;
 use chat4n6_whatsapp::WhatsAppPlugin;
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -24,11 +26,25 @@ pub struct RunArgs {
     /// Skip unallocated space carving (faster)
     #[arg(long)]
     pub no_unalloc: bool,
+    /// Path to WhatsApp encryption key file (for .crypt14/.crypt15 databases)
+    #[arg(long)]
+    pub key_file: Option<PathBuf>,
 }
 
 pub fn run(args: RunArgs) -> Result<()> {
     let fs = open_fs(&args.input)?;
-    let plugins: Vec<Box<dyn ForensicPlugin>> = vec![Box::new(WhatsAppPlugin)];
+    let whatsapp = if let Some(ref key_path) = args.key_file {
+        let key_bytes = std::fs::read(key_path)
+            .with_context(|| format!("cannot read key file: {}", key_path.display()))?;
+        WhatsAppPlugin::with_key(key_bytes)
+    } else {
+        WhatsAppPlugin::new()
+    };
+    let plugins: Vec<Box<dyn ForensicPlugin>> = vec![
+        Box::new(whatsapp),
+        Box::new(SignalPlugin),
+        Box::new(TelegramPlugin),
+    ];
 
     let bar = ProgressBar::new(plugins.len() as u64);
     bar.set_style(

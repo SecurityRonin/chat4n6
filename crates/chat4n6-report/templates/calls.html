@@ -2,17 +2,24 @@
 {% block title %}Calls — chat4n6{% endblock %}
 {% block content %}
 <h2>Call Records</h2>
-<table>
-<tr><th>Timestamp</th><th>Participants</th><th>Dir</th><th>Type</th><th>Duration</th><th>Source</th></tr>
+<div class="search-bar">
+  <input type="text" id="call-search" placeholder="Search calls..." onkeyup="filterCalls()">
+</div>
+<table id="call-table">
+<tr><th>Timestamp</th><th>Participants</th><th>Dir</th><th>Type</th><th>Result</th><th>Duration</th><th>Source</th></tr>
 {% for call in calls %}
 <tr>
   <td>{{ call.timestamp_utc }}</td>
   <td>{{ call.participants | join(sep=", ") }}</td>
   <td>{% if call.from_me %}Outgoing{% else %}Incoming{% endif %}</td>
   <td>{% if call.video %}Video{% else %}Voice{% endif %}</td>
+  <td>{{ call.call_result }}</td>
   <td>{{ call.duration_secs }}s</td>
   <td><span class="badge badge-{{ call.source_class }}">{{ call.source }}</span></td>
 </tr>
 {% endfor %}
 </table>
+<script>
+function filterCalls(){var f=document.getElementById('call-search').value.toLowerCase();var rows=document.getElementById('call-table').getElementsByTagName('tr');for(var i=1;i<rows.length;i++){rows[i].style.display=rows[i].textContent.toLowerCase().indexOf(f)>-1?'':'none';}}
+</script>
 {% endblock %}

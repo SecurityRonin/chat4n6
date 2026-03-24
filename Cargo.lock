@@ -225,7 +225,9 @@ dependencies = [
  "chat4n6-fs",
  "chat4n6-plugin-api",
  "chat4n6-report",
+ "chat4n6-signal",
  "chat4n6-sqlite-forensics",
+ "chat4n6-telegram",
  "chat4n6-whatsapp",
  "clap",
  "env_logger",
@@ -270,9 +272,19 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tera",
  "thiserror",
+]
+
+[[package]]
+name = "chat4n6-signal"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "chat4n6-plugin-api",
+ "log",
 ]
 
 [[package]]
@@ -287,6 +299,15 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "chat4n6-telegram"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "chat4n6-plugin-api",
+ "log",
 ]
 
 [[package]]

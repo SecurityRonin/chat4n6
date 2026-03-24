@@ -3,7 +3,10 @@
 {% block content %}
 <h2>Deleted & Carved Messages</h2>
 <p>Messages recovered from freelist, WAL, FTS shadow tables, or unallocated space.</p>
-<table>
+<div class="search-bar">
+  <input type="text" id="del-search" placeholder="Search deleted messages..." onkeyup="filterDeleted()">
+</div>
+<table id="del-table">
 <tr><th>Chat</th><th>Timestamp</th><th>Dir</th><th>Content</th><th>Source</th></tr>
 {% for msg in deleted_messages %}
 <tr>
@@ -15,4 +18,7 @@
 </tr>
 {% endfor %}
 </table>
+<script>
+function filterDeleted(){var f=document.getElementById('del-search').value.toLowerCase();var rows=document.getElementById('del-table').getElementsByTagName('tr');for(var i=1;i<rows.length;i++){rows[i].style.display=rows[i].textContent.toLowerCase().indexOf(f)>-1?'':'none';}}
+</script>
 {% endblock %}

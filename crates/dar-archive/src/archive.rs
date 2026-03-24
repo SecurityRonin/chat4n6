@@ -35,6 +35,9 @@ impl DarArchive {
     ///
     /// Example: `open_slices(Path::new("/path/to/userdata"))` opens
     /// `userdata.1.dar`, `userdata.2.dar`, … until no next slice is found.
+    ///
+    /// The catalog lives only in the last (terminal) slice; earlier slices
+    /// contain only file data.
     pub fn open_slices(basename: &Path) -> Result<Self> {
         let parent = basename.parent().unwrap_or(Path::new("."));
         let stem = basename
@@ -63,10 +66,10 @@ impl DarArchive {
             basename.display()
         );
 
+        let last = mmaps.len() - 1;
         let mut archive = Self { mmaps, entries: Vec::new() };
-        for i in 0..archive.mmaps.len() {
-            archive.load_catalog(i)?;
-        }
+        // Catalog is in the last (terminal) slice only.
+        archive.load_catalog(last)?;
         Ok(archive)
     }
 
@@ -89,10 +92,31 @@ impl DarArchive {
 
     fn load_catalog(&mut self, slice_index: usize) -> Result<()> {
         let data: &[u8] = &self.mmaps[slice_index];
-        let pos = crate::scanner::find_zzzzz(data)
-            .ok_or_else(|| anyhow::anyhow!("no zzzzz terminator found in slice {slice_index}"))?;
-        let catalog_data = &data[pos + 5..];
-        let mut new_entries = crate::catalog::parse_catalog(catalog_data, slice_index)?;
+
+        // Locate catalog boundaries within this slice.
+        let catalog_start = crate::scanner::find_catalog_start(data)
+            .ok_or_else(|| anyhow::anyhow!(
+                "cannot find catalog start in slice {slice_index} \
+                 (no escape marker or 'droot\\0' pattern in last 200 MB)"
+            ))?;
+
+        let zzzzz_pos = crate::scanner::find_last_zzzzz(data)
+            .ok_or_else(|| anyhow::anyhow!(
+                "cannot find catalog end (zzzzz) in slice {slice_index} \
+                 (not found in last 100 MB)"
+            ))?;
+
+        anyhow::ensure!(
+            catalog_start < zzzzz_pos,
+            "catalog start ({catalog_start}) is not before catalog end ({zzzzz_pos}) \
+             in slice {slice_index}"
+        );
+
+        // Include the zzzzz itself so the parser can recognise the terminator.
+        let catalog_data = &data[catalog_start..zzzzz_pos + 5];
+        let mut new_entries =
+            crate::catalog::parse_catalog(catalog_data, slice_index)
+                .with_context(|| format!("parsing catalog in slice {slice_index}"))?;
         self.entries.append(&mut new_entries);
         Ok(())
     }

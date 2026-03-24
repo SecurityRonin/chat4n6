@@ -3,20 +3,31 @@
 {% block content %}
 <h2>Chat: {{ chat_name }} (Page {{ current_page }}/{{ total_pages }})</h2>
 
+<div class="search-bar">
+  <input type="text" id="msg-search" placeholder="Search messages..." onkeyup="filterMessages()">
+  <div class="filter-group">
+    <label><input type="checkbox" class="src-filter" value="all" checked onchange="filterMessages()"> All</label>
+    <label><input type="checkbox" class="src-filter" value="live" checked onchange="filterMessages()"> Live</label>
+    <label><input type="checkbox" class="src-filter" value="wal-pending" checked onchange="filterMessages()"> WAL</label>
+    <label><input type="checkbox" class="src-filter" value="freelist" checked onchange="filterMessages()"> Freelist</label>
+    <label><input type="checkbox" class="src-filter" value="carved" checked onchange="filterMessages()"> Carved</label>
+  </div>
+</div>
+
 <div class="pagination">
   {% if current_page > 1 %}<a href="chat_{{ chat_id }}_{{ current_page - 1 }}.html">&laquo; Prev</a>{% endif %}
   <span class="active">{{ current_page }}</span>
   {% if current_page < total_pages %}<a href="chat_{{ chat_id }}_{{ current_page + 1 }}.html">Next &raquo;</a>{% endif %}
 </div>
 
-<table>
+<table id="msg-table">
 <tr><th>Timestamp</th><th>Dir</th><th>Sender</th><th>Content</th><th>Source</th></tr>
 {% for msg in messages %}
-<tr class="{% if msg.from_me %}msg-sent{% else %}msg-recv{% endif %}">
+<tr class="{% if msg.from_me %}msg-sent{% else %}msg-recv{% endif %}" data-source="{{ msg.source_class }}">
   <td>{{ msg.timestamp_utc }}</td>
   <td>{% if msg.from_me %}&#8599;{% else %}&#8600;{% endif %}</td>
   <td>{{ msg.sender | default(value="Me") }}</td>
-  <td class="{% if msg.deleted %}msg-deleted{% endif %}">{{ msg.content }}</td>
+  <td class="{% if msg.deleted %}msg-deleted{% endif %}">{% if msg.quoted %}<div class="quoted-block">&#8618; {{ msg.quoted.sender | default(value="Me") }}: {{ msg.quoted.content }}</div>{% endif %}{{ msg.content }}</td>
   <td><span class="badge badge-{{ msg.source_class }}">{{ msg.source }}</span></td>
 </tr>
 {% endfor %}
@@ -27,4 +38,23 @@
   <span class="active">{{ current_page }}</span>
   {% if current_page < total_pages %}<a href="chat_{{ chat_id }}_{{ current_page + 1 }}.html">Next &raquo;</a>{% endif %}
 </div>
+
+<script>
+function filterMessages(){
+  var q=document.getElementById('msg-search').value.toLowerCase();
+  var boxes=document.querySelectorAll('.src-filter');
+  var allBox=boxes[0];
+  var active={};
+  if(allBox.checked){for(var i=1;i<boxes.length;i++){boxes[i].checked=true;active[boxes[i].value]=true;}}
+  else{for(var i=1;i<boxes.length;i++){if(boxes[i].checked)active[boxes[i].value]=true;}}
+  var rows=document.getElementById('msg-table').getElementsByTagName('tr');
+  for(var i=1;i<rows.length;i++){
+    var r=rows[i];
+    var src=r.getAttribute('data-source')||'';
+    var srcMatch=active['live']&&src==='live'||active['wal-pending']&&(src==='wal-pending'||src==='wal-historic')||active['freelist']&&src==='freelist'||active['carved']&&(src==='carved-unalloc'||src==='carved-db'||src==='fts-only');
+    var textMatch=!q||r.textContent.toLowerCase().indexOf(q)>-1;
+    r.style.display=srcMatch&&textMatch?'':'none';
+  }
+}
+</script>
 {% endblock %}

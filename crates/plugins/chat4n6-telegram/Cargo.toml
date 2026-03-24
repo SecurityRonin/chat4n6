@@ -1,0 +1,13 @@
+[package]
+name = "chat4n6-telegram"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Telegram forensic plugin stub for chat4n6"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+chat4n6-plugin-api = { path = "../../chat4n6-plugin-api", version = "0.1" }

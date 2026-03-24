@@ -20,6 +20,8 @@ chat4n6-plugin-api = { path = "../crates/chat4n6-plugin-api", version = "0.1" }
 chat4n6-fs = { path = "../crates/chat4n6-fs", version = "0.1" }
 chat4n6-sqlite-forensics = { path = "../crates/chat4n6-sqlite-forensics", version = "0.1" }
 chat4n6-whatsapp = { path = "../crates/plugins/chat4n6-whatsapp", version = "0.1" }
+chat4n6-signal = { path = "../crates/plugins/chat4n6-signal", version = "0.1" }
+chat4n6-telegram = { path = "../crates/plugins/chat4n6-telegram", version = "0.1" }
 chat4n6-report = { path = "../crates/chat4n6-report", version = "0.1" }
 clap = { version = "4", features = ["derive"] }
 indicatif = "0.17"

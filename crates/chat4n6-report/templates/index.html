@@ -13,7 +13,10 @@
 </table>
 
 <h2>Chats</h2>
-<table>
+<div class="search-bar">
+  <input type="text" id="chat-search" placeholder="Search chats..." onkeyup="filterChats()">
+</div>
+<table id="chat-table">
 <tr><th>Chat ID</th><th>JID / Name</th><th>Type</th><th>Messages</th><th>Link</th></tr>
 {% for chat in chats %}
 <tr>
@@ -25,4 +28,7 @@
 </tr>
 {% endfor %}
 </table>
+<script>
+function filterChats(){var f=document.getElementById('chat-search').value.toLowerCase();var rows=document.getElementById('chat-table').getElementsByTagName('tr');for(var i=1;i<rows.length;i++){rows[i].style.display=rows[i].textContent.toLowerCase().indexOf(f)>-1?'':'none';}}
+</script>
 {% endblock %}

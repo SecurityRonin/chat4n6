@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Media Gallery — chat4n6{% endblock %}
+{% block content %}
+<h2>Media Gallery ({{ media_items | length }} items)</h2>
+<div class="search-bar">
+  <input type="text" id="gallery-search" placeholder="Filter by type, path, or chat..." onkeyup="filterGallery()">
+</div>
+<table id="gallery-table">
+<tr><th>Chat</th><th>Timestamp</th><th>Type</th><th>MIME</th><th>File Path</th><th>Caption</th><th>Source</th></tr>
+{% for item in media_items %}
+<tr>
+  <td>{{ item.chat_name }}</td>
+  <td>{{ item.timestamp_utc }}</td>
+  <td>{% if item.from_me %}&#8599;{% else %}&#8600;{% endif %}</td>
+  <td>{{ item.mime_type }}</td>
+  <td class="media-path">{{ item.file_path }}</td>
+  <td>{{ item.caption | default(value="") }}</td>
+  <td><span class="badge badge-{{ item.source_class }}">{{ item.source }}</span></td>
+</tr>
+{% endfor %}
+</table>
+<script>
+function filterGallery(){var f=document.getElementById('gallery-search').value.toLowerCase();var rows=document.getElementById('gallery-table').getElementsByTagName('tr');for(var i=1;i<rows.length;i++){rows[i].style.display=rows[i].textContent.toLowerCase().indexOf(f)>-1?'':'none';}}
+</script>
+{% endblock %}

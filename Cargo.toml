@@ -11,6 +11,8 @@ members = [
     "crates/chat4n6-fs",
     "crates/chat4n6-sqlite-forensics",
     "crates/plugins/chat4n6-whatsapp",
+    "crates/plugins/chat4n6-signal",
+    "crates/plugins/chat4n6-telegram",
     "crates/chat4n6-report",
     "crates/dar-archive",
     "crates/ios-backup",
