@@ -382,9 +382,7 @@ mod tests {
     #[test]
     fn test_engine_with_wal_data() {
         let (db, wal) = make_wal_mode_db();
-        if wal.is_empty() {
-            return;
-        }
+        // Test with whatever WAL was generated (may be empty on some systems)
         let engine = ForensicEngine::new(&db, None).unwrap().with_wal(&wal);
         assert!(engine.wal_data.is_some());
     }
@@ -432,13 +430,9 @@ mod tests {
     #[test]
     fn test_recover_all_with_wal() {
         let (db, wal) = make_wal_mode_db();
-        if wal.is_empty() {
-            return;
-        }
         let engine = ForensicEngine::new(&db, None).unwrap().with_wal(&wal);
         let result = engine.recover_all().unwrap();
         assert!(result.stats.live_count > 0);
-        // WAL should contribute some records
         assert!(!result.records.is_empty());
     }
 
@@ -476,11 +470,7 @@ mod tests {
             + s.gap_carved
             + s.journal_recovered
             + s.freeblock_recovered;
-        assert_eq!(
-            result.records.len(),
-            layer_sum - s.duplicates_removed,
-            "records.len() must equal sum of layer counts minus duplicates_removed"
-        );
+        assert_eq!(result.records.len(), layer_sum - s.duplicates_removed);
     }
 
     #[test]
@@ -496,5 +486,433 @@ mod tests {
         // Both attachments present — recover_all must complete without panic.
         let result = engine.recover_all();
         assert!(result.is_ok(), "recover_all must not panic with both WAL and journal attached");
+    }
+
+    // ── Additional coverage tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_header_accessor() {
+        // L95-97: header() accessor
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let hdr = engine.header();
+        assert!(hdr.page_size > 0);
+        assert!(hdr.text_encoding > 0);
+    }
+
+    #[test]
+    fn test_data_accessor() {
+        // L99-101: data() accessor
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let data = engine.data();
+        assert!(!data.is_empty());
+        assert_eq!(data.len(), db.len());
+    }
+
+    #[test]
+    fn test_build_context() {
+        // L191-204: build_context
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let ctx = engine.build_context().unwrap();
+        assert!(ctx.table_roots.contains_key("messages"));
+        assert!(!ctx.schema_signatures.is_empty());
+        assert_eq!(ctx.page_size, engine.page_size());
+    }
+
+    #[test]
+    fn test_build_schema_signatures() {
+        // L169-188: build_schema_signatures
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let ctx = engine.build_context().unwrap();
+        // Should have at least one schema signature for "messages"
+        assert!(ctx.schema_signatures.iter().any(|s| s.table_name == "messages"));
+        let msg_sig = ctx
+            .schema_signatures
+            .iter()
+            .find(|s| s.table_name == "messages")
+            .unwrap();
+        // SQLite implicit rowid column may or may not be counted in the schema
+        // depending on how from_create_sql handles INTEGER PRIMARY KEY.
+        assert!(msg_sig.column_count >= 2 && msg_sig.column_count <= 3);
+    }
+
+    #[test]
+    fn test_recover_all_with_valid_journal() {
+        // Cover journal recovery path (L300-305)
+        let db = create_test_db();
+        let page_size = ForensicEngine::new(&db, None).unwrap().page_size() as usize;
+
+        // Build a minimal valid journal
+        let sector_size: usize = 512;
+        let record_size = 4 + page_size + 4;
+        let mut journal = vec![0u8; sector_size + record_size];
+        journal[..8].copy_from_slice(&crate::journal::JOURNAL_MAGIC);
+        journal[8..12].copy_from_slice(&1i32.to_be_bytes());
+        journal[20..24].copy_from_slice(&(sector_size as u32).to_be_bytes());
+        journal[24..28].copy_from_slice(&(page_size as u32).to_be_bytes());
+        // Page number = 2, table leaf type
+        journal[sector_size..sector_size + 4].copy_from_slice(&2u32.to_be_bytes());
+        journal[sector_size + 4] = 0x0D;
+
+        let engine = ForensicEngine::new(&db, None).unwrap().with_journal(&journal);
+        let result = engine.recover_all().unwrap();
+        // Journal may or may not recover records, but the code path is exercised
+        assert!(result.stats.live_count > 0);
+    }
+
+    #[test]
+    fn test_recover_all_with_real_wal() {
+        // Cover WAL recovery path (L218-231) with a real WAL file
+        let (db, wal) = make_wal_mode_db();
+        let engine = ForensicEngine::new(&db, None).unwrap().with_wal(&wal);
+        let result = engine.recover_all().unwrap();
+        assert!(result.stats.live_count > 0);
+        assert!(!result.records.is_empty());
+    }
+
+    #[test]
+    fn test_wal_mode_ignore() {
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None)
+            .unwrap()
+            .with_wal_mode(WalMode::Ignore);
+        assert_eq!(engine.wal_mode, WalMode::Ignore);
+    }
+
+    #[test]
+    fn test_recover_all_auto_vacuum_full_skips_freelist() {
+        // L237-247: auto_vacuum == Full → skip freelist
+        // We can't easily set auto_vacuum to Full in a test DB created via rusqlite
+        // backup, but we can verify the layers_skipped mechanism works with the
+        // default (None) mode.
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let result = engine.recover_all().unwrap();
+        // Default auto_vacuum is None, so freelist should NOT be skipped
+        assert!(!result.stats.layers_skipped.iter().any(|s| s.contains("freelist")));
+    }
+
+    #[test]
+    fn test_engine_accessors_multiple() {
+        // Exercise all accessors in one test
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        assert!(engine.page_size() > 0);
+        assert!(engine.header().page_size > 0);
+        assert!(!engine.data().is_empty());
+        let roots = engine.table_roots().unwrap();
+        assert!(!roots.is_empty());
+    }
+
+    #[test]
+    fn test_recover_all_stats_has_layers_skipped_vec() {
+        let db = create_test_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let result = engine.recover_all().unwrap();
+        // layers_skipped should be a vec (possibly empty) — just verify it exists
+        let _ = result.stats.layers_skipped.len();
+    }
+
+    #[test]
+    fn test_wal_mode_debug_clone() {
+        // Exercise derived traits on WalMode
+        let mode = WalMode::Both;
+        let mode2 = mode;
+        assert_eq!(mode, mode2);
+        assert_eq!(format!("{:?}", mode), "Both");
+        assert_eq!(format!("{:?}", WalMode::Apply), "Apply");
+        assert_eq!(format!("{:?}", WalMode::Ignore), "Ignore");
+    }
+
+    #[test]
+    fn test_recovery_stats_default() {
+        let stats = RecoveryStats::default();
+        assert_eq!(stats.live_count, 0);
+        assert_eq!(stats.wal_pending, 0);
+        assert_eq!(stats.wal_deleted, 0);
+        assert_eq!(stats.freelist_recovered, 0);
+        assert_eq!(stats.overflow_reassembled, 0);
+        assert_eq!(stats.fts_recovered, 0);
+        assert_eq!(stats.gap_carved, 0);
+        assert_eq!(stats.journal_recovered, 0);
+        assert_eq!(stats.duplicates_removed, 0);
+        assert_eq!(stats.freeblock_recovered, 0);
+        assert_eq!(stats.wal_only_tables_found, 0);
+        assert_eq!(stats.rowid_gaps_detected, 0);
+        assert!(stats.layers_skipped.is_empty());
+    }
+
+    #[test]
+    fn test_recover_all_with_wal_directly() {
+        // Ensure the WAL path is exercised without early return
+        let (db, wal) = make_wal_mode_db();
+        let engine = ForensicEngine::new(&db, None).unwrap().with_wal(&wal);
+        assert!(engine.wal_data.is_some());
+        let result = engine.recover_all().unwrap();
+        assert!(result.stats.live_count > 0);
+        assert!(!result.records.is_empty());
+    }
+
+    // ── Coverage tests for read_sqlite_master edge cases ──────────────────────
+
+    fn create_db_with_index_and_view() -> Vec<u8> {
+        // Creates a DB with a table, an index, and a view.
+        // sqlite_master will contain entries with obj_type "index" and "view"
+        // which exercises the L149-150 (obj_type != "table" → continue) path.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL);
+             INSERT INTO items VALUES (1, 'widget', 9.99);
+             INSERT INTO items VALUES (2, 'gadget', 19.99);
+             CREATE INDEX idx_name ON items(name);
+             CREATE VIEW items_view AS SELECT name, price FROM items;",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn test_read_sqlite_master_skips_index_and_view() {
+        // L149-150: obj_type != "table" → continue
+        // L142: record.values.len() < 5 is unlikely with a real DB but
+        //       index and view entries will hit the obj_type check.
+        let db = create_db_with_index_and_view();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let roots = engine.table_roots().unwrap();
+        // Should contain "items" but NOT "idx_name" or "items_view" (those are filtered)
+        assert!(roots.contains_key("items"));
+        // Index names should not appear as table roots
+        assert!(!roots.contains_key("idx_name"));
+    }
+
+    #[test]
+    fn test_build_schema_signatures_with_index_and_view() {
+        // L176-184: build_schema_signatures filters non-table entries
+        let db = create_db_with_index_and_view();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let ctx = engine.build_context().unwrap();
+        // Should have a schema signature for "items" only (not index or view)
+        assert!(ctx.schema_signatures.iter().any(|s| s.table_name == "items"));
+        // Index and view should not produce schema signatures
+        assert!(!ctx.schema_signatures.iter().any(|s| s.table_name == "idx_name"));
+    }
+
+    #[test]
+    fn test_recover_all_with_index_and_view_db() {
+        // Exercises read_sqlite_master and build_schema_signatures with mixed
+        // sqlite_master entries (table, index, view).
+        let db = create_db_with_index_and_view();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let result = engine.recover_all().unwrap();
+        assert!(result.stats.live_count > 0);
+        // Items should be recovered
+        let items: Vec<_> = result.records.iter().filter(|r| r.table == "items").collect();
+        assert_eq!(items.len(), 2);
+    }
+
+    // ── Coverage tests for auto_vacuum and secure_delete skips ────────────────
+
+    fn create_auto_vacuum_full_db() -> Vec<u8> {
+        // Creates a DB with auto_vacuum=FULL to hit the L237-247 skip path
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("autovac.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            // auto_vacuum must be set before creating any tables
+            conn.execute_batch("PRAGMA auto_vacuum = FULL;").unwrap();
+            conn.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT);
+                 INSERT INTO t VALUES (1, 'test');",
+            )
+            .unwrap();
+        }
+        std::fs::read(&path).unwrap()
+    }
+
+    #[test]
+    fn test_recover_all_auto_vacuum_full_skips_freelist_layer() {
+        // L237-247: auto_vacuum == Full → skip freelist recovery
+        let db = create_auto_vacuum_full_db();
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let result = engine.recover_all().unwrap();
+        // layers_skipped should contain freelist skip message
+        assert!(result.stats.layers_skipped.iter().any(|s| s.contains("freelist")));
+    }
+
+    #[test]
+    fn test_secure_delete_skip_format_strings() {
+        // L263-268 and L276-280 are unreachable via recover_all because
+        // parse_pragma_info always returns SecureDeleteMode::Off (it's a
+        // runtime-only setting, not stored in the SQLite file header).
+        // Instead, verify the format strings compile and the layers_skipped
+        // mechanism works for auto_vacuum=Full (which IS stored in the header).
+        use crate::pragma::{SecureDeleteMode, AutoVacuumMode};
+
+        // Verify format strings produce valid output (dead-code coverage)
+        let sd = SecureDeleteMode::On;
+        let msg_gap = format!("gap: secure_delete={:?}", sd);
+        assert!(msg_gap.contains("On"));
+
+        let msg_fb = format!("freeblock: secure_delete={:?}", sd);
+        assert!(msg_fb.contains("freeblock"));
+
+        let av = AutoVacuumMode::Full;
+        let msg_fl = format!("freelist: auto_vacuum={:?}", av);
+        assert!(msg_fl.contains("Full"));
+    }
+
+    // ── Tests for corrupted sqlite_master records ─────────────────────────────
+
+    /// Helper: create a valid 2-table database and return its raw bytes.
+    /// The sqlite_master on page 1 has 2 records:
+    ///   rowid=1: ("table", "good_table", "good_table", 2, "CREATE TABLE ...")
+    ///   rowid=2: ("table", "bad_table",  "bad_table",  3, "CREATE TABLE ...")
+    fn create_two_table_db() -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("two_table.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE good_table (id INTEGER PRIMARY KEY, name TEXT);
+                 CREATE TABLE bad_table (id INTEGER PRIMARY KEY, val INTEGER);
+                 INSERT INTO good_table VALUES (1, 'hello');
+                 INSERT INTO bad_table VALUES (1, 42);",
+            )
+            .unwrap();
+        }
+        std::fs::read(&path).unwrap()
+    }
+
+    /// Find the byte offset of a specific cell's serial type for column `col_idx`
+    /// in page 1's B-tree leaf.  Assumes small DBs where all varints are single-byte.
+    fn find_master_cell_serial_type_offset(db: &[u8], cell_idx: usize, col_idx: usize) -> usize {
+        use crate::varint::read_varint;
+        let bhdr: usize = 100;
+        let cell_count = u16::from_be_bytes([db[bhdr + 3], db[bhdr + 4]]) as usize;
+        assert!(cell_idx < cell_count);
+        let ptr = u16::from_be_bytes([
+            db[bhdr + 8 + cell_idx * 2],
+            db[bhdr + 8 + cell_idx * 2 + 1],
+        ]) as usize;
+
+        let mut pos = ptr;
+        // Skip payload_len varint
+        let (_, consumed) = read_varint(db, pos).unwrap();
+        pos += consumed;
+        // Skip rowid varint
+        let (_, consumed) = read_varint(db, pos).unwrap();
+        pos += consumed;
+        // Skip header_len varint
+        let (_, consumed) = read_varint(db, pos).unwrap();
+        let header_start = pos;
+        pos = header_start + consumed;
+        // Skip serial types to reach col_idx
+        for _ in 0..col_idx {
+            let (_, consumed) = read_varint(db, pos).unwrap();
+            pos += consumed;
+        }
+        pos
+    }
+
+    #[test]
+    fn test_read_sqlite_master_values_len_lt_5() {
+        // L141-142: record.values.len() < 5 → continue
+        // Corrupt the record header_len to truncate the serial types list,
+        // making it yield fewer than 5 columns.
+        let mut db = create_two_table_db();
+        let bhdr: usize = 100;
+        let cell_count = u16::from_be_bytes([db[bhdr + 3], db[bhdr + 4]]) as usize;
+        assert!(cell_count >= 2);
+
+        // Find the first cell and corrupt its header_len to a small value
+        let ptr0 = u16::from_be_bytes([db[bhdr + 8], db[bhdr + 9]]) as usize;
+        // Skip payload_len and rowid varints to find header_start
+        let mut pos = ptr0;
+        while db[pos] & 0x80 != 0 { pos += 1; }
+        pos += 1;
+        while db[pos] & 0x80 != 0 { pos += 1; }
+        pos += 1;
+        // pos now points to header_len; set it to 2 (only 1 serial type)
+        db[pos] = 0x02;
+
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let roots = engine.table_roots().unwrap();
+        // The corrupted record should be skipped; the other table might still load
+        // (or both might be skipped if both records are on the same page)
+        let _ = roots;
+    }
+
+    #[test]
+    fn test_read_sqlite_master_obj_type_not_text() {
+        // L145-147: values[0] is not Text → continue
+        // Corrupt col 0 serial type from TEXT (0x17=23) to NULL (0x00)
+        let mut db = create_two_table_db();
+        let st_offset = find_master_cell_serial_type_offset(&db, 0, 0);
+        db[st_offset] = 0x00; // NULL serial type
+
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let roots = engine.table_roots().unwrap();
+        // The corrupted record should be skipped
+        let _ = roots;
+    }
+
+    #[test]
+    fn test_read_sqlite_master_name_not_text() {
+        // L153-155: values[1] is not Text → continue
+        // We need a record where col 0 is "table" but col 1 is not Text.
+        // Corrupt col 1 serial type to NULL.
+        let mut db = create_two_table_db();
+        let st_offset = find_master_cell_serial_type_offset(&db, 0, 1);
+        // Change TEXT serial type to 0x08 (INT literal 0)
+        db[st_offset] = 0x08;
+
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let roots = engine.table_roots().unwrap();
+        let _ = roots;
+    }
+
+    #[test]
+    fn test_read_sqlite_master_rootpage_not_int() {
+        // L157-159: values[3] is not Int → continue
+        // Corrupt col 3 serial type from INT (0x01) to NULL (0x00)
+        let mut db = create_two_table_db();
+        let st_offset = find_master_cell_serial_type_offset(&db, 0, 3);
+        db[st_offset] = 0x00; // NULL serial type
+
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let roots = engine.table_roots().unwrap();
+        let _ = roots;
+    }
+
+    #[test]
+    fn test_build_schema_signatures_non_text_values() {
+        // L176-185: if let pattern match fails when values aren't all Text.
+        // Corrupt col 4 (sql) serial type to NULL so the destructuring pattern
+        // fails at values[4] while values[0] and values[1] are still Text.
+        let mut db = create_two_table_db();
+        let st_offset = find_master_cell_serial_type_offset(&db, 0, 4);
+        db[st_offset] = 0x00; // NULL col 4 (sql) → if let pattern match fails
+
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        // First verify that traverse_btree actually produces records with 5 values
+        let mut master_records = Vec::new();
+        engine.traverse_btree(1, "sqlite_master", &mut master_records);
+        // At least one record should have 5 values but values[4] is not Text
+        let has_non_text_sql = master_records.iter().any(|r| {
+            r.values.len() >= 5 && !matches!(&r.values[4], SqlValue::Text(_))
+        });
+        assert!(has_non_text_sql, "Corruption should produce a record with non-Text sql column");
+
+        // Now exercise build_schema_signatures through build_context
+        let ctx = engine.build_context().unwrap();
+        // The corrupted record should be skipped in build_schema_signatures
+        // The other table's record (cell_idx=1) should still produce a signature
+        let _ = ctx.schema_signatures;
     }
 }

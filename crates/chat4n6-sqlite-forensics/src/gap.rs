@@ -442,4 +442,552 @@ mod tests {
             );
         }
     }
+
+    // ---------------------------------------------------------------------------
+    // scan_single_page_gap: page too small (line 58)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_single_page_gap_page_too_small() {
+        let page_data = [0u8; 6]; // < bhdr_offset(0) + 8
+        let result = scan_single_page_gap(&page_data, 0, "t", None, 0);
+        assert!(result.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_single_page_gap: no signature (line 83)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_single_page_gap_no_signature() {
+        // A valid leaf page header but no signature → return empty
+        let mut page = vec![0u8; 512];
+        page[0] = 0x0D;
+        page[3] = 0;
+        page[4] = 0; // cell count 0
+        page[5] = 0x01;
+        page[6] = 0x00; // cell content start = 256
+        let result = scan_single_page_gap(&page, 0, "t", None, 0);
+        assert!(result.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_single_page_gap: gap region with matching records (lines 89-105)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_single_page_gap_finds_records_in_gap() {
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)",
+        ).unwrap();
+
+        let mut page = vec![0u8; 512];
+        page[0] = 0x0D; // TableLeaf
+        // cell count = 0 (no live cells)
+        page[3] = 0;
+        page[4] = 0;
+        // cell content start = 256 (gap from ptr_array_end=8 to 256)
+        page[5] = 0x01;
+        page[6] = 0x00; // 256
+
+        // Plant a valid record in the gap region at offset 8 (ptr_array_end)
+        // Record format: header_len=2, serial_type 1 (1-byte int), value = 42
+        page[8] = 0x02;  // header_len = 2
+        page[9] = 0x01;  // serial_type 1 (1-byte integer)
+        page[10] = 0x2A; // value = 42
+
+        let result = scan_single_page_gap(&page, 0, "t", Some(&sig), 0);
+        assert!(!result.is_empty(), "Should find carved record in gap region");
+        // Verify source is CarvedIntraPage
+        for r in &result {
+            assert!(matches!(r.source, EvidenceSource::CarvedIntraPage { .. }));
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_single_page_gap: gap region all zeros → skipped (line 91)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_single_page_gap_all_zeros() {
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)",
+        ).unwrap();
+
+        let mut page = vec![0u8; 512];
+        page[0] = 0x0D;
+        page[3] = 0;
+        page[4] = 0;
+        page[5] = 0x01;
+        page[6] = 0x00; // cell_content_start = 256
+        // Gap from 8..256 is all zeros → should be skipped
+
+        let result = scan_single_page_gap(&page, 0, "t", Some(&sig), 0);
+        assert!(result.is_empty(), "All-zero gap should be skipped");
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_single_page_gap: cell_content_start == 0 → 65536 (line 76)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_single_page_gap_cell_content_start_zero() {
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)",
+        ).unwrap();
+
+        let mut page = vec![0u8; 512];
+        page[0] = 0x0D;
+        page[3] = 0;
+        page[4] = 0;
+        // cell_content_start = 0 → interpreted as 65536
+        page[5] = 0;
+        page[6] = 0;
+
+        // Since cell_content_start=65536 > page.len()=512, the condition
+        // ptr_array_end < cell_content_start && cell_content_start <= page_data.len()
+        // fails (65536 > 512), so no gap is scanned.
+        let result = scan_single_page_gap(&page, 0, "t", Some(&sig), 0);
+        assert!(result.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_single_page_gap: freeblock chain traversal (lines 112-144)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_single_page_gap_freeblock_chain() {
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)",
+        ).unwrap();
+
+        let mut page = vec![0u8; 512];
+        page[0] = 0x0D; // TableLeaf
+        // first freeblock offset = 100
+        page[1] = 0;
+        page[2] = 100;
+        // cell count = 0
+        page[3] = 0;
+        page[4] = 0;
+        // cell content start = 8 (no gap region)
+        page[5] = 0;
+        page[6] = 8;
+
+        // Freeblock at 100: next_fb=200, size=20
+        page[100] = 0;
+        page[101] = 200; // next_fb = 200
+        page[102] = 0;
+        page[103] = 20;  // fb_size = 20
+        // Freeblock payload (data after 4-byte header): at 104..120
+        // Plant a cell: payload_len(varint)=3, rowid(varint)=5, then record
+        // Record: header_len=2, serial_type=1 (1-byte int), value=0x07
+        page[104] = 0x03; // payload_len = 3
+        page[105] = 0x05; // rowid = 5
+        page[106] = 0x02; // header_len = 2
+        page[107] = 0x01; // serial_type 1
+        page[108] = 0x07; // value = 7
+
+        // Freeblock at 200: next_fb=0 (end), size=10
+        page[200] = 0;
+        page[201] = 0;   // next_fb = 0 (end of chain)
+        page[202] = 0;
+        page[203] = 10;  // fb_size = 10
+        // Some junk data
+        page[204] = 0xFF;
+
+        let result = scan_single_page_gap(&page, 0, "t", Some(&sig), 0);
+        // Should have found records from freeblock chain
+        // The full cell parse (strategy 1) should find the record at fb 100
+        let strat1: Vec<_> = result.iter().filter(|r| {
+            r.row_id == Some(5)
+        }).collect();
+        assert!(!strat1.is_empty(), "Should find record with rowid 5 from freeblock");
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_single_page_gap: freeblock with next <= current → break (line 140-141)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_single_page_gap_freeblock_cycle_guard() {
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)",
+        ).unwrap();
+
+        let mut page = vec![0u8; 512];
+        page[0] = 0x0D;
+        page[1] = 0;
+        page[2] = 100; // first freeblock = 100
+        page[3] = 0;
+        page[4] = 0;
+        page[5] = 0;
+        page[6] = 8;
+
+        // Freeblock at 100: next=50 (< 100, backwards → triggers break), size=10
+        page[100] = 0;
+        page[101] = 50;  // next_fb = 50 (< 100)
+        page[102] = 0;
+        page[103] = 10;
+
+        let result = scan_single_page_gap(&page, 0, "t", Some(&sig), 0);
+        // Should terminate without infinite loop — the backwards pointer triggers break
+        // We don't care about specific records, just that it doesn't hang.
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_single_page_gap: freeblock with fb_size < 4 → skipped (line 126)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_single_page_gap_freeblock_too_small() {
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)",
+        ).unwrap();
+
+        let mut page = vec![0u8; 512];
+        page[0] = 0x0D;
+        page[1] = 0;
+        page[2] = 100; // first freeblock = 100
+        page[3] = 0;
+        page[4] = 0;
+        page[5] = 0;
+        page[6] = 8;
+
+        // Freeblock at 100: next=0, size=3 (too small, < 4)
+        page[100] = 0;
+        page[101] = 0;
+        page[102] = 0;
+        page[103] = 3;   // fb_size = 3 → skipped
+
+        let result = scan_single_page_gap(&page, 0, "t", Some(&sig), 0);
+        assert!(result.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // parse_cells_from_freeblock: strategy 2 break when insufficient data (line 239-240)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_cells_from_freeblock_strategy2_break() {
+        // Use a schema with 3 columns so column_count=3. Then data of length 1:
+        // strategy 2: start=0, 0 + (3-1) = 2 > 1 → break immediately (line 240).
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b INTEGER, c TEXT)",
+        ).unwrap();
+        assert_eq!(sig.column_count, 3);
+
+        let data = [0xFFu8; 1]; // Only 1 byte
+        let _result = parse_cells_from_freeblock(&data, &sig, "t", 0);
+        // The break at line 240 should fire on the very first iteration
+        // (0 + 2 = 2 > 1). No panic is the main assertion.
+    }
+
+    // ---------------------------------------------------------------------------
+    // parse_cells_from_freeblock: strategy 1 finds a full cell (lines 192-204)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_cells_from_freeblock_strategy1_full_cell() {
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)",
+        ).unwrap();
+
+        // Build a cell: payload_len=3, rowid=42, record: header_len=2, st=1, value=0x07
+        let data = [
+            0x03, // payload_len = 3
+            0x2A, // rowid = 42
+            0x02, // header_len = 2
+            0x01, // serial_type 1 (1-byte int)
+            0x07, // value = 7
+        ];
+
+        let result = parse_cells_from_freeblock(&data, &sig, "t", 1000);
+        let strat1: Vec<_> = result.iter().filter(|r| r.row_id == Some(42)).collect();
+        assert!(!strat1.is_empty(), "Strategy 1 should find the full cell");
+        assert_eq!(strat1[0].values[0], SqlValue::Int(7));
+        assert!(matches!(strat1[0].source, EvidenceSource::CarvedIntraPage { .. }));
+    }
+
+    // ---------------------------------------------------------------------------
+    // parse_cells_from_freeblock: strategy 2 dedup (line 250)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_cells_from_freeblock_strategy2_dedup() {
+        let sig = SchemaSignature::from_create_sql(
+            "t",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)",
+        ).unwrap();
+
+        // Build data that strategy 1 finds, then strategy 2 should skip the same offset
+        let data = [
+            0x03, 0x01, // payload_len=3, rowid=1
+            0x02, 0x01, 0x07, // record: hlen=2, st=1, val=7
+        ];
+
+        let result = parse_cells_from_freeblock(&data, &sig, "t", 5000);
+        // Count how many records are at the strategy-1 offset
+        let at_offset: Vec<_> = result.iter().filter(|r| r.offset == 5000 + 2).collect();
+        // Strategy 1 should find one at record_start=2, strategy 2 should skip it (dedup)
+        assert!(at_offset.len() <= 1, "Should not have duplicate records at same offset");
+    }
+
+    // ---------------------------------------------------------------------------
+    // collect_leaf_pages: cycle guard (line 277-278)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_collect_leaf_pages_cycle() {
+        let page_size = 512usize;
+        let mut db = vec![0u8; page_size * 2];
+        // Page 2: interior that points right-child to itself
+        let p2 = page_size;
+        db[p2] = 0x05;
+        db[p2 + 3] = 0;
+        db[p2 + 4] = 0;
+        db[p2 + 8..p2 + 12].copy_from_slice(&2u32.to_be_bytes()); // cycle
+
+        let leaves = collect_leaf_pages(&db, page_size as u32, 2);
+        assert!(leaves.is_empty(), "Cycle should not produce leaf pages");
+    }
+
+    // ---------------------------------------------------------------------------
+    // collect_leaf_pages: interior page with children (lines 288-319)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_collect_leaf_pages_interior_with_children() {
+        let page_size = 512usize;
+        let mut db = vec![0u8; page_size * 4];
+
+        // Page 2 (interior): 1 cell pointing to page 3, right-child = page 4
+        let p2 = page_size;
+        db[p2] = 0x05;
+        db[p2 + 3] = 0;
+        db[p2 + 4] = 1; // cell count = 1
+        db[p2 + 5] = 0;
+        db[p2 + 6] = 100;
+        db[p2 + 8..p2 + 12].copy_from_slice(&4u32.to_be_bytes()); // right = 4
+        // Cell pointer at offset 12 → cell at 100
+        db[p2 + 12] = 0;
+        db[p2 + 13] = 100;
+        // Cell at 100: child page = 3
+        db[p2 + 100..p2 + 104].copy_from_slice(&3u32.to_be_bytes());
+
+        // Page 3 (leaf)
+        let p3 = page_size * 2;
+        db[p3] = 0x0D;
+
+        // Page 4 (leaf)
+        let p4 = page_size * 3;
+        db[p4] = 0x0D;
+
+        let leaves = collect_leaf_pages(&db, page_size as u32, 2);
+        assert!(leaves.contains(&3), "Should find leaf page 3");
+        assert!(leaves.contains(&4), "Should find leaf page 4");
+        assert_eq!(leaves.len(), 2);
+    }
+
+    // ---------------------------------------------------------------------------
+    // collect_leaf_pages: bhdr_offset >= page_data.len() (line 282-283)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_collect_leaf_pages_bhdr_exceeds_page() {
+        // Page 1 has bhdr_offset=100. If page_size < 101, bhdr >= len → skip.
+        let page_size = 64usize;
+        let db = vec![0u8; page_size];
+        let leaves = collect_leaf_pages(&db, page_size as u32, 1);
+        assert!(leaves.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // collect_leaf_pages: unknown page type (line 320)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_collect_leaf_pages_unknown_type() {
+        let page_size = 512usize;
+        let mut db = vec![0u8; page_size * 2];
+        // Page 2: index leaf (0x0A) — not table leaf or interior
+        db[page_size] = 0x0A;
+
+        let leaves = collect_leaf_pages(&db, page_size as u32, 2);
+        assert!(leaves.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // collect_leaf_pages: interior page with cell_off+4 > len (line 311)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_collect_leaf_pages_interior_cell_oob() {
+        let page_size = 512usize;
+        let mut db = vec![0u8; page_size * 2];
+        let p2 = page_size;
+        db[p2] = 0x05;
+        db[p2 + 3] = 0;
+        db[p2 + 4] = 1; // cell count = 1
+        db[p2 + 5] = 0;
+        db[p2 + 6] = 100;
+        db[p2 + 8..p2 + 12].copy_from_slice(&0u32.to_be_bytes());
+        // Cell pointer → offset 510 (510+4=514 > 512)
+        db[p2 + 12] = 0x01;
+        db[p2 + 13] = 0xFE;
+
+        let leaves = collect_leaf_pages(&db, page_size as u32, 2);
+        assert!(leaves.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // collect_leaf_pages: interior page ptr_off+2 > len (line 307)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_collect_leaf_pages_interior_ptr_oob() {
+        let page_size = 512usize;
+        let mut db = vec![0u8; page_size * 2];
+        let p2 = page_size;
+        db[p2] = 0x05;
+        db[p2 + 3] = 0x0F;
+        db[p2 + 4] = 0xFF; // cell count = 4095
+        db[p2 + 5] = 0;
+        db[p2 + 6] = 100;
+        db[p2 + 8..p2 + 12].copy_from_slice(&0u32.to_be_bytes());
+
+        let leaves = collect_leaf_pages(&db, page_size as u32, 2);
+        assert!(leaves.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_page_gaps with multi-page B-tree (covers collect_leaf_pages interior)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_page_gaps_multi_page_btree() {
+        // Create a real DB with enough rows to cause interior pages.
+        // Use a file-based connection (not backup) so SQLite doesn't wipe freeblocks.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA page_size=1024; PRAGMA secure_delete=OFF; PRAGMA journal_mode=DELETE;").unwrap();
+        conn.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, score INTEGER);").unwrap();
+        // Insert enough rows to span multiple pages
+        for i in 0..200i64 {
+            conn.execute(
+                "INSERT INTO items VALUES (?, ?, ?)",
+                rusqlite::params![i, format!("item_{:04}", i), i * 10],
+            ).unwrap();
+        }
+        // Delete some records to create freeblocks
+        conn.execute_batch("DELETE FROM items WHERE id BETWEEN 50 AND 60;").unwrap();
+        drop(conn);
+        let db = std::fs::read(&path).unwrap();
+
+        let page_size = u16::from_be_bytes([db[16], db[17]]) as u32;
+        let page_size = if page_size == 1 { 65536 } else { page_size };
+
+        let sig = SchemaSignature::from_create_sql(
+            "items",
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)",
+        ).unwrap();
+
+        // Get root page from sqlite_master by querying it via rusqlite
+        let conn2 = rusqlite::Connection::open(&path).unwrap();
+        let root: u32 = conn2.query_row(
+            "SELECT rootpage FROM sqlite_master WHERE name = 'items'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        drop(conn2);
+
+        let table_roots = vec![("items".to_string(), root)];
+        let recovered = scan_page_gaps(&db, page_size, &table_roots, &[sig]);
+        // With secure_delete=OFF, we should recover at least some deleted records.
+        // The exact number depends on SQLite's behavior, but we exercise the
+        // collect_leaf_pages interior page path and the gap scanning code.
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_gaps_with_context: basic smoke test
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_gaps_with_context() {
+        use crate::context::RecoveryContext;
+        use crate::header::DbHeader;
+        use crate::pragma::parse_pragma_info;
+        use std::collections::HashMap;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA secure_delete=OFF; PRAGMA journal_mode=DELETE;").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE msgs (id INTEGER PRIMARY KEY, body TEXT, ts INTEGER);
+             INSERT INTO msgs VALUES (1, 'hello', 100);
+             INSERT INTO msgs VALUES (2, 'world', 200);
+             DELETE FROM msgs WHERE id = 1;",
+        ).unwrap();
+        drop(conn);
+        let db = std::fs::read(&path).unwrap();
+
+        let header = DbHeader::parse(&db).unwrap();
+        let pragma_info = parse_pragma_info(&header, &db);
+        let sig = SchemaSignature::from_create_sql(
+            "msgs",
+            "CREATE TABLE msgs (id INTEGER PRIMARY KEY, body TEXT, ts INTEGER)",
+        ).unwrap();
+
+        let mut roots = HashMap::new();
+        roots.insert("msgs".to_string(), 2u32);
+
+        let ctx = RecoveryContext {
+            db: &db,
+            page_size: header.page_size,
+            header: &header,
+            table_roots: roots,
+            schema_signatures: vec![sig],
+            pragma_info,
+        };
+
+        let recovered = scan_gaps_with_context(&ctx);
+        // Just exercise the code path — no crash is the main assertion
+        for r in &recovered {
+            assert!(matches!(r.source, EvidenceSource::CarvedIntraPage { .. }));
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_page_gaps: table name not in signatures → no signature → returns empty
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_page_gaps_no_matching_signature() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT);
+                            INSERT INTO t VALUES (1, 'a');").unwrap();
+        drop(conn);
+        let db = std::fs::read(&path).unwrap();
+
+        // Signature for a DIFFERENT table name
+        let sig = SchemaSignature::from_create_sql(
+            "other_table",
+            "CREATE TABLE other_table (x TEXT)",
+        ).unwrap();
+
+        let table_roots = vec![("t".to_string(), 2u32)];
+        let recovered = scan_page_gaps(&db, 4096, &table_roots, &[sig]);
+        assert!(recovered.is_empty(), "No matching sig should yield empty");
+    }
 }

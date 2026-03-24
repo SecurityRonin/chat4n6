@@ -296,4 +296,101 @@ mod tests {
         // expected_col_count=1 → None (need at least 2 to have a recoverable second col)
         assert!(try_carve_first_col_missing(&data, 0, "t", 1).is_none());
     }
+
+    #[test]
+    fn test_carve_freeblock_fallback_first_col_missing() {
+        // Covers line 57: matches.push(m) for FirstColMissing in the fallback path.
+        // Normal fails because header_len is huge (> data.len()), both ColumnsOnly and
+        // FirstColMissing are tried. expected_col_count=2 so FirstColMissing can succeed.
+        let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x63];
+        let matches = carve_freeblock(&data, 0, "t", 2);
+        assert!(matches.len() >= 1);
+        let has_first_col_missing = matches.iter().any(|m| m.mode == CarveMode::FirstColMissing);
+        assert!(has_first_col_missing);
+    }
+
+    #[test]
+    fn test_carve_normal_truncated_value_falls_back_to_null() {
+        // Covers line 102: None => values.push(SqlValue::Null) in try_carve_normal.
+        // header_len=2, st=6 (8-byte int), but only 1 value byte follows → decode fails → Null.
+        let data = vec![0x02, 0x06, 0x00];
+        let matches = carve_freeblock(&data, 0, "t", 1);
+        assert!(!matches.is_empty());
+        assert!(matches[0].record.values.contains(&SqlValue::Null));
+    }
+
+    #[test]
+    fn test_carve_normal_empty_serial_types_via_2byte_varint() {
+        // Covers line 87 (end of serial types loop) and line 91 (empty serial_types return None).
+        // header_len=2 encoded as a 2-byte varint (0x80, 0x02). hl_consumed=2, header_end=2.
+        // Since pos(2) == header_end(2), the serial types loop doesn't execute → empty → None.
+        // Normal fails, then fallbacks are tried. We just verify it doesn't panic.
+        let data = vec![0x80, 0x02, 0x00, 0x00];
+        let _matches = carve_freeblock(&data, 0, "t", 1);
+        // Normal returns None due to empty serial_types (lines 87, 91 covered).
+    }
+
+    #[test]
+    fn test_carve_columns_only_empty_serial_types_via_zero_cols() {
+        // Covers line 140: ColumnsOnly with expected_col_count=0.
+        // The while loop condition `serial_types.len() < 0` is always false → loop never enters
+        // → serial_types is empty → return None (line 140).
+        // Normal with expected_col_count=0: the serial types loop enters, pushes at least one,
+        // then breaks (since 1 >= 0). So Normal succeeds. But we need Normal to fail first.
+        // Use data where Normal's header_len is too large.
+        // data = [0x10, 0x01, 0x2A] → header_len=16 > data.len()=3 → Normal fails.
+        // ColumnsOnly: expected_col_count=0 → loop doesn't enter → empty → line 140 → None.
+        // FirstColMissing: data.len() < 5 → None.
+        let matches = carve_freeblock(&[0x10, 0x01, 0x2A], 0, "t", 0);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_carve_columns_only_decode_null_fallback() {
+        // Covers line 151: ColumnsOnly succeeds at reading serial types but decode fails.
+        // Normal must fail first. Use data where header_len is large.
+        // data = [0x10, 0x06]: Normal reads header_len=16 > data.len()=2 → None.
+        // ColumnsOnly: st1 = read_varint(&data, 0) = (0x10=16, 1). expected_col_count=1 → done.
+        // data_pos=1, decode_serial_type(16, data, 1): st=16 → blob len=(16-12)/2=2, need data[1..3],
+        // but data.len()=2 → data[1..3] fails → None → push Null. Line 151 covered.
+        // But data.len()=2, pos+3=3>2 so Normal loop never enters.
+        // Actually need 3+ bytes for the while loop: data = [0x10, 0x06, 0x00].
+        // Normal: header_len=16 > 3 → fails (header_end > data.len()).
+        // Actually, Normal's while loop checks pos+3 <= data.len(). pos=0, 0+3=3<=3 → enters.
+        // try_carve_normal: read_varint=16, header_end=16 > 3 → return None.
+        // matches empty. ColumnsOnly: read_varint(0)=16, serial_types=[16], expected=1 → stop.
+        // data_pos=1. decode(16, data, 1): blob len=2, data[1..3]=[0x06, 0x00] → Ok!
+        // So it succeeds. That covers ColumnsOnly but not line 151.
+        // Need decode to fail: st=6 (8-byte int), data has < 8 bytes after serial type area.
+        // data = [0x10, 0x06, 0x00]: ColumnsOnly reads st=16, then at pos=1 reads st=6,
+        // expected_col_count=2 → has 2 serial types. data_pos=2.
+        // decode(16, data, 2): blob len=2, data[2..4]? data.len()=3, only 1 byte → None → Null (line 151!)
+        let data = vec![0x10, 0x06, 0x00];
+        let matches = carve_freeblock(&data, 0, "t", 2);
+        // Should find ColumnsOnly match with at least one Null
+        let co = matches.iter().find(|m| m.mode == CarveMode::ColumnsOnly);
+        assert!(co.is_some());
+        assert!(co.unwrap().record.values.contains(&SqlValue::Null));
+    }
+
+    #[test]
+    fn test_carve_first_col_missing_empty_serial_types() {
+        // Covers line 193: return None when serial_types is empty in FirstColMissing.
+        // After 4 skip bytes, byte 4 is a truncated continuation varint → read_varint fails.
+        let data = vec![0x00, 0x00, 0x00, 0x00, 0xFF];
+        let result = try_carve_first_col_missing(&data, 0, "t", 2);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_carve_first_col_missing_truncated_value() {
+        // Covers line 204: decode fails → push Null in FirstColMissing.
+        // After 4 skip bytes: st=6 (8-byte int) but only 1 byte of value data.
+        let data = vec![0x00, 0x00, 0x00, 0x00, 0x06, 0x00];
+        let result = try_carve_first_col_missing(&data, 0, "t", 2);
+        assert!(result.is_some());
+        let m = result.unwrap();
+        assert_eq!(m.record.values[0], SqlValue::Null); // destroyed first column
+        assert_eq!(m.record.values[1], SqlValue::Null); // truncated decode
+    }
 }

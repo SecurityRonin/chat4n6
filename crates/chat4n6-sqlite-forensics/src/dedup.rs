@@ -168,4 +168,29 @@ mod tests {
         assert_eq!(records.len(), 1, "only the highest-confidence carved record should survive");
         assert!(records[0].confidence > 0.8, "surviving record must be the highest-confidence one");
     }
+
+    #[test]
+    fn test_record_hash_with_blob_value() {
+        // Covers lines 19-22: SqlValue::Blob hashing path.
+        let r1 = make_record("t", vec![SqlValue::Blob(vec![0xDE, 0xAD])], EvidenceSource::Live);
+        let r2 = make_record("t", vec![SqlValue::Blob(vec![0xDE, 0xAD])], EvidenceSource::Live);
+        let r3 = make_record("t", vec![SqlValue::Blob(vec![0xBE, 0xEF])], EvidenceSource::Live);
+        assert_eq!(record_hash(&r1), record_hash(&r2), "same blob should hash the same");
+        assert_ne!(record_hash(&r1), record_hash(&r3), "different blobs should hash differently");
+    }
+
+    #[test]
+    fn test_deduplicate_removes_lower_confidence_duplicate() {
+        // Covers lines 61-62: the `else` branch where the new record has lower confidence
+        // than the existing best, so the new record is removed.
+        // Order matters: high confidence first, then low confidence duplicate.
+        let mut high = make_record("t", vec![SqlValue::Int(42)], EvidenceSource::Freelist);
+        high.confidence = 0.9;
+        let mut low = make_record("t", vec![SqlValue::Int(42)], EvidenceSource::CarvedUnalloc { confidence_pct: 30 });
+        low.confidence = 0.3;
+        let mut records = vec![high, low];
+        deduplicate(&mut records);
+        assert_eq!(records.len(), 1);
+        assert!(records[0].confidence > 0.8, "higher-confidence record must survive");
+    }
 }

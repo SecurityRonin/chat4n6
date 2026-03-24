@@ -326,5 +326,197 @@ mod tests {
         assert!(finding.hex_context.contains(' ') || finding.hex_context.len() == 2);
     }
 
+    // -----------------------------------------------------------------------
+    // Additional coverage tests
+    // -----------------------------------------------------------------------
 
+    #[test]
+    fn test_record_at_offset_zero_page_number() {
+        // Covers line 52: page_number = 0 when record.offset == 0.
+        let (db, header) = make_db_and_header();
+        let pragma_info = parse_pragma_info(&header, &db);
+        let ctx = RecoveryContext {
+            db: &db,
+            page_size: header.page_size,
+            header: &header,
+            table_roots: HashMap::new(),
+            schema_signatures: Vec::new(),
+            pragma_info,
+        };
+
+        let record = RecoveredRecord {
+            table: "t".to_string(),
+            row_id: Some(1),
+            values: vec![SqlValue::Int(1)],
+            source: EvidenceSource::Live,
+            offset: 0,
+            confidence: 1.0,
+        };
+        let result = make_result(vec![record]);
+        let report = build_verification_report(&ctx, &result);
+        assert_eq!(report.findings[0].page_number, 0);
+    }
+
+    #[test]
+    fn test_hex_context_beyond_db() {
+        // Covers line 67: String::new() when hex_start >= db.len().
+        let (db, header) = make_db_and_header();
+        let pragma_info = parse_pragma_info(&header, &db);
+        let ctx = RecoveryContext {
+            db: &db,
+            page_size: header.page_size,
+            header: &header,
+            table_roots: HashMap::new(),
+            schema_signatures: Vec::new(),
+            pragma_info,
+        };
+
+        let record = RecoveredRecord {
+            table: "t".to_string(),
+            row_id: None,
+            values: vec![],
+            source: EvidenceSource::Freelist,
+            offset: 999999, // well beyond db.len()
+            confidence: 0.5,
+        };
+        let result = make_result(vec![record]);
+        let report = build_verification_report(&ctx, &result);
+        assert!(report.findings[0].hex_context.is_empty());
+    }
+
+    #[test]
+    fn test_wal_pending_recovery_technique() {
+        // Covers line 72: WalPending technique string.
+        let (db, header) = make_db_and_header();
+        let pragma_info = parse_pragma_info(&header, &db);
+        let ctx = RecoveryContext {
+            db: &db,
+            page_size: header.page_size,
+            header: &header,
+            table_roots: HashMap::new(),
+            schema_signatures: Vec::new(),
+            pragma_info,
+        };
+
+        let record = RecoveredRecord {
+            table: "t".to_string(),
+            row_id: None,
+            values: vec![],
+            source: EvidenceSource::WalPending,
+            offset: 100,
+            confidence: 0.9,
+        };
+        let result = make_result(vec![record]);
+        let report = build_verification_report(&ctx, &result);
+        assert_eq!(report.findings[0].recovery_technique, "WAL replay (pending transaction)");
+    }
+
+    #[test]
+    fn test_wal_deleted_recovery_technique() {
+        // Covers line 73: WalDeleted technique string.
+        let (db, header) = make_db_and_header();
+        let pragma_info = parse_pragma_info(&header, &db);
+        let ctx = RecoveryContext {
+            db: &db,
+            page_size: header.page_size,
+            header: &header,
+            table_roots: HashMap::new(),
+            schema_signatures: Vec::new(),
+            pragma_info,
+        };
+
+        let record = RecoveredRecord {
+            table: "t".to_string(),
+            row_id: None,
+            values: vec![],
+            source: EvidenceSource::WalDeleted,
+            offset: 100,
+            confidence: 0.8,
+        };
+        let result = make_result(vec![record]);
+        let report = build_verification_report(&ctx, &result);
+        assert_eq!(report.findings[0].recovery_technique, "WAL analysis (deleted in WAL)");
+    }
+
+    #[test]
+    fn test_journal_recovery_technique() {
+        // Covers line 79: Journal technique string.
+        let (db, header) = make_db_and_header();
+        let pragma_info = parse_pragma_info(&header, &db);
+        let ctx = RecoveryContext {
+            db: &db,
+            page_size: header.page_size,
+            header: &header,
+            table_roots: HashMap::new(),
+            schema_signatures: Vec::new(),
+            pragma_info,
+        };
+
+        let record = RecoveredRecord {
+            table: "t".to_string(),
+            row_id: None,
+            values: vec![],
+            source: EvidenceSource::Journal,
+            offset: 100,
+            confidence: 0.7,
+        };
+        let result = make_result(vec![record]);
+        let report = build_verification_report(&ctx, &result);
+        assert_eq!(report.findings[0].recovery_technique, "Rollback journal parsing");
+    }
+
+    #[test]
+    fn test_catchall_recovery_technique() {
+        // Covers line 80: catch-all format!("{:?}", record.source).
+        let (db, header) = make_db_and_header();
+        let pragma_info = parse_pragma_info(&header, &db);
+        let ctx = RecoveryContext {
+            db: &db,
+            page_size: header.page_size,
+            header: &header,
+            table_roots: HashMap::new(),
+            schema_signatures: Vec::new(),
+            pragma_info,
+        };
+
+        let record = RecoveredRecord {
+            table: "t".to_string(),
+            row_id: None,
+            values: vec![],
+            source: EvidenceSource::FtsOnly,
+            offset: 100,
+            confidence: 0.6,
+        };
+        let result = make_result(vec![record]);
+        let report = build_verification_report(&ctx, &result);
+        assert!(report.findings[0].recovery_technique.contains("FtsOnly"));
+    }
+
+    #[test]
+    fn test_live_record_no_rowid_uses_xxd() {
+        // Covers line 91: Live record with row_id=None uses xxd command.
+        let (db, header) = make_db_and_header();
+        let pragma_info = parse_pragma_info(&header, &db);
+        let ctx = RecoveryContext {
+            db: &db,
+            page_size: header.page_size,
+            header: &header,
+            table_roots: HashMap::new(),
+            schema_signatures: Vec::new(),
+            pragma_info,
+        };
+
+        let record = RecoveredRecord {
+            table: "t".to_string(),
+            row_id: None,
+            values: vec![SqlValue::Int(1)],
+            source: EvidenceSource::Live,
+            offset: 256,
+            confidence: 1.0,
+        };
+        let result = make_result(vec![record]);
+        let report = build_verification_report(&ctx, &result);
+        assert!(report.findings[0].verification_command.starts_with("xxd"));
+        assert!(report.findings[0].verification_command.contains("256"));
+    }
 }

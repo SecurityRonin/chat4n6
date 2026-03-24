@@ -371,4 +371,185 @@ mod tests {
         conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
+
+    // -----------------------------------------------------------------------
+    // Additional coverage tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_freeblock_chain_tiny_page() {
+        // Covers line 26: return Vec::new() when page.len() < 4.
+        let page = vec![0u8; 3];
+        let freeblocks = parse_freeblock_chain(&page, 4096);
+        assert!(freeblocks.is_empty());
+    }
+
+    #[test]
+    fn test_freeblock_chain_offset_beyond_page_size() {
+        // Covers line 36: break when fb_offset >= page_size.
+        // page_size = 100 but page buffer is larger (200 bytes).
+        // fb_offset = 150, which is >= page_size but < page.len().
+        // The while condition (fb_offset + 4 <= page.len()) passes, then line 36 triggers.
+        let mut page = vec![0u8; 200];
+        page[0] = 0x0d;
+        // First freeblock offset = 150 (0x0096)
+        page[1] = 0x00;
+        page[2] = 0x96; // first_fb = 150
+        let freeblocks = parse_freeblock_chain(&page, 100);
+        assert!(freeblocks.is_empty());
+    }
+
+    #[test]
+    fn test_freeblock_chain_size_too_small() {
+        // Covers line 46: break when size < 4.
+        let mut page = vec![0u8; 4096];
+        page[0] = 0x0d;
+        page[1] = 0x00;
+        page[2] = 0x64; // first_fb = 100
+        // freeblock at 100: next=0, size=3 (< 4 → invalid)
+        page[100] = 0x00;
+        page[101] = 0x00;
+        page[102] = 0x00;
+        page[103] = 0x03; // size = 3
+        let freeblocks = parse_freeblock_chain(&page, 4096);
+        assert!(freeblocks.is_empty());
+    }
+
+    #[test]
+    fn test_walk_freelist_page_too_small() {
+        // Covers line 90: break when page.len() < 8.
+        // Create a tiny "page" that's less than 8 bytes. page_size must match.
+        let db = vec![0u8; 4]; // 1 page of size 4 (less than 8)
+        let pages = walk_freelist_chain(&db, 1, 4);
+        assert!(pages.is_empty());
+    }
+
+    #[test]
+    fn test_walk_freelist_leaf_offset_overflow() {
+        // Covers line 102: break when leaf_off + 4 > page.len().
+        // Create a trunk page that claims to have many leaves, but the page is too short.
+        let page_size: usize = 32; // very small page
+        let mut db = vec![0u8; page_size];
+        // Page 1 (offset 0): trunk page
+        db[0..4].copy_from_slice(&0u32.to_be_bytes()); // next_trunk = 0
+        db[4..8].copy_from_slice(&100u32.to_be_bytes()); // leaf_count = 100 (way more than fits)
+        // Only room for (32 - 8) / 4 = 6 leaf entries.
+        // Leaf entries at offsets 8, 12, 16, 20, 24, 28 — then offset 32 overflows.
+        for i in 0..6 {
+            let off = 8 + i * 4;
+            db[off..off + 4].copy_from_slice(&((i as u32) + 2).to_be_bytes());
+        }
+        let pages = walk_freelist_chain(&db, 1, page_size as u32);
+        // Should get trunk page (1) + 6 leaf pages, then break at leaf_off overflow.
+        assert_eq!(pages[0], 1);
+        assert!(pages.len() <= 7);
+    }
+
+    #[test]
+    fn test_recover_freelist_db_too_small() {
+        // Covers line 131: return Vec::new() when db.len() < 36.
+        let db = vec![0u8; 35]; // too small to read trunk page pointer
+        let results = recover_freelist_content(&db, 4096, &[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_recover_freelist_page_not_table_leaf() {
+        // Covers line 156: page is found but page type is not TableLeaf.
+        // Falls through to Strategy 2 (carving). With no signatures, nothing is carved.
+        let page_size: usize = 1024;
+        let mut db = vec![0u8; page_size * 3];
+        db[..16].copy_from_slice(b"SQLite format 3\x00");
+        db[16] = (page_size >> 8) as u8;
+        db[17] = (page_size & 0xFF) as u8;
+        // Freelist trunk page = 2
+        db[32..36].copy_from_slice(&2u32.to_be_bytes());
+        let p2 = page_size;
+        db[p2..p2 + 4].copy_from_slice(&0u32.to_be_bytes());
+        db[p2 + 4..p2 + 8].copy_from_slice(&1u32.to_be_bytes());
+        db[p2 + 8..p2 + 12].copy_from_slice(&3u32.to_be_bytes());
+        // Page 3: all zeros — page type 0x00 != 0x0D.
+        let results = recover_freelist_content(&db, page_size as u32, &[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_recover_freelist_get_page_data_none() {
+        // Covers line 139: continue when get_page_data returns None.
+        // Freelist references a page number beyond the DB.
+        let page_size: usize = 1024;
+        let mut db = vec![0u8; page_size * 2];
+        db[..16].copy_from_slice(b"SQLite format 3\x00");
+        db[16] = (page_size >> 8) as u8;
+        db[17] = (page_size & 0xFF) as u8;
+        // Trunk page = 2
+        db[32..36].copy_from_slice(&2u32.to_be_bytes());
+        let p2 = page_size;
+        db[p2..p2 + 4].copy_from_slice(&0u32.to_be_bytes());
+        db[p2 + 4..p2 + 8].copy_from_slice(&1u32.to_be_bytes());
+        // Leaf page = 99 (far beyond DB)
+        db[p2 + 8..p2 + 12].copy_from_slice(&99u32.to_be_bytes());
+        let results = recover_freelist_content(&db, page_size as u32, &[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_recover_freelist_leaf_page_empty_records() {
+        // Covers lines 154-156: page IS a TableLeaf (0x0D) but parse_table_leaf_page
+        // returns empty records (no cells). Falls through to Strategy 2.
+        let page_size: usize = 1024;
+        let mut db = vec![0u8; page_size * 3];
+        db[..16].copy_from_slice(b"SQLite format 3\x00");
+        db[16] = (page_size >> 8) as u8;
+        db[17] = (page_size & 0xFF) as u8;
+        db[32..36].copy_from_slice(&2u32.to_be_bytes());
+        let p2 = page_size;
+        db[p2..p2 + 4].copy_from_slice(&0u32.to_be_bytes());
+        db[p2 + 4..p2 + 8].copy_from_slice(&1u32.to_be_bytes());
+        db[p2 + 8..p2 + 12].copy_from_slice(&3u32.to_be_bytes());
+        // Page 3: set page type to 0x0D (TableLeaf) but with 0 cells.
+        let p3 = page_size * 2;
+        db[p3] = 0x0D; // table leaf page type
+        db[p3 + 1] = 0x00; // first freeblock = 0
+        db[p3 + 2] = 0x00;
+        db[p3 + 3] = 0x00; // cell count = 0
+        db[p3 + 4] = 0x00;
+        db[p3 + 5] = 0x00; // cell content area start
+        db[p3 + 6] = 0x00;
+        db[p3 + 7] = 0x00; // fragmented bytes
+        let results = recover_freelist_content(&db, page_size as u32, &[]);
+        // parse_table_leaf_page returns empty (0 cells) → falls through to Strategy 2.
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_recover_freelist_with_context_wrapper() {
+        // Covers lines 182-184: recover_freelist_with_context.
+        use crate::context::RecoveryContext;
+        use crate::header::DbHeader;
+        use crate::pragma::parse_pragma_info;
+        use std::collections::HashMap;
+
+        let mut db = vec![0u8; 4096];
+        db[..16].copy_from_slice(b"SQLite format 3\x00");
+        db[16] = 0x10; // page_size = 4096
+        db[17] = 0x00;
+        db[18] = 1;
+        db[19] = 1;
+        db[56..60].copy_from_slice(&1u32.to_be_bytes()); // UTF-8
+
+        let header = DbHeader::parse(&db).expect("valid header");
+        let pragma_info = parse_pragma_info(&header, &db);
+        let ctx = RecoveryContext {
+            db: &db,
+            page_size: header.page_size,
+            header: &header,
+            table_roots: HashMap::new(),
+            schema_signatures: Vec::new(),
+            pragma_info,
+        };
+        let results = recover_freelist_with_context(&ctx);
+        // Clean DB with no freelist → empty results
+        assert!(results.is_empty());
+    }
 }
