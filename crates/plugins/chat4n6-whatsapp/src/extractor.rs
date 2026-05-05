@@ -661,3 +661,40 @@ mod tests {
         );
     }
 }
+
+// ── FTS5 content shadow table recovery ───────────────────────────────────────
+
+/// Extract text fragments from FTS5 _content shadow tables.
+/// Returns a map of table_name → Vec<String> (text fragments).
+pub fn extract_fts5_content(db_bytes: &[u8]) -> Result<HashMap<String, Vec<String>>> {
+    todo!("implement extract_fts5_content")
+}
+
+#[cfg(test)]
+mod fts5_tests {
+    use super::*;
+
+    fn make_fts5_db() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/fts5_schema.sql")).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn fts5_content_table_text_recovered() {
+        let db = make_fts5_db();
+        let fragments = extract_fts5_content(&db).unwrap();
+        // Should find at least one _content table with text fragments
+        let content_tables: Vec<_> = fragments.keys()
+            .filter(|k| k.ends_with("_content"))
+            .collect();
+        assert!(!content_tables.is_empty(), "must find at least one FTS5 _content table");
+        let all_texts: Vec<_> = fragments.values().flatten().collect();
+        assert!(
+            all_texts.iter().any(|t| t.contains("forensics")),
+            "must recover text fragments from FTS5 content table"
+        );
+    }
+}

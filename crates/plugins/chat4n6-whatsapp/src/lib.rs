@@ -1,5 +1,6 @@
 // chat4n6-whatsapp
 
+pub mod anti_forensics;
 pub mod decrypt;
 pub mod extractor;
 pub mod schema;
