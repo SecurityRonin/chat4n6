@@ -1,3 +1,5 @@
+pub mod extractor;
+
 use anyhow::Result;
 use chat4n6_plugin_api::{ExtractionResult, ForensicFs, ForensicPlugin};
 
@@ -19,10 +21,17 @@ impl ForensicPlugin for TelegramPlugin {
 
     fn extract(
         &self,
-        _fs: &dyn ForensicFs,
-        _local_offset_seconds: Option<i32>,
+        fs: &dyn ForensicFs,
+        local_offset_seconds: Option<i32>,
     ) -> Result<ExtractionResult> {
-        log::warn!("Telegram extraction is not yet implemented; returning empty result");
+        let tz = local_offset_seconds.unwrap_or(0);
+        for path in DB_PATHS {
+            if fs.exists(path) {
+                let bytes = fs.read(path)?;
+                return extractor::extract_from_telegram_db(&bytes, tz);
+            }
+        }
+        log::warn!("Telegram cache.db not found; returning empty result");
         Ok(ExtractionResult::default())
     }
 }
@@ -86,13 +95,15 @@ mod tests {
         assert!(!TelegramPlugin.detect(&MockFs::new()));
     }
 
+    /// The mock file contains 100 zero bytes — not a valid SQLite DB.
+    /// extract() propagates the error from ForensicEngine rather than silently
+    /// returning empty, so callers can detect corrupted/missing databases.
     #[test]
-    fn test_extract_returns_empty() {
+    fn test_extract_invalid_db_returns_err() {
         let fs =
             MockFs::new().with_file("data/data/org.telegram.messenger/files/cache4.db");
-        let r = TelegramPlugin.extract(&fs, None).unwrap();
-        assert!(r.chats.is_empty());
-        assert!(r.calls.is_empty());
+        let r = TelegramPlugin.extract(&fs, None);
+        assert!(r.is_err(), "invalid SQLite bytes should return Err");
     }
 
     #[test]

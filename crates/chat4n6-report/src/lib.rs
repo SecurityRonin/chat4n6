@@ -330,6 +330,7 @@ fn render_content(content: &MessageContent) -> String {
         MessageContent::ViewOnce(m) => format!("[View-Once: {}]", m.mime_type),
         MessageContent::VCard(v) => format!("[Contact: {v}]"),
         MessageContent::Deleted => "[Deleted]".to_string(),
+        MessageContent::GhostRecovered(s) => format!("[Ghost: {s}]"),
         MessageContent::System(s) => format!("[System: {s}]"),
         MessageContent::Unknown(t) => format!("[Unknown type {t}]"),
     }

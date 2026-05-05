@@ -76,10 +76,24 @@ pub fn extract_from_msgstore(
         .unwrap_or(&[]);
     let quoted_map = build_quoted_map(quoted_records, &jid_map, tz_offset_secs);
 
+    // Build ghost map: message_row_id → text_data for ghost recovery.
+    // When a deleted/tombstone message (msg_type=15) is later quoted, the
+    // message_quoted table preserves its original text.  We index that here
+    // so we can upgrade Deleted/Unknown(15) messages to GhostRecovered.
+    let ghost_map = build_ghost_map(quoted_records);
+
     for chat in chats.values_mut() {
         for msg in &mut chat.messages {
+            // Attach quoted_message reference (reply threading)
             if let Some(quoted) = quoted_map.get(&msg.id) {
                 msg.quoted_message = Some(Box::new(quoted.clone()));
+            }
+            // Ghost recovery: upgrade tombstone messages whose original text
+            // was preserved in message_quoted.
+            if matches!(&msg.content, MessageContent::Unknown(15) | MessageContent::Deleted) {
+                if let Some(ghost_text) = ghost_map.get(&msg.id) {
+                    msg.content = MessageContent::GhostRecovered(ghost_text.clone());
+                }
             }
         }
     }
@@ -263,13 +277,21 @@ pub fn extract_from_msgstore(
     // WAL deltas (placeholder — WAL integration in CLI layer)
     let wal_deltas: Vec<WalDelta> = Vec::new();
 
+    // Read schema_version from SQLite header: PRAGMA user_version is stored
+    // as a big-endian u32 at bytes 60–63 of the database file.
+    let schema_version = if db_bytes.len() >= 64 {
+        u32::from_be_bytes([db_bytes[60], db_bytes[61], db_bytes[62], db_bytes[63]])
+    } else {
+        0
+    };
+
     Ok(ExtractionResult {
         chats: chats.into_values().collect(),
         contacts: Vec::new(),
         calls,
         wal_deltas,
         timezone_offset_seconds: Some(tz_offset_secs),
-        schema_version: 200,
+        schema_version,
         forensic_warnings: Vec::new(),
         group_participant_events,
     })
@@ -668,6 +690,27 @@ fn build_group_participant_events(
     events
 }
 
+/// Build a ghost map: message_row_id → text_data from message_quoted.
+///
+/// Used to recover the original text of deleted/tombstone messages (msg_type=15)
+/// that were later quoted by another message. The quoting message preserves
+/// the original text in message_quoted.text_data.
+fn build_ghost_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
+    let mut map = HashMap::new();
+    for r in records {
+        let msg_row_id = match r.values.get(1) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let text = match r.values.get(6) {
+            Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
+            _ => continue,
+        };
+        map.insert(msg_row_id, text);
+    }
+    map
+}
+
 // ── wa.db contact extraction ─────────────────────────────────────────────────
 
 /// Extract contacts from wa.db bytes using the forensic B-tree walker.
@@ -942,11 +985,11 @@ mod tests {
         let db = make_modern_msgstore();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
-        // Message 6 has message_type=15 (tombstone) — should produce MessageContent::Deleted
+        // Message 6 has message_type=15 (tombstone, no message_quoted entry) → Deleted
         let msg6 = chat1.messages.iter().find(|m| m.id == 6).expect("msg 6 (tombstone)");
         assert!(
-            matches!(&msg6.content, MessageContent::Deleted),
-            "msg_type=15 tombstone should produce MessageContent::Deleted, got {:?}",
+            matches!(&msg6.content, MessageContent::Deleted | MessageContent::GhostRecovered(_)),
+            "msg_type=15 tombstone should produce Deleted or GhostRecovered, got {:?}",
             msg6.content
         );
     }
@@ -956,12 +999,49 @@ mod tests {
         let db = make_modern_msgstore();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
-        // Tombstone message must appear in results, not be silently dropped
         let tombstone = chat1.messages.iter().find(|m| m.id == 6);
         assert!(
             tombstone.is_some(),
             "tombstone message (id=6, type=15) must be preserved in extraction results"
         );
+    }
+
+    // ── C7: schema_version from PRAGMA user_version ──────────────────────
+
+    #[test]
+    fn schema_version_is_read_from_pragma_user_version() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql")).unwrap();
+        conn.execute_batch("PRAGMA user_version = 215;").unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        assert_eq!(result.schema_version, 215,
+            "schema_version must be read from PRAGMA user_version, not hardcoded");
+    }
+
+    // ── C8: ghost message recovery from message_quoted ───────────────────
+
+    #[test]
+    fn ghost_message_recovered_from_message_quoted() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO message_quoted VALUES (99, 6, 1, NULL, 1, 1710513600000, 'Secret deleted message', 0, NULL, NULL);",
+        ).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let ghost = result.chats.iter()
+            .flat_map(|c| c.messages.iter())
+            .find(|m| matches!(&m.content, MessageContent::GhostRecovered(_)));
+        assert!(ghost.is_some(), "msg_type=15 with message_quoted entry must produce GhostRecovered");
+        if let Some(MessageContent::GhostRecovered(text)) = ghost.map(|m| &m.content) {
+            assert!(text.contains("Secret deleted message"),
+                "GhostRecovered text must contain the quoted text_data");
+        }
     }
 
     #[test]

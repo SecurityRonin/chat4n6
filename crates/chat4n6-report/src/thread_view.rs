@@ -61,6 +61,7 @@ fn render_message_content(content: &MessageContent) -> String {
         }
         MessageContent::VCard(v) => format!("<span class=\"vcard-label\">[Contact: {}]</span>", html_escape(v)),
         MessageContent::Deleted => "<span class=\"deleted-label\">[Deleted]</span>".to_string(),
+        MessageContent::GhostRecovered(s) => format!("<span class=\"ghost-label\">[Ghost: {}]</span>", html_escape(s)),
         MessageContent::System(s) => {
             format!("<span class=\"system-label\">[System: {}]</span>", html_escape(s))
         }

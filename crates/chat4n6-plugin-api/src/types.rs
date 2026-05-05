@@ -188,6 +188,9 @@ pub enum MessageContent {
     },
     VCard(String),
     Deleted,
+    /// Forensically recovered ghost content: deleted message text recovered
+    /// from message_quoted table (msg_type=15 tombstone with quoted reference).
+    GhostRecovered(String),
     System(String),
     Unknown(i32),
 }

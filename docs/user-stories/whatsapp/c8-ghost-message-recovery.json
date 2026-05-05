@@ -9,6 +9,6 @@
       "Assert the recovered message source is CarvedUnalloc or similar forensic source",
       "cargo test -p chat4n6-whatsapp -- ghost_message passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]
