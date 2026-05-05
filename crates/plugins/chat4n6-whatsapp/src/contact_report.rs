@@ -46,28 +46,216 @@ pub enum GroupRole {
 }
 
 // ---------------------------------------------------------------------------
-// HTML escaping stub
+// HTML escaping
 // ---------------------------------------------------------------------------
 
-pub(crate) fn html_escape(_s: &str) -> String {
-    unimplemented!("RED: html_escape not yet implemented")
+pub(crate) fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
-// Stubs — RED phase: these panic so tests fail
+// Domain extraction helper
+// ---------------------------------------------------------------------------
+
+fn extract_domains(text: &str) -> Vec<String> {
+    let mut domains = Vec::new();
+    for part in text.split("://").skip(1) {
+        let host = part.split('/').next().unwrap_or("").split('?').next().unwrap_or("");
+        let host = host.split('#').next().unwrap_or("").trim();
+        if !host.is_empty() {
+            domains.push(host.to_lowercase());
+        }
+    }
+    domains
+}
+
+// ---------------------------------------------------------------------------
+// Core statistics builder
 // ---------------------------------------------------------------------------
 
 pub fn build_contact_stats(
-    _contact_jid: &str,
-    _display_name: Option<&str>,
-    _messages: &[&chat4n6_plugin_api::Message],
-    _tz_offset_secs: i32,
+    contact_jid: &str,
+    display_name: Option<&str>,
+    messages: &[&chat4n6_plugin_api::Message],
+    tz_offset_secs: i32,
 ) -> ContactActivityStats {
-    unimplemented!("RED: build_contact_stats not yet implemented")
+    use chat4n6_plugin_api::MessageContent;
+
+    let offset = FixedOffset::east_opt(tz_offset_secs).unwrap_or(FixedOffset::east_opt(0).unwrap());
+    let mut stats = ContactActivityStats {
+        jid: contact_jid.to_string(),
+        display_name: display_name.map(|s| s.to_string()),
+        ..Default::default()
+    };
+
+    let mut domain_counts: HashMap<String, u32> = HashMap::new();
+    let mut reactions_given: HashMap<String, u32> = HashMap::new();
+    let mut reactions_received: HashMap<String, u32> = HashMap::new();
+    let mut first_ms: Option<i64> = None;
+    let mut last_ms: Option<i64> = None;
+
+    for msg in messages {
+        let ts_ms = msg.timestamp.utc.timestamp_millis();
+        first_ms = Some(first_ms.map_or(ts_ms, |m: i64| m.min(ts_ms)));
+        last_ms = Some(last_ms.map_or(ts_ms, |m: i64| m.max(ts_ms)));
+
+        // Determine heatmap bucket via local time
+        let local: DateTime<FixedOffset> = msg.timestamp.utc.with_timezone(&offset);
+        let hour = local.hour() as usize;
+        let weekday = local.weekday().num_days_from_monday() as usize; // Mon=0, Sun=6
+
+        if msg.from_me {
+            stats.total_received += 1;
+        } else {
+            stats.total_sent += 1;
+        }
+
+        stats.hourly_heatmap[hour] += 1;
+        stats.weekly_heatmap[weekday] += 1;
+
+        // Media count (sent by contact = not from_me)
+        if !msg.from_me {
+            if let MessageContent::Media(_) = &msg.content {
+                stats.total_media_sent += 1;
+            }
+        }
+
+        // Domain extraction from text messages
+        if let MessageContent::Text(text) = &msg.content {
+            for domain in extract_domains(text) {
+                *domain_counts.entry(domain).or_insert(0) += 1;
+            }
+        }
+
+        // Reactions given by contact, received by contact
+        for reaction in &msg.reactions {
+            if reaction.reactor_jid == contact_jid {
+                *reactions_given.entry(reaction.emoji.clone()).or_insert(0) += 1;
+            } else {
+                *reactions_received.entry(reaction.emoji.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    stats.first_message_ms = first_ms;
+    stats.last_message_ms = last_ms;
+
+    // Sort domains by count desc
+    let mut domains_vec: Vec<(String, u32)> = domain_counts.into_iter().collect();
+    domains_vec.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    stats.top_link_domains = domains_vec;
+
+    // Sort reactions by count desc
+    let mut rg: Vec<(String, u32)> = reactions_given.into_iter().collect();
+    rg.sort_by(|a, b| b.1.cmp(&a.1));
+    stats.reactions_given = rg;
+
+    let mut rr: Vec<(String, u32)> = reactions_received.into_iter().collect();
+    rr.sort_by(|a, b| b.1.cmp(&a.1));
+    stats.reactions_received = rr;
+
+    stats
 }
 
-pub fn render_html(_stats: &ContactActivityStats) -> String {
-    unimplemented!("RED: render_html not yet implemented")
+// ---------------------------------------------------------------------------
+// HTML renderer
+// ---------------------------------------------------------------------------
+
+pub fn render_html(stats: &ContactActivityStats) -> String {
+    let name = stats
+        .display_name
+        .as_deref()
+        .map(html_escape)
+        .unwrap_or_else(|| html_escape(&stats.jid));
+    let jid_escaped = html_escape(&stats.jid);
+
+    let hourly_rows = stats
+        .hourly_heatmap
+        .iter()
+        .enumerate()
+        .map(|(h, &count)| {
+            let intensity = if count == 0 {
+                "#eee".to_string()
+            } else {
+                format!("hsl(200,70%,{}%)", 80_u32.saturating_sub(count * 5).max(20))
+            };
+            format!(
+                "<td style=\"background:{intensity};padding:4px\" title=\"{h}:00 — {count} msgs\">{h}</td>",
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let weekly_rows = stats
+        .weekly_heatmap
+        .iter()
+        .enumerate()
+        .map(|(d, &count)| {
+            let intensity = if count == 0 {
+                "#eee".to_string()
+            } else {
+                format!("hsl(120,60%,{}%)", 80_u32.saturating_sub(count * 5).max(20))
+            };
+            format!(
+                "<td style=\"background:{intensity};padding:4px\" title=\"{day} — {count} msgs\">{day}</td>",
+                day = days[d],
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    let domains_html = if stats.top_link_domains.is_empty() {
+        "<p>No links found.</p>".to_string()
+    } else {
+        let rows = stats
+            .top_link_domains
+            .iter()
+            .map(|(d, c)| format!("<tr><td>{}</td><td>{c}</td></tr>", html_escape(d)))
+            .collect::<Vec<_>>()
+            .join("");
+        format!("<table border=\"1\"><tr><th>Domain</th><th>Count</th></tr>{rows}</table>")
+    };
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Contact Dossier — {name}</title>
+<style>body{{font-family:monospace;margin:2em}}table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:4px}}</style>
+</head>
+<body>
+<h1>Contact Dossier</h1>
+<p><strong>JID:</strong> {jid_escaped}</p>
+<p><strong>Display Name:</strong> {name}</p>
+<p><strong>Sent:</strong> {sent} &nbsp; <strong>Received:</strong> {received} &nbsp; <strong>Media Sent:</strong> {media}</p>
+<h2>Hourly Activity</h2>
+<table><tr>{hourly_rows}</tr></table>
+<h2>Weekly Activity</h2>
+<table><tr>{weekly_rows}</tr></table>
+<h2>Top Link Domains</h2>
+{domains_html}
+</body>
+</html>"#,
+        name = name,
+        jid_escaped = jid_escaped,
+        sent = stats.total_sent,
+        received = stats.total_received,
+        media = stats.total_media_sent,
+        hourly_rows = hourly_rows,
+        weekly_rows = weekly_rows,
+        domains_html = domains_html,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -161,12 +349,12 @@ mod tests {
 
     #[test]
     fn test_stats_hourly_heatmap_populated() {
-        // 2024-01-15 14:07:00 UTC
+        // 2024-01-15 13:03:40 UTC (Unix ms = 1_705_323_820_000)
         let ts_ms: i64 = 1_705_323_820_000;
         let m = make_text_msg(1, Some(CONTACT_JID), false, ts_ms, "test");
         let msgs: Vec<&Message> = vec![&m];
         let stats = build_contact_stats(CONTACT_JID, None, &msgs, 0);
-        assert!(stats.hourly_heatmap[14] > 0);
+        assert!(stats.hourly_heatmap[13] > 0);
     }
 
     #[test]
