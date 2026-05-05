@@ -176,7 +176,7 @@ fn build_chats(records: &[&RecoveredRecord], jid_map: &HashMap<i64, String>) -> 
             Some(SqlValue::Text(s)) => Some(s.clone()),
             _ => None,
         };
-        let is_group = subject.is_some();
+        let is_group = jid.ends_with("@g.us");
         map.insert(
             id,
             Chat {
@@ -185,7 +185,7 @@ fn build_chats(records: &[&RecoveredRecord], jid_map: &HashMap<i64, String>) -> 
                 name: subject,
                 is_group,
                 messages: Vec::new(),
-                archived: false,
+                archived: matches!(r.values.get(3), Some(SqlValue::Int(1))),
             },
         );
     }
@@ -232,7 +232,24 @@ fn record_to_message(
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
-    let content = if is_media_type(msg_type) {
+    let content = if msg_type == 53 || msg_type == 54 {
+        // View-once image (53) or video (54) — media key/CDN URL may survive device deletion
+        let mime = media_mime.unwrap_or_else(|| {
+            if msg_type == 54 { "video/mp4" } else { "image/jpeg" }.to_string()
+        });
+        MessageContent::ViewOnce(MediaRef {
+            file_path: media_name.unwrap_or_default(),
+            mime_type: mime,
+            file_size: 0,
+            extracted_name: text_data,
+            thumbnail_b64: None,
+            duration_secs: None,
+            file_hash: None,
+            encrypted_hash: None,
+            cdn_url: None,
+            media_key_b64: None,
+        })
+    } else if is_media_type(msg_type) {
         let mime = media_mime.unwrap_or_else(|| default_mime_for_type(msg_type).to_string());
         MessageContent::Media(MediaRef {
             file_path: media_name.unwrap_or_default(),
@@ -1072,12 +1089,12 @@ mod proptest_redo_tests {
             );
             let db = make_db_with_sql(&sql);
             let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-            let media_count = result.chats.iter()
+            // The inserted row has media_name='test.jpg'; it must not appear as Media(_)
+            let misclassified = result.chats.iter()
                 .flat_map(|c| c.messages.iter())
-                .filter(|m| matches!(&m.content, MessageContent::Media(_)))
+                .filter(|m| matches!(&m.content, MessageContent::Media(mr) if mr.file_path == "test.jpg"))
                 .count();
-            // Should be 0 view-once media classified as regular Media
-            prop_assert_eq!(media_count, 0,
+            prop_assert_eq!(misclassified, 0,
                 "msg_type {} must not produce MessageContent::Media", msg_type);
         }
     }
