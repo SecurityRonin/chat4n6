@@ -1,10 +1,20 @@
 // chat4n6-whatsapp
 
+pub mod contact_report;
 pub mod decrypt;
 pub mod extractor;
+pub mod orphaned_media;
 pub mod platform;
 pub mod schema;
 pub mod timezone;
+pub mod album;
+pub mod poll;
+pub mod group_metadata;
+pub mod location;
+pub mod mention;
+pub mod pin;
+pub mod status;
+pub mod link;
 
 use crate::extractor::{extract_contacts, extract_from_msgstore, build_contact_names};
 use crate::schema::detect_schema_version;
