@@ -1,0 +1,33 @@
+[
+  {
+    "description": "Telegram Android cache.db messages are extracted into ExtractionResult",
+    "steps": [
+      "Create a minimal Telegram cache.db fixture (messages, dialogs, users tables)",
+      "Call extract_from_telegram_db(bytes, tz)",
+      "Assert at least one Chat with at least one Message is returned",
+      "Assert Message.sender_jid is populated from users table",
+      "Assert text messages produce MessageContent::Text",
+      "cargo test -p chat4n6-telegram -- telegram_extraction passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "Telegram media messages (photos, documents, voice) produce MessageContent::Media",
+    "steps": [
+      "Insert a Telegram message row with media_type != 0 and file_path set",
+      "Assert MessageContent::Media is produced with correct mime_type",
+      "cargo test -p chat4n6-telegram -- telegram_media passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "Telegram calls from tgcalls table are extracted into CallRecord list",
+    "steps": [
+      "Insert a row into Telegram calls table",
+      "Assert ExtractionResult.calls has at least one entry",
+      "Assert call direction (from_me) is correct",
+      "cargo test -p chat4n6-telegram -- telegram_calls passes"
+    ],
+    "passes": false
+  }
+]

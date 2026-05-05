@@ -1,0 +1,13 @@
+[
+  {
+    "description": "UFDR report is generated as a valid ZIP with UFDRManifest.xml and message XML",
+    "steps": [
+      "Call write_ufdr(result, path) on a minimal ExtractionResult",
+      "Assert the output file is a valid ZIP archive",
+      "Assert the ZIP contains UFDRManifest.xml at the root",
+      "Assert UFDRManifest.xml references at least one message element",
+      "cargo test -p chat4n6-report -- ufdr_output passes"
+    ],
+    "passes": false
+  }
+]

@@ -1,0 +1,13 @@
+[
+  {
+    "description": "PDF report is generated with a cryptographic integrity signature in XMP metadata",
+    "steps": [
+      "Call write_signed_pdf(result, case_name, key_bytes, cert_bytes, path)",
+      "Assert the file is a valid PDF (starts with %PDF)",
+      "Assert the PDF contains XMP metadata with a SHA-256 hash of the report content",
+      "Assert the hash matches the report body",
+      "cargo test -p chat4n6-report -- pdf_signing passes"
+    ],
+    "passes": false
+  }
+]

@@ -1,0 +1,21 @@
+[
+  {
+    "description": "Extended media type mapping covers sticker (20), document (8), contact card (64), location (5), live location (42)",
+    "steps": [
+      "Test msg_type=5 produces MessageContent::Media with mime 'application/vnd.geo+json' or similar",
+      "Test msg_type=64 produces MessageContent::Media with mime 'text/vcard'",
+      "Test msg_type=42 (live location) produces MessageContent::Media",
+      "cargo test -p chat4n6-whatsapp -- media_type_extended passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "Payment message type (64) is extracted with transaction metadata",
+    "steps": [
+      "Test msg_type=66 (WhatsApp Pay) produces recognizable MessageContent::Unknown(66) or dedicated variant",
+      "Assert no panic on unknown high-value msg_types (9, 16, 23, 65, 67, 70, 74)",
+      "cargo test -p chat4n6-whatsapp -- payment_message passes"
+    ],
+    "passes": false
+  }
+]

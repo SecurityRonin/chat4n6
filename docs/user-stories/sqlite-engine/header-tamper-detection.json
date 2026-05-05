@@ -1,0 +1,21 @@
+[
+  {
+    "description": "SQLite header tampering is detected: mismatched change counters emit ForensicWarning",
+    "steps": [
+      "Construct a byte buffer with a valid SQLite header but where write_counter != read_counter",
+      "Pass to anti_forensics::analyse_header(bytes)",
+      "Assert ForensicWarning::SchemaVersionMismatch or a new HeaderTampered variant is returned",
+      "cargo test -p chat4n6-whatsapp -- header_tamper passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "SQLite page size field is validated against actual file size",
+    "steps": [
+      "Construct a byte buffer where declared page_size * page_count != file size",
+      "Assert a ForensicWarning is emitted",
+      "cargo test -p chat4n6-whatsapp -- page_size_mismatch passes"
+    ],
+    "passes": false
+  }
+]

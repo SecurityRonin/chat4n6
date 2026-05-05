@@ -1,0 +1,22 @@
+[
+  {
+    "description": "Extraction streams records to a callback rather than collecting all in memory",
+    "steps": [
+      "Call extract_streaming(db_bytes, tz, |record| { /* callback */ })",
+      "Assert callback is invoked for each message without collecting into Vec",
+      "Assert peak memory usage does not scale with message count (test with 10k messages)",
+      "cargo test -p chat4n6-whatsapp -- streaming_extraction passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "Rayon parallel processing accelerates multi-chat extraction by at least 1.5x on 4+ cores",
+    "steps": [
+      "Build a large test DB with 10 chats × 1000 messages each",
+      "Time extract_from_msgstore (serial) vs extract_parallel (rayon)",
+      "Assert parallel is faster on multi-core (skip on single-core CI with #[cfg])",
+      "cargo test -p chat4n6-whatsapp -- parallel_extraction passes"
+    ],
+    "passes": false
+  }
+]

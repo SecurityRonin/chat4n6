@@ -1,0 +1,13 @@
+[
+  {
+    "description": "FTS5 shadow table content (_data, _content) is recovered and searchable text extracted",
+    "steps": [
+      "Create a test SQLite DB with an FTS5 virtual table and populated shadow tables",
+      "Run ForensicEngine recovery on it",
+      "Assert that recovered records include rows from *_content shadow table",
+      "Assert text fragments match what was inserted",
+      "cargo test -p chat4n6-sqlite-forensics -- fts5_shadow passes"
+    ],
+    "passes": false
+  }
+]

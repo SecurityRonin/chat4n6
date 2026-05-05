@@ -1,0 +1,13 @@
+[
+  {
+    "description": "Rollback journal (-journal file) is parsed and pre-transaction page versions recovered",
+    "steps": [
+      "Create a rollback journal byte fixture (SQLite journal format: magic + page images)",
+      "Call ForensicEngine or a new parse_rollback_journal(bytes) with the journal",
+      "Assert that at least one pre-image page is returned",
+      "Assert recovered records have source EvidenceSource::RollbackJournal or WalHistoric",
+      "cargo test -p chat4n6-sqlite-forensics -- rollback_journal passes"
+    ],
+    "passes": false
+  }
+]
