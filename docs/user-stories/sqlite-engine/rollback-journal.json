@@ -8,6 +8,6 @@
       "Assert recovered records have source EvidenceSource::RollbackJournal or WalHistoric",
       "cargo test -p chat4n6-sqlite-forensics -- rollback_journal passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]

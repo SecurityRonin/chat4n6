@@ -20,7 +20,8 @@ CREATE TABLE ZWAMESSAGE (
     ZFROMJID TEXT,
     ZSTARRED INTEGER DEFAULT 0,
     ZISFORWARDED INTEGER DEFAULT 0,
-    ZDELETED INTEGER DEFAULT 0
+    ZDELETED INTEGER DEFAULT 0,
+    ZSORT REAL
 );
 
 CREATE TABLE ZWAMEDIAITEM (
@@ -54,11 +55,11 @@ INSERT INTO ZWACHATSESSION VALUES (1, 0, '4155550100@s.whatsapp.net', 'Alice', 7
 INSERT INTO ZWACHATSESSION VALUES (2, 1, '4155550101@s.whatsapp.net', 'Bob',   732205927.0, 0);  -- archived
 INSERT INTO ZWACHATSESSION VALUES (3, 0, 'groupabc@g.us', 'Team Chat', 732205927.0, 1);           -- group
 
-INSERT INTO ZWAMESSAGE VALUES (1, 1, 732205927.0, 'Hello iOS!', 0, NULL, 1, NULL,                              0, 0, 0); -- sent text
-INSERT INTO ZWAMESSAGE VALUES (2, 1, 732206000.0, 'Hi back!',   0, NULL, 0, '4155550100@s.whatsapp.net', 0, 0, 0); -- received
-INSERT INTO ZWAMESSAGE VALUES (3, 1, 732206100.0, NULL,         1, 1,    0, '4155550100@s.whatsapp.net', 0, 0, 0); -- media received
-INSERT INTO ZWAMESSAGE VALUES (4, 1, 732206200.0, 'Gone!',      8, NULL, 1, NULL,                              0, 0, 1); -- deleted
-INSERT INTO ZWAMESSAGE VALUES (5, 1, 732206300.0, 'Starred!',   0, NULL, 1, NULL,                              1, 0, 0); -- starred sent
+INSERT INTO ZWAMESSAGE VALUES (1, 1, 732205927.0, 'Hello iOS!', 0, NULL, 1, NULL,                              0, 0, 0, 1.0); -- sent text
+INSERT INTO ZWAMESSAGE VALUES (2, 1, 732206000.0, 'Hi back!',   0, NULL, 0, '4155550100@s.whatsapp.net', 0, 0, 0, 2.0); -- received
+INSERT INTO ZWAMESSAGE VALUES (3, 1, 732206100.0, NULL,         1, 1,    0, '4155550100@s.whatsapp.net', 0, 0, 0, 3.0); -- media received
+INSERT INTO ZWAMESSAGE VALUES (4, 1, 732206200.0, 'Gone!',      8, NULL, 1, NULL,                              0, 0, 1, 4.0); -- deleted
+INSERT INTO ZWAMESSAGE VALUES (5, 1, 732206300.0, 'Starred!',   0, NULL, 1, NULL,                              1, 0, 0, 5.0); -- starred sent
 
 INSERT INTO ZWAMEDIAITEM VALUES (1, 3, 'image/jpeg', 204800, 'Media/WhatsApp Images/IMG-001.jpg', NULL);
 

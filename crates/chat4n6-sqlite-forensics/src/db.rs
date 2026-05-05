@@ -104,6 +104,29 @@ impl<'a> ForensicEngine<'a> {
         self.read_sqlite_master()
     }
 
+    /// Return the CREATE TABLE SQL for each table in the database.
+    ///
+    /// Useful for callers that need to build dynamic column-position maps
+    /// without relying on hardcoded schema assumptions.
+    pub fn table_ddl(&self) -> HashMap<String, String> {
+        let mut result = HashMap::new();
+        let mut master_records = Vec::new();
+        self.traverse_btree(1, "sqlite_master", &mut master_records);
+        use crate::record::SqlValue;
+        for r in &master_records {
+            if r.values.len() >= 5 {
+                if let (SqlValue::Text(obj_type), SqlValue::Text(name), SqlValue::Text(sql)) =
+                    (&r.values[0], &r.values[1], &r.values[4])
+                {
+                    if obj_type == "table" {
+                        result.insert(name.clone(), sql.clone());
+                    }
+                }
+            }
+        }
+        result
+    }
+
     /// Layer 1: traverse B-tree and recover all live records.
     pub fn recover_layer1(&self) -> Result<Vec<RecoveredRecord>> {
         let mut records = Vec::new();

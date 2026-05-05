@@ -5,6 +5,7 @@
 
 use chat4n6_plugin_api::EvidenceSource;
 use chat4n6_sqlite_forensics::db::{ForensicEngine, WalMode};
+use chat4n6_sqlite_forensics::journal::JOURNAL_MAGIC;
 use chat4n6_sqlite_forensics::record::SqlValue;
 
 // ---------------------------------------------------------------------------
@@ -385,4 +386,118 @@ fn test_confidence_values_are_valid() {
             record.row_id
         );
     }
+}
+
+// ── Rollback journal recovery ─────────────────────────────────────────────────
+
+/// Build a synthetic rollback journal containing a single table-leaf page.
+///
+/// Journal format:
+///   - 28-byte header padded to sector_size
+///   - page_number(4) + page_data(page_size) + checksum(4)  per page record
+fn make_synthetic_journal(page_size: usize, sector_size: usize, page_data: &[u8]) -> Vec<u8> {
+    assert_eq!(page_data.len(), page_size, "page_data must match page_size");
+
+    let mut j = vec![0u8; sector_size]; // header, zero-padded
+    j[..8].copy_from_slice(&JOURNAL_MAGIC);
+    j[8..12].copy_from_slice(&1i32.to_be_bytes());           // page_count = 1
+    j[12..16].copy_from_slice(&0xCAFEu32.to_be_bytes());     // nonce
+    j[16..20].copy_from_slice(&2u32.to_be_bytes());          // initial db size (pages)
+    j[20..24].copy_from_slice(&(sector_size as u32).to_be_bytes());
+    j[24..28].copy_from_slice(&(page_size as u32).to_be_bytes());
+
+    // Page record: page_number(4) + page_data + checksum(4)
+    j.extend_from_slice(&2u32.to_be_bytes()); // page_number = 2
+    j.extend_from_slice(page_data);
+    j.extend_from_slice(&[0, 0, 0, 0]); // checksum (not validated)
+
+    j
+}
+
+/// Build a minimal SQLite table-leaf page with one integer row.
+fn make_table_leaf_page(page_size: usize) -> Vec<u8> {
+    let mut page = vec![0u8; page_size];
+    page[0] = 0x0D; // table leaf
+    // cell_count = 1
+    page[3] = 0x00;
+    page[4] = 0x01;
+    // cell_content_start
+    let cell_start: u16 = 100;
+    page[5] = (cell_start >> 8) as u8;
+    page[6] = (cell_start & 0xFF) as u8;
+    // cell pointer
+    page[8] = (cell_start >> 8) as u8;
+    page[9] = (cell_start & 0xFF) as u8;
+    // cell: payload_len=4, rowid=7, header_size=3, serial_type=1(1-byte int), serial_type=13(0-byte text)
+    page[cell_start as usize] = 0x04;
+    page[cell_start as usize + 1] = 0x07; // rowid
+    page[cell_start as usize + 2] = 0x03; // header_size
+    page[cell_start as usize + 3] = 0x01; // serial_type: 1-byte int
+    page[cell_start as usize + 4] = 0x0D; // serial_type: 0-byte text
+    page[cell_start as usize + 5] = 42;   // integer value
+    page
+}
+
+#[test]
+fn rollback_journal_pre_image_recovery() {
+    let page_size: usize = 4096;
+    let sector_size: usize = 512;
+    let db = make_comprehensive_test_db();
+
+    // Build a journal containing a pre-image table-leaf page
+    let leaf = make_table_leaf_page(page_size);
+    let journal = make_synthetic_journal(page_size, sector_size, &leaf);
+
+    let engine = ForensicEngine::new(&db, None)
+        .unwrap()
+        .with_journal(&journal);
+    let result = engine.recover_all().unwrap();
+
+    // At least one record should come from the journal (pre-image page)
+    let journal_records: Vec<_> = result
+        .records
+        .iter()
+        .filter(|r| r.source == EvidenceSource::Journal)
+        .collect();
+    assert!(
+        !journal_records.is_empty(),
+        "recover_all() should return at least one pre-image record from the rollback journal, got: {:?}",
+        result.stats
+    );
+
+    // All journal records must report Journal provenance
+    for r in &journal_records {
+        assert_eq!(
+            r.source,
+            EvidenceSource::Journal,
+            "source must be Journal, got {:?}",
+            r.source
+        );
+    }
+}
+
+#[test]
+fn rollback_journal_stats_count_matches_records() {
+    let page_size: usize = 4096;
+    let sector_size: usize = 512;
+    let db = make_comprehensive_test_db();
+
+    let leaf = make_table_leaf_page(page_size);
+    let journal = make_synthetic_journal(page_size, sector_size, &leaf);
+
+    let engine = ForensicEngine::new(&db, None)
+        .unwrap()
+        .with_journal(&journal);
+    let result = engine.recover_all().unwrap();
+
+    let journal_record_count = result
+        .records
+        .iter()
+        .filter(|r| r.source == EvidenceSource::Journal)
+        .count();
+    assert_eq!(
+        result.stats.journal_recovered,
+        journal_record_count,
+        "stats.journal_recovered must match actual Journal source count"
+    );
 }

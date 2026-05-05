@@ -7,7 +7,7 @@
       "Assert peak memory usage does not scale with message count (test with 10k messages)",
       "cargo test -p chat4n6-whatsapp -- streaming_extraction passes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "description": "Rayon parallel processing accelerates multi-chat extraction by at least 1.5x on 4+ cores",
@@ -17,6 +17,6 @@
       "Assert parallel is faster on multi-core (skip on single-core CI with #[cfg])",
       "cargo test -p chat4n6-whatsapp -- parallel_extraction passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]

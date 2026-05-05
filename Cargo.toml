@@ -36,3 +36,4 @@ rayon = "1"
 log = "0.4"
 env_logger = "0.11"
 memmap2 = "0.9"
+zip = { version = "2", default-features = false, features = ["deflate"] }

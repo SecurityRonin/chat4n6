@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0124ba515591de09699b6c92cac2e17bd1f7a9e0b0597be8775bc3f9f5f78587 # shrinks to calls = [(CallRecord { call_id: 0, participants: ["aaa@s.whatsapp.net"], from_me: false, video: false, group_call: false, duration_secs: 60, call_result: Unknown, timestamp: ForensicTimestamp { utc: 2024-03-15T14:32:07Z, local_offset_seconds: 0 }, source: Live, call_creator_device_jid: None }, Some(0))]

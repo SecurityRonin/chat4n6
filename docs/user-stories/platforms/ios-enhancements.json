@@ -7,7 +7,7 @@
       "Assert ExtractionResult.forensic_warnings contains SelectiveDeletion for that chat",
       "cargo test -p chat4n6-ios-whatsapp -- zsort_gap passes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "description": "iOS column ordering is resolved via PRAGMA table_info, not hardcoded indices",
@@ -16,6 +16,6 @@
       "Assert extraction still produces correct Message fields",
       "cargo test -p chat4n6-ios-whatsapp -- dynamic_column_order passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]

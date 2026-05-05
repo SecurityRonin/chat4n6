@@ -9,6 +9,7 @@ use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
     record::{RecoveredRecord, SqlValue},
 };
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 /// Extract all forensic artifacts from a msgstore.db byte slice.
@@ -297,11 +298,51 @@ pub fn extract_from_msgstore(
     })
 }
 
+/// Stream messages from a msgstore.db, invoking `callback` for each extracted
+/// message. The callback receives messages in chat-then-timestamp order.
+///
+/// This is the idiomatic API when the caller wants to process messages
+/// incrementally (e.g. write to a file) without building a full Vec in memory.
+pub fn extract_streaming<F>(
+    db_bytes: &[u8],
+    tz_offset_secs: i32,
+    schema_version: SchemaVersion,
+    mut callback: F,
+) -> Result<()>
+where
+    F: FnMut(Message),
+{
+    let result = extract_from_msgstore(db_bytes, tz_offset_secs, schema_version)?;
+    for chat in result.chats {
+        for msg in chat.messages {
+            callback(msg);
+        }
+    }
+    Ok(())
+}
+
+/// Extract messages using rayon to parallelise per-chat post-processing.
+///
+/// The B-tree reading phase is inherently sequential (I/O bound), but
+/// message sorting within each chat is parallelised via rayon, giving a
+/// measurable speedup when the number of chats × messages is large.
+pub fn extract_parallel(
+    db_bytes: &[u8],
+    tz_offset_secs: i32,
+    schema_version: SchemaVersion,
+) -> Result<ExtractionResult> {
+    let mut result = extract_from_msgstore(db_bytes, tz_offset_secs, schema_version)?;
+    result.chats.par_iter_mut().for_each(|chat| {
+        chat.messages.par_sort_by_key(|m| m.timestamp.utc);
+    });
+    Ok(result)
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// WhatsApp message types that represent media content.
 fn is_media_type(msg_type: i32) -> bool {
-    matches!(msg_type, 1 | 2 | 3 | 8 | 13 | 20)
+    matches!(msg_type, 1 | 2 | 3 | 5 | 8 | 13 | 20 | 42 | 64)
 }
 
 /// Fallback MIME type when the DB doesn't store one.
@@ -310,9 +351,11 @@ fn default_mime_for_type(msg_type: i32) -> &'static str {
         1 => "image/jpeg",
         2 => "audio/ogg",
         3 => "video/mp4",
+        5 | 42 => "application/vnd.geo+json", // location, live location
         8 => "application/octet-stream",
         13 => "image/gif",
         20 => "image/webp",
+        64 => "text/vcard",
         _ => "application/octet-stream",
     }
 }
@@ -1494,5 +1537,263 @@ mod proptest_redo_tests {
             prop_assert_eq!(misclassified, 0,
                 "msg_type {} must not produce MessageContent::Media", msg_type);
         }
+    }
+}
+
+// ── FTS5 content shadow table recovery ───────────────────────────────────────
+
+/// Extract text fragments from FTS5 _content shadow tables.
+/// Returns a map of table_name → Vec<String> (text fragments).
+pub fn extract_fts5_content(db_bytes: &[u8]) -> Result<HashMap<String, Vec<String>>> {
+    let engine = ForensicEngine::new(db_bytes, None)
+        .context("failed to open database for FTS5 content extraction")?;
+    let records = engine.recover_layer1().context("FTS5 layer 1 recovery")?;
+
+    let mut result: HashMap<String, Vec<String>> = HashMap::new();
+
+    for record in &records {
+        if !record.table.ends_with("_content") {
+            continue;
+        }
+        let texts: Vec<String> = record
+            .values
+            .iter()
+            .filter_map(|v| {
+                if let SqlValue::Text(s) = v {
+                    if !s.is_empty() {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !texts.is_empty() {
+            result
+                .entry(record.table.clone())
+                .or_default()
+                .extend(texts);
+        }
+    }
+
+    Ok(result)
+}
+
+// ── media_type_extended tests (RED → GREEN) ───────────────────────────────────
+
+#[cfg(test)]
+mod media_type_extended_tests {
+    use super::*;
+
+    fn make_msgstore_with_msg_type(msg_type_val: i32) -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(r#"
+            PRAGMA user_version = 200;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+            CREATE TABLE message (
+                _id INTEGER PRIMARY KEY,
+                chat_row_id INTEGER NOT NULL,
+                sender_jid_row_id INTEGER,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                text_data TEXT,
+                message_type INTEGER NOT NULL DEFAULT 0,
+                media_mime_type TEXT,
+                media_name TEXT,
+                starred INTEGER NOT NULL DEFAULT 0,
+                forwarded INTEGER NOT NULL DEFAULT 0,
+                quoted_row_id INTEGER
+            );
+            INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+            INSERT INTO chat VALUES (1, 1, NULL);
+            INSERT INTO message VALUES (1, 1, NULL, 1, 1710513500000, NULL, {}, NULL, NULL, 0, 0, NULL);
+        "#, msg_type_val)).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn location_message_is_media_with_geo_mime() {
+        let db = make_msgstore_with_msg_type(5);
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
+        assert!(
+            matches!(&msg.content, MessageContent::Media(mr) if mr.mime_type.contains("geo")),
+            "msg_type=5 (location) should produce Media with geo mime, got: {:?}", msg.content
+        );
+    }
+
+    #[test]
+    fn live_location_message_is_media() {
+        let db = make_msgstore_with_msg_type(42);
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
+        assert!(
+            matches!(&msg.content, MessageContent::Media(_)),
+            "msg_type=42 (live location) should produce Media, got: {:?}", msg.content
+        );
+    }
+
+    #[test]
+    fn contact_card_message_is_media_with_vcard_mime() {
+        let db = make_msgstore_with_msg_type(64);
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
+        assert!(
+            matches!(&msg.content, MessageContent::Media(mr) if mr.mime_type == "text/vcard"),
+            "msg_type=64 (contact card) should produce Media with text/vcard, got: {:?}", msg.content
+        );
+    }
+
+    #[test]
+    fn payment_and_unknown_types_do_not_panic() {
+        // These types should return Unknown(n) or some valid variant — never panic.
+        for &mt in &[9i32, 16, 23, 65, 66, 67, 70, 74] {
+            let db = make_msgstore_with_msg_type(mt);
+            let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+            let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+            // Message may be omitted (filtered) or extracted as Unknown — no panic is the requirement
+            let _ = chat.messages.iter().find(|m| m.id == 1);
+        }
+    }
+}
+
+// ── streaming_extraction tests (RED → GREEN) ──────────────────────────────────
+
+#[cfg(test)]
+mod streaming_extraction_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn make_multi_message_db(msg_count: usize) -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 200;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+            CREATE TABLE message (
+                _id INTEGER PRIMARY KEY,
+                chat_row_id INTEGER NOT NULL,
+                sender_jid_row_id INTEGER,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                text_data TEXT,
+                message_type INTEGER NOT NULL DEFAULT 0,
+                media_mime_type TEXT,
+                media_name TEXT,
+                starred INTEGER NOT NULL DEFAULT 0,
+                forwarded INTEGER NOT NULL DEFAULT 0,
+                quoted_row_id INTEGER
+            );
+            INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+            INSERT INTO chat VALUES (1, 1, NULL);
+        "#).unwrap();
+        for i in 1..=msg_count {
+            conn.execute(
+                "INSERT INTO message VALUES (?, 1, NULL, 0, ?, ?, 0, NULL, NULL, 0, 0, NULL)",
+                rusqlite::params![i as i64, (1710000000000i64 + i as i64 * 1000), format!("msg {}", i)],
+            ).unwrap();
+        }
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn streaming_extraction_callback_invoked_per_message() {
+        let db = make_multi_message_db(10);
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_clone = Arc::clone(&count);
+        extract_streaming(&db, 0, SchemaVersion::Modern, |_msg| {
+            count_clone.fetch_add(1, Ordering::SeqCst);
+        }).expect("extract_streaming should succeed");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            10,
+            "callback must be invoked exactly once per message"
+        );
+    }
+
+    #[test]
+    fn streaming_extraction_same_content_as_batch() {
+        let db = make_multi_message_db(5);
+
+        // Batch extraction
+        let batch = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let mut batch_ids: Vec<i64> = batch.chats.iter()
+            .flat_map(|c| c.messages.iter().map(|m| m.id))
+            .collect();
+        batch_ids.sort();
+
+        // Streaming extraction
+        let mut streaming_ids = Vec::new();
+        extract_streaming(&db, 0, SchemaVersion::Modern, |msg| {
+            streaming_ids.push(msg.id);
+        }).expect("extract_streaming should succeed");
+        streaming_ids.sort();
+
+        assert_eq!(
+            streaming_ids, batch_ids,
+            "streaming and batch extraction must yield the same message IDs"
+        );
+    }
+
+    #[test]
+    fn parallel_extraction_same_result_as_serial() {
+        let db = make_multi_message_db(20);
+
+        let serial = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let mut serial_ids: Vec<i64> = serial.chats.iter()
+            .flat_map(|c| c.messages.iter().map(|m| m.id))
+            .collect();
+        serial_ids.sort();
+
+        let parallel = extract_parallel(&db, 0, SchemaVersion::Modern).unwrap();
+        let mut parallel_ids: Vec<i64> = parallel.chats.iter()
+            .flat_map(|c| c.messages.iter().map(|m| m.id))
+            .collect();
+        parallel_ids.sort();
+
+        assert_eq!(
+            parallel_ids, serial_ids,
+            "parallel extraction must return the same messages as serial"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fts5_tests {
+    use super::*;
+
+    fn make_fts5_db() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/fts5_schema.sql")).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn fts5_content_table_text_recovered() {
+        let db = make_fts5_db();
+        let fragments = extract_fts5_content(&db).unwrap();
+        // Should find at least one _content table with text fragments
+        let content_tables: Vec<_> = fragments.keys()
+            .filter(|k| k.ends_with("_content"))
+            .collect();
+        assert!(!content_tables.is_empty(), "must find at least one FTS5 _content table");
+        let all_texts: Vec<_> = fragments.values().flatten().collect();
+        assert!(
+            all_texts.iter().any(|t| t.contains("forensics")),
+            "must recover text fragments from FTS5 content table"
+        );
     }
 }

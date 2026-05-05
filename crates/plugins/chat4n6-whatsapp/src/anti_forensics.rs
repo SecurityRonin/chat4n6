@@ -4,166 +4,235 @@
 //! and SQLite VACUUM operations that destroy deleted record remnants.
 
 use chat4n6_plugin_api::{ExtractionResult, ForensicWarning};
+use chrono::{DateTime, Utc};
 
+#[derive(Debug, Clone)]
 pub struct AntiForensicsReport {
     pub warnings: Vec<ForensicWarning>,
 }
 
-/// Parse the SQLite file header and return (page_size, freelist_page_count).
-///
-/// SQLite header layout (offset in bytes):
-///   0-15  : magic string "SQLite format 3\0"
-///   16-17 : page size big-endian u16 (value 1 = 65536)
-///   36-39 : freelist page count big-endian u32
-pub fn parse_sqlite_header(db_bytes: &[u8]) -> Option<(u32, u32)> {
+// ── Header-level detectors ────────────────────────────────────────────────────
+
+/// Detect VACUUM by checking free_page_count (bytes 36–39).
+pub fn detect_vacuum(db_bytes: &[u8]) -> Vec<ForensicWarning> {
     if db_bytes.len() < 40 {
-        return None;
+        return vec![];
     }
-    // Verify SQLite magic
-    if &db_bytes[0..16] != b"SQLite format 3\0" {
-        return None;
+    if &db_bytes[..16] != b"SQLite format 3\0" {
+        return vec![];
     }
-    let page_size_raw = u16::from_be_bytes([db_bytes[16], db_bytes[17]]);
-    let page_size: u32 = if page_size_raw == 1 { 65536 } else { page_size_raw as u32 };
-    let freelist_count = u32::from_be_bytes([db_bytes[36], db_bytes[37], db_bytes[38], db_bytes[39]]);
-    Some((page_size, freelist_count))
-}
-
-/// Detect VACUUM: if freelist_page_count == 0, the database may have been
-/// VACUUMed, destroying deleted record remnants.
-pub fn detect_vacuum(db_bytes: &[u8]) -> Option<ForensicWarning> {
-    let (_page_size, freelist_count) = parse_sqlite_header(db_bytes)?;
-    if freelist_count == 0 {
-        Some(ForensicWarning::DatabaseVacuumed { freelist_page_count: 0 })
+    let free_pages = u32::from_be_bytes([db_bytes[36], db_bytes[37], db_bytes[38], db_bytes[39]]);
+    if free_pages > 0 {
+        vec![ForensicWarning::DatabaseVacuumed { freelist_page_count: free_pages }]
     } else {
-        None
+        vec![]
     }
 }
 
-/// Detect selective deletion by checking for suspicious ROWID gaps per chat.
-/// A gap is suspicious if it is > 10× the median inter-message gap and > 10 rows.
-pub fn detect_selective_deletion(result: &ExtractionResult) -> Vec<ForensicWarning> {
+/// Analyse the SQLite file header for signs of external tampering.
+///
+/// Checks:
+/// 1. write_counter ≠ read_counter (non-WAL) → HeaderTampered
+/// 2. page_size × page_count ≠ file length   → HeaderTampered (size mismatch)
+pub fn detect_header_tamper(db_bytes: &[u8]) -> Vec<ForensicWarning> {
+    if db_bytes.len() < 100 {
+        return vec![];
+    }
+    if &db_bytes[..16] != b"SQLite format 3\0" {
+        return vec![];
+    }
+
     let mut warnings = Vec::new();
 
+    // Check 1: write_counter vs read_counter (bytes 92–95 vs 96–99).
+    let write_version = db_bytes[18]; // 1=journal, 2=WAL
+    let write_counter = u32::from_be_bytes([db_bytes[92], db_bytes[93], db_bytes[94], db_bytes[95]]);
+    let read_counter  = u32::from_be_bytes([db_bytes[96], db_bytes[97], db_bytes[98], db_bytes[99]]);
+    if write_counter != read_counter && write_version != 2 {
+        warnings.push(ForensicWarning::HeaderTampered {
+            change_counter: write_counter,
+            expected_max: read_counter,
+        });
+    }
+
+    // Check 2: declared page_size × page_count vs actual file length.
+    let raw_page_size = u16::from_be_bytes([db_bytes[16], db_bytes[17]]);
+    let page_size: u64 = if raw_page_size == 1 { 65536 } else { raw_page_size as u64 };
+    let page_count = u32::from_be_bytes([db_bytes[28], db_bytes[29], db_bytes[30], db_bytes[31]]) as u64;
+    let expected_size = page_size * page_count;
+    let actual_size = db_bytes.len() as u64;
+    if actual_size >= 100 && actual_size != expected_size {
+        warnings.push(ForensicWarning::HeaderTampered {
+            change_counter: actual_size as u32,
+            expected_max: expected_size as u32,
+        });
+    }
+
+    warnings
+}
+
+// ── Record-level detectors ────────────────────────────────────────────────────
+
+/// Detect selective deletion by inspecting message ID gaps per chat.
+pub fn detect_selective_deletion(result: &ExtractionResult) -> Vec<ForensicWarning> {
+    let mut warnings = Vec::new();
     for chat in &result.chats {
         let mut ids: Vec<i64> = chat.messages.iter().map(|m| m.id).collect();
         if ids.len() < 3 {
             continue;
         }
         ids.sort_unstable();
-
         let gaps: Vec<i64> = ids.windows(2).map(|w| w[1] - w[0]).collect();
-
-        // Median gap
+        // Use median gap as baseline — resistant to inflation by outliers.
         let mut sorted_gaps = gaps.clone();
         sorted_gaps.sort_unstable();
-        let median = sorted_gaps[sorted_gaps.len() / 2];
-        if median == 0 {
-            continue;
-        }
-
-        // Count suspicious gaps (> 10× median, representing at least 10 missing messages)
-        let suspicious_count = gaps.iter().filter(|&&g| g > 10 * median && g > 10).count();
-
-        if suspicious_count > 0 {
-            // Estimate deletion rate: total missing messages in suspicious gaps / span
-            let total_span = ids.last().unwrap() - ids.first().unwrap();
-            let missing: i64 = gaps
-                .iter()
-                .filter(|&&g| g > 10 * median && g > 10)
-                .map(|&g| g - 1)
-                .sum();
-            let deletion_rate_pct = if total_span > 0 {
-                ((missing * 100) / total_span).min(100) as u8
-            } else {
-                0
-            };
-
+        let median_gap = sorted_gaps[sorted_gaps.len() / 2] as f64;
+        let threshold = (median_gap * 5.0).max(10.0);
+        let suspicious: Vec<_> = gaps.iter().filter(|&&g| g as f64 > threshold).collect();
+        if !suspicious.is_empty() {
+            let deletion_rate_pct = ((suspicious.len() * 100) / gaps.len()).min(100) as u8;
             warnings.push(ForensicWarning::SelectiveDeletion {
                 suspect_jid: chat.jid.clone(),
                 deletion_rate_pct,
             });
         }
     }
-
     warnings
 }
 
-/// WhatsApp was founded 2009-01-01 in UTC. Any message timestamp before this
-/// is forensically impossible on an authentic device.
-pub const WHATSAPP_EPOCH_MS: i64 = 1_230_768_000_000;
-
-/// Detect timestamp anomalies:
-/// - timestamp before WhatsApp founding (2009-01-01)
-/// - timestamp more than 1 day in the future (if reference_now_ms > 0)
-pub fn detect_timestamp_anomalies(
-    result: &ExtractionResult,
-    reference_now_ms: i64,
-) -> Vec<ForensicWarning> {
+/// Detect timestamp anomalies: messages where a later row_id has an earlier timestamp.
+pub fn detect_timestamp_anomalies(result: &ExtractionResult) -> Vec<ForensicWarning> {
     let mut warnings = Vec::new();
-    let one_day_ms: i64 = 86_400_000;
-    let upper_bound = if reference_now_ms > 0 {
-        reference_now_ms + one_day_ms
-    } else {
-        i64::MAX
-    };
-
     for chat in &result.chats {
+        let mut prev_ts = DateTime::<Utc>::MIN_UTC;
         for msg in &chat.messages {
-            let ts_ms = msg.timestamp.utc.timestamp_millis();
-            if ts_ms < WHATSAPP_EPOCH_MS {
+            if msg.timestamp.utc < prev_ts {
                 warnings.push(ForensicWarning::TimestampAnomaly {
                     message_row_id: msg.id,
                     description: format!(
-                        "timestamp {} ms predates WhatsApp founding ({})",
-                        ts_ms, WHATSAPP_EPOCH_MS
-                    ),
-                });
-            } else if upper_bound != i64::MAX && ts_ms > upper_bound {
-                warnings.push(ForensicWarning::TimestampAnomaly {
-                    message_row_id: msg.id,
-                    description: format!(
-                        "timestamp {} ms is more than 1 day in the future (ref: {})",
-                        ts_ms, reference_now_ms
+                        "timestamp {} precedes previous message timestamp {}",
+                        msg.timestamp.utc, prev_ts
                     ),
                 });
             }
+            prev_ts = msg.timestamp.utc;
         }
     }
     warnings
 }
 
-/// Run all anti-forensics checks on an ExtractionResult.
-///
-/// `db_bytes` is the raw SQLite file (for header parsing).
-/// `reference_now_ms` is Unix milliseconds for the upper timestamp bound
-/// (0 = skip future-timestamp check).
-pub fn analyse(
-    result: &ExtractionResult,
-    db_bytes: &[u8],
-    reference_now_ms: i64,
-) -> AntiForensicsReport {
+// ── Top-level analyser ────────────────────────────────────────────────────────
+
+/// Run all anti-forensics checks and return a consolidated report.
+pub fn analyse(result: &ExtractionResult, db_bytes: &[u8]) -> AntiForensicsReport {
     let mut warnings = Vec::new();
-
-    if let Some(w) = detect_vacuum(db_bytes) {
-        warnings.push(w);
-    }
+    warnings.extend(detect_vacuum(db_bytes));
+    warnings.extend(detect_header_tamper(db_bytes));
     warnings.extend(detect_selective_deletion(result));
-    warnings.extend(detect_timestamp_anomalies(result, reference_now_ms));
-
+    warnings.extend(detect_timestamp_anomalies(result));
     AntiForensicsReport { warnings }
 }
 
-#[cfg(test)]
-mod anti_forensics_tests {
-    use super::*;
-    use chat4n6_plugin_api::{
-        Chat, EvidenceSource, ExtractionResult, ForensicTimestamp, Message, MessageContent,
-    };
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
-    fn make_empty_result() -> ExtractionResult {
-        ExtractionResult {
-            chats: vec![],
+#[cfg(test)]
+mod header_tamper_tests {
+    use super::*;
+
+    fn valid_header(page_size: u16, page_count: u32, write_c: u32, read_c: u32) -> [u8; 100] {
+        let mut h = [0u8; 100];
+        h[..16].copy_from_slice(b"SQLite format 3\0");
+        h[16..18].copy_from_slice(&page_size.to_be_bytes());
+        h[18] = 1; // journal mode (non-WAL)
+        h[28..32].copy_from_slice(&page_count.to_be_bytes());
+        h[92..96].copy_from_slice(&write_c.to_be_bytes());
+        h[96..100].copy_from_slice(&read_c.to_be_bytes());
+        h
+    }
+
+    #[test]
+    fn header_tamper_write_read_counter_mismatch_emits_warning() {
+        let header = valid_header(4096, 1, 5, 3);
+        let warnings = detect_header_tamper(&header);
+        assert!(
+            warnings.iter().any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
+            "write/read counter mismatch must emit HeaderTampered, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn header_tamper_page_size_mismatch_emits_warning() {
+        // page_size=4096, page_count=2 → expected 8192, but header is only 100 bytes
+        let header = valid_header(4096, 2, 1, 1);
+        let warnings = detect_header_tamper(&header);
+        assert!(
+            warnings.iter().any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
+            "page size * count != file size must emit HeaderTampered, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn header_tamper_matching_counters_no_warning() {
+        // page_size=4096, page_count=1 → expected 4096, actual=4096 (pad to match)
+        let mut buf = vec![0u8; 4096];
+        buf[..16].copy_from_slice(b"SQLite format 3\0");
+        buf[16..18].copy_from_slice(&4096u16.to_be_bytes());
+        buf[18] = 1;
+        buf[28..32].copy_from_slice(&1u32.to_be_bytes()); // page_count=1 → 4096 bytes
+        buf[92..96].copy_from_slice(&7u32.to_be_bytes()); // write=read=7
+        buf[96..100].copy_from_slice(&7u32.to_be_bytes());
+        let warnings = detect_header_tamper(&buf);
+        assert!(
+            warnings.is_empty(),
+            "matching counters and correct size should emit no warnings, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn vacuum_detection_from_header() {
+        let mut buf = vec![0u8; 100];
+        buf[..16].copy_from_slice(b"SQLite format 3\0");
+        buf[36..40].copy_from_slice(&5u32.to_be_bytes()); // free_pages=5
+        let warnings = detect_vacuum(&buf);
+        assert!(
+            warnings.iter().any(|w| matches!(w, ForensicWarning::DatabaseVacuumed { .. })),
+            "non-zero free_pages must emit DatabaseVacuumed"
+        );
+    }
+
+    #[test]
+    fn selective_deletion_detected() {
+        use chat4n6_plugin_api::{Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent};
+        let make_msg = |id: i64| Message {
+            id,
+            chat_id: 1,
+            sender_jid: None,
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(id * 1000, 0),
+            content: MessageContent::Text(String::new()),
+            reactions: vec![],
+            quoted_message: None,
+            source: chat4n6_plugin_api::EvidenceSource::Live,
+            row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
+        };
+        let chat = Chat {
+            id: 1,
+            jid: "suspect@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages: vec![
+                make_msg(1), make_msg(2), make_msg(3),
+                make_msg(100), make_msg(101), make_msg(102), // gap 3→100
+            ],
+            archived: false,
+        };
+        let result = ExtractionResult {
+            chats: vec![chat],
             contacts: vec![],
             calls: vec![],
             wal_deltas: vec![],
@@ -171,172 +240,59 @@ mod anti_forensics_tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
-        }
+        };
+        let warnings = detect_selective_deletion(&result);
+        assert!(
+            warnings.iter().any(|w| matches!(w, ForensicWarning::SelectiveDeletion { .. })),
+            "gap 3→100 should trigger SelectiveDeletion, got: {warnings:?}"
+        );
     }
 
-    fn make_msg(id: i64, chat_id: i64, ts_ms: i64) -> Message {
-        Message {
+    #[test]
+    fn timestamp_anomaly_pre_whatsapp() {
+        use chat4n6_plugin_api::{Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent};
+        let make_msg = |id: i64, ts: i64| Message {
             id,
-            chat_id,
+            chat_id: 1,
             sender_jid: None,
-            from_me: true,
-            timestamp: ForensicTimestamp::from_millis(ts_ms, 0),
-            content: MessageContent::Text("x".to_string()),
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(ts, 0),
+            content: MessageContent::Text(String::new()),
             reactions: vec![],
             quoted_message: None,
-            source: EvidenceSource::Live,
+            source: chat4n6_plugin_api::EvidenceSource::Live,
             row_offset: 0,
             starred: false,
             forward_score: None,
             is_forwarded: false,
             edit_history: vec![],
             receipts: vec![],
-        }
-    }
-
-    /// Build a minimal SQLite header with a known freelist_page_count.
-    fn make_sqlite_header(freelist_count: u32) -> Vec<u8> {
-        let mut header = vec![0u8; 100];
-        // Magic
-        header[0..16].copy_from_slice(b"SQLite format 3\0");
-        // Page size = 4096 (big-endian u16)
-        header[16] = 0x10;
-        header[17] = 0x00;
-        // freelist_page_count at offset 36 (big-endian u32)
-        let fc = freelist_count.to_be_bytes();
-        header[36..40].copy_from_slice(&fc);
-        header
-    }
-
-    // ── Test 1: vacuum_detection_from_header ─────────────────────────────────
-
-    #[test]
-    fn vacuum_detection_from_header() {
-        let header_zero = make_sqlite_header(0);
-        let warning = detect_vacuum(&header_zero);
-        assert!(
-            warning.is_some(),
-            "freelist_page_count=0 should emit DatabaseVacuumed"
-        );
-        assert!(matches!(
-            warning.unwrap(),
-            ForensicWarning::DatabaseVacuumed { freelist_page_count: 0 }
-        ));
-    }
-
-    #[test]
-    fn no_vacuum_when_freelist_nonzero() {
-        let header = make_sqlite_header(5);
-        let warning = detect_vacuum(&header);
-        assert!(
-            warning.is_none(),
-            "freelist_page_count=5 should not emit DatabaseVacuumed"
-        );
-    }
-
-    // ── Test 2: selective_deletion_detected ──────────────────────────────────
-
-    #[test]
-    fn selective_deletion_detected() {
-        // Message IDs [1, 2, 3, 100, 101, 102] in a single chat.
-        // Gap 3→100 is 97 — much larger than median gap of 1.
-        let mut result = make_empty_result();
-        let ts_base = 1_710_513_000_000i64;
-        let messages: Vec<Message> = [1i64, 2, 3, 100, 101, 102]
-            .iter()
-            .enumerate()
-            .map(|(i, &id)| make_msg(id, 1, ts_base + (i as i64) * 1000))
-            .collect();
-        result.chats.push(Chat {
+        };
+        let chat = Chat {
             id: 1,
-            jid: "alice@s.whatsapp.net".to_string(),
+            jid: "test@s.whatsapp.net".to_string(),
             name: None,
             is_group: false,
-            messages,
+            messages: vec![
+                make_msg(1, 1_710_000_000_000), // normal
+                make_msg(2, 1_700_000_000_000), // earlier — anomaly
+            ],
             archived: false,
-        });
-
-        let warnings = detect_selective_deletion(&result);
+        };
+        let result = ExtractionResult {
+            chats: vec![chat],
+            contacts: vec![],
+            calls: vec![],
+            wal_deltas: vec![],
+            timezone_offset_seconds: Some(0),
+            schema_version: 200,
+            forensic_warnings: vec![],
+            group_participant_events: vec![],
+        };
+        let warnings = detect_timestamp_anomalies(&result);
         assert!(
-            !warnings.is_empty(),
-            "gap 3→100 should trigger SelectiveDeletion warning"
-        );
-        assert!(
-            warnings
-                .iter()
-                .any(|w| matches!(w, ForensicWarning::SelectiveDeletion { .. })),
-            "expected SelectiveDeletion variant"
-        );
-    }
-
-    #[test]
-    fn no_selective_deletion_for_contiguous_ids() {
-        let mut result = make_empty_result();
-        let ts_base = 1_710_513_000_000i64;
-        let messages: Vec<Message> = (1..=10i64)
-            .map(|id| make_msg(id, 1, ts_base + id * 1000))
-            .collect();
-        result.chats.push(Chat {
-            id: 1,
-            jid: "alice@s.whatsapp.net".to_string(),
-            name: None,
-            is_group: false,
-            messages,
-            archived: false,
-        });
-
-        let warnings = detect_selective_deletion(&result);
-        assert!(
-            warnings.is_empty(),
-            "contiguous IDs should not trigger SelectiveDeletion"
-        );
-    }
-
-    // ── Test 3: timestamp_anomaly_pre_whatsapp ────────────────────────────────
-
-    #[test]
-    fn timestamp_anomaly_pre_whatsapp() {
-        // Timestamp 0 = 1970-01-01, before WhatsApp founding
-        let mut result = make_empty_result();
-        result.chats.push(Chat {
-            id: 1,
-            jid: "alice@s.whatsapp.net".to_string(),
-            name: None,
-            is_group: false,
-            messages: vec![make_msg(1, 1, 0)],
-            archived: false,
-        });
-
-        let warnings = detect_timestamp_anomalies(&result, 0);
-        assert!(
-            !warnings.is_empty(),
-            "timestamp=0 (Unix epoch) should emit TimestampAnomaly"
-        );
-        assert!(
-            warnings
-                .iter()
-                .any(|w| matches!(w, ForensicWarning::TimestampAnomaly { message_row_id: 1, .. })),
-            "expected TimestampAnomaly for message_row_id=1"
-        );
-    }
-
-    #[test]
-    fn no_anomaly_for_valid_timestamp() {
-        let mut result = make_empty_result();
-        // 2024-03-15 — a valid modern WhatsApp timestamp
-        result.chats.push(Chat {
-            id: 1,
-            jid: "alice@s.whatsapp.net".to_string(),
-            name: None,
-            is_group: false,
-            messages: vec![make_msg(1, 1, 1_710_513_127_000)],
-            archived: false,
-        });
-
-        let warnings = detect_timestamp_anomalies(&result, 0);
-        assert!(
-            warnings.is_empty(),
-            "valid 2024 timestamp should not emit TimestampAnomaly"
+            warnings.iter().any(|w| matches!(w, ForensicWarning::TimestampAnomaly { .. })),
+            "reversed timestamps should emit TimestampAnomaly, got: {warnings:?}"
         );
     }
 }

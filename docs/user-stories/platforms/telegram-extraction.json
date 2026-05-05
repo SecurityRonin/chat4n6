@@ -9,7 +9,7 @@
       "Assert text messages produce MessageContent::Text",
       "cargo test -p chat4n6-telegram -- telegram_extraction passes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "description": "Telegram media messages (photos, documents, voice) produce MessageContent::Media",
@@ -18,7 +18,7 @@
       "Assert MessageContent::Media is produced with correct mime_type",
       "cargo test -p chat4n6-telegram -- telegram_media passes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "description": "Telegram calls from tgcalls table are extracted into CallRecord list",
@@ -28,6 +28,6 @@
       "Assert call direction (from_me) is correct",
       "cargo test -p chat4n6-telegram -- telegram_calls passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]

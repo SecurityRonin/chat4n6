@@ -302,3 +302,158 @@ fn test_plugin_extract_end_to_end() {
     assert!(!result.chats.is_empty(), "extraction should yield chats");
     assert_eq!(result.timezone_offset_seconds, Some(0));
 }
+
+// ── Story 1: ZSORT gap detection ──────────────────────────────────────────────
+
+mod zsort_gap_tests {
+    use super::*;
+    use chat4n6_plugin_api::ForensicWarning;
+
+    /// Build a DB where ZWAMESSAGE ZSORT values for chat 1 are:
+    /// 1.0, 2.0, 3.0, 100.0, 101.0 — the jump 3→100 is a suspicious gap.
+    fn make_zsort_gap_db() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            PRAGMA user_version = 32;
+            CREATE TABLE ZWACHATSESSION (
+                Z_PK INTEGER PRIMARY KEY,
+                ZARCHIVED INTEGER DEFAULT 0,
+                ZCONTACTIDENTIFIER TEXT,
+                ZPARTNERNAME TEXT,
+                ZLASTMESSAGEDATE REAL,
+                ZSESSIONTYPE INTEGER DEFAULT 0
+            );
+            CREATE TABLE ZWAMESSAGE (
+                Z_PK INTEGER PRIMARY KEY,
+                ZCHATSESSION INTEGER,
+                ZMESSAGEDATE REAL NOT NULL,
+                ZTEXT TEXT,
+                ZMESSAGETYPE INTEGER DEFAULT 0,
+                ZMEDIAITEM INTEGER,
+                ZISFROMME INTEGER DEFAULT 0,
+                ZFROMJID TEXT,
+                ZSTARRED INTEGER DEFAULT 0,
+                ZISFORWARDED INTEGER DEFAULT 0,
+                ZDELETED INTEGER DEFAULT 0,
+                ZSORT REAL
+            );
+            CREATE TABLE ZWAMEDIAITEM (Z_PK INTEGER PRIMARY KEY, ZMESSAGE INTEGER, ZMIMETYPE TEXT, ZFILESIZE INTEGER DEFAULT 0, ZLOCALPATH TEXT, ZMEDIAURL TEXT);
+            CREATE TABLE ZWACONTACT (Z_PK INTEGER PRIMARY KEY, ZABUSEIDENTIFIER TEXT, ZPHONENUMBER TEXT, ZFULLNAME TEXT);
+            CREATE TABLE ZWACALLINFO (Z_PK INTEGER PRIMARY KEY, ZCALLDATE REAL NOT NULL, ZDURATION INTEGER DEFAULT 0, ZISVIDEOCALL INTEGER DEFAULT 0, ZPARTNERCONTACT INTEGER, ZCALLTYPE INTEGER DEFAULT 0);
+            INSERT INTO ZWACHATSESSION VALUES (1, 0, 'alice@s.whatsapp.net', 'Alice', 732205927.0, 0);
+            -- ZSORT: 1.0, 2.0, 3.0 then jump to 100.0, 101.0 — gap of 97 vs mean ~1
+            INSERT INTO ZWAMESSAGE VALUES (1, 1, 732205927.0, 'Msg1', 0, NULL, 1, NULL, 0, 0, 0, 1.0);
+            INSERT INTO ZWAMESSAGE VALUES (2, 1, 732206000.0, 'Msg2', 0, NULL, 0, NULL, 0, 0, 0, 2.0);
+            INSERT INTO ZWAMESSAGE VALUES (3, 1, 732206100.0, 'Msg3', 0, NULL, 0, NULL, 0, 0, 0, 3.0);
+            INSERT INTO ZWAMESSAGE VALUES (4, 1, 732206200.0, 'Msg4', 0, NULL, 0, NULL, 0, 0, 0, 100.0);
+            INSERT INTO ZWAMESSAGE VALUES (5, 1, 732206300.0, 'Msg5', 0, NULL, 0, NULL, 0, 0, 0, 101.0);
+        ").unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn zsort_gap_detection_emits_warning() {
+        let db = make_zsort_gap_db();
+        let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
+
+        // Should have emitted at least one SelectiveDeletion warning for chat 1 (alice)
+        let has_selective = result.forensic_warnings.iter().any(|w| {
+            matches!(w, ForensicWarning::SelectiveDeletion { suspect_jid, .. }
+                if suspect_jid == "alice@s.whatsapp.net")
+        });
+        assert!(
+            has_selective,
+            "Expected SelectiveDeletion warning for alice@s.whatsapp.net, got: {:?}",
+            result.forensic_warnings
+        );
+    }
+
+    #[test]
+    fn zsort_no_gap_no_warning() {
+        // Consecutive ZSORT values — no suspicious gap → no SelectiveDeletion
+        let db = make_chatstorage_db(); // standard fixture has ZSORT 1..5 sequential
+        let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
+        let has_selective = result.forensic_warnings.iter().any(|w| {
+            matches!(w, ForensicWarning::SelectiveDeletion { .. })
+        });
+        assert!(
+            !has_selective,
+            "No gap in standard fixture — should not emit SelectiveDeletion, got: {:?}",
+            result.forensic_warnings
+        );
+    }
+}
+
+// ── Story 2: Dynamic column ordering ─────────────────────────────────────────
+
+mod dynamic_column_tests {
+    use super::*;
+
+    /// Build a DB where ZWAMESSAGE has ZTEXT before ZCHATSESSION (reordered columns).
+    /// This simulates an older iOS WA schema version.
+    fn make_reordered_schema_db() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            PRAGMA user_version = 32;
+            CREATE TABLE ZWACHATSESSION (
+                Z_PK INTEGER PRIMARY KEY,
+                ZARCHIVED INTEGER DEFAULT 0,
+                ZCONTACTIDENTIFIER TEXT,
+                ZPARTNERNAME TEXT,
+                ZLASTMESSAGEDATE REAL,
+                ZSESSIONTYPE INTEGER DEFAULT 0
+            );
+            -- Reordered: ZTEXT is at position 2, ZCHATSESSION at 3, ZMESSAGEDATE at 4
+            CREATE TABLE ZWAMESSAGE (
+                Z_PK INTEGER PRIMARY KEY,
+                ZTEXT TEXT,
+                ZCHATSESSION INTEGER,
+                ZMESSAGEDATE REAL NOT NULL,
+                ZMESSAGETYPE INTEGER DEFAULT 0,
+                ZMEDIAITEM INTEGER,
+                ZISFROMME INTEGER DEFAULT 0,
+                ZFROMJID TEXT,
+                ZSTARRED INTEGER DEFAULT 0,
+                ZISFORWARDED INTEGER DEFAULT 0,
+                ZDELETED INTEGER DEFAULT 0,
+                ZSORT REAL
+            );
+            CREATE TABLE ZWAMEDIAITEM (Z_PK INTEGER PRIMARY KEY, ZMESSAGE INTEGER, ZMIMETYPE TEXT, ZFILESIZE INTEGER DEFAULT 0, ZLOCALPATH TEXT, ZMEDIAURL TEXT);
+            CREATE TABLE ZWACONTACT (Z_PK INTEGER PRIMARY KEY, ZABUSEIDENTIFIER TEXT, ZPHONENUMBER TEXT, ZFULLNAME TEXT);
+            CREATE TABLE ZWACALLINFO (Z_PK INTEGER PRIMARY KEY, ZCALLDATE REAL NOT NULL, ZDURATION INTEGER DEFAULT 0, ZISVIDEOCALL INTEGER DEFAULT 0, ZPARTNERCONTACT INTEGER, ZCALLTYPE INTEGER DEFAULT 0);
+            INSERT INTO ZWACHATSESSION VALUES (1, 0, 'bob@s.whatsapp.net', 'Bob', 732205927.0, 0);
+            -- Values match reordered schema: Z_PK, ZTEXT, ZCHATSESSION, ZMESSAGEDATE, ...
+            INSERT INTO ZWAMESSAGE VALUES (10, 'Dynamic text', 1, 732205927.0, 0, NULL, 1, NULL, 0, 0, 0, 1.0);
+        ").unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn dynamic_column_order_handles_reordered_schema() {
+        let db = make_reordered_schema_db();
+        let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
+
+        // Should have extracted 1 chat (bob) with 1 message
+        assert_eq!(result.chats.len(), 1, "should have 1 chat");
+        let bob_chat = result
+            .chats
+            .iter()
+            .find(|c| c.jid == "bob@s.whatsapp.net")
+            .expect("Bob's chat should exist");
+        assert_eq!(bob_chat.messages.len(), 1, "should have 1 message in Bob's chat");
+
+        let msg = &bob_chat.messages[0];
+        assert_eq!(msg.id, 10, "message ID should be 10");
+        // With dynamic column lookup, ZTEXT='Dynamic text' must be correctly extracted
+        assert!(
+            matches!(&msg.content, chat4n6_plugin_api::MessageContent::Text(t) if t == "Dynamic text"),
+            "Expected Text('Dynamic text'), got: {:?}", msg.content
+        );
+        // ZISFROMME=1 must be correctly read despite reordered columns
+        assert!(msg.from_me, "from_me should be true (ZISFROMME=1)");
+    }
+}

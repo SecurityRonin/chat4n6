@@ -2,7 +2,7 @@ use crate::schema::{apple_epoch_to_utc_ms, default_mime_for_type, is_media_type,
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
     CallRecord, CallResult, Chat, Contact, EvidenceSource, ExtractionResult, ForensicTimestamp,
-    MediaRef, Message, MessageContent,
+    ForensicWarning, MediaRef, Message, MessageContent,
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
@@ -13,40 +13,27 @@ use std::collections::HashMap;
 /// Extract all forensic artifacts from a ChatStorage.sqlite byte slice.
 ///
 /// `tz_offset_secs` is seconds east of UTC for local time display.
-///
-/// NOTE on column indices: the btree walker stores INTEGER PRIMARY KEY (Z_PK) as
-/// SqlValue::Null at values[0]. Real column data starts at values[1].
-///
-/// ZWACHATSESSION: [0]=Null(Z_PK), [1]=ZARCHIVED, [2]=ZCONTACTIDENTIFIER,
-///                 [3]=ZPARTNERNAME, [4]=ZLASTMESSAGEDATE, [5]=ZSESSIONTYPE
-///
-/// ZWAMESSAGE: [0]=Null(Z_PK), [1]=ZCHATSESSION, [2]=ZMESSAGEDATE,
-///             [3]=ZTEXT, [4]=ZMESSAGETYPE, [5]=ZMEDIAITEM,
-///             [6]=ZISFROMME, [7]=ZFROMJID, [8]=ZSTARRED,
-///             [9]=ZISFORWARDED, [10]=ZDELETED
-///
-/// ZWAMEDIAITEM: [0]=Null(Z_PK), [1]=ZMESSAGE, [2]=ZMIMETYPE,
-///               [3]=ZFILESIZE, [4]=ZLOCALPATH, [5]=ZMEDIAURL
-///
-/// ZWACONTACT: [0]=Null(Z_PK), [1]=ZABUSEIDENTIFIER, [2]=ZPHONENUMBER, [3]=ZFULLNAME
-///
-/// ZWACALLINFO: [0]=Null(Z_PK), [1]=ZCALLDATE, [2]=ZDURATION,
-///              [3]=ZISVIDEOCALL, [4]=ZPARTNERCONTACT, [5]=ZCALLTYPE
 pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<ExtractionResult> {
     let engine = ForensicEngine::new(db_bytes, Some(tz_offset_secs))
         .context("failed to open ChatStorage.sqlite")?;
 
+    // Build dynamic column map from the actual schema DDL.
+    // Falls back to the hardcoded default if the DDL is unavailable.
+    let ddl_map = engine.table_ddl();
+    let msg_col_map = ddl_map
+        .get("ZWAMESSAGE")
+        .map(|ddl| parse_column_positions(ddl))
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(default_msg_column_map);
+
     let records = engine.recover_layer1().context("Layer 1 recovery failed")?;
 
-    // Partition by table name
     let by_table = partition_by_table(&records);
 
-    // Build media item lookup: Z_PK → (mime_type, file_size, local_path, cdn_url)
     let media_map = build_media_map(
         by_table.get("ZWAMEDIAITEM").map(|v| v.as_slice()).unwrap_or(&[]),
     );
 
-    // Build chat sessions
     let mut chats: HashMap<i64, Chat> = HashMap::new();
     let session_records = by_table.get("ZWACHATSESSION").map(|v| v.as_slice()).unwrap_or(&[]);
     for r in session_records {
@@ -55,10 +42,27 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         }
     }
 
-    // Map messages into chats
     let msg_records = by_table.get("ZWAMESSAGE").map(|v| v.as_slice()).unwrap_or(&[]);
+
+    // Collect ZSORT values per chat for gap-based selective deletion detection.
+    let zsort_idx = msg_col_map.get("ZSORT").copied().unwrap_or(11);
+    let chat_id_idx = msg_col_map.get("ZCHATSESSION").copied().unwrap_or(1);
+    let mut zsort_by_chat: HashMap<i64, Vec<f64>> = HashMap::new();
     for r in msg_records {
-        if let Some(msg) = record_to_message(r, &media_map, tz_offset_secs) {
+        let chat_id = match r.values.get(chat_id_idx) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let zsort = match r.values.get(zsort_idx) {
+            Some(SqlValue::Real(f)) => *f,
+            Some(SqlValue::Int(n)) => *n as f64,
+            _ => continue,
+        };
+        zsort_by_chat.entry(chat_id).or_default().push(zsort);
+    }
+
+    for r in msg_records {
+        if let Some(msg) = record_to_message(r, &media_map, tz_offset_secs, &msg_col_map) {
             chats
                 .entry(msg.chat_id)
                 .or_insert_with(|| Chat {
@@ -74,21 +78,20 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         }
     }
 
-    // Sort messages by timestamp within each chat
     for chat in chats.values_mut() {
         chat.messages.sort_by_key(|m| m.timestamp.utc);
     }
 
-    // Extract contacts
     let contacts = extract_contacts(
         by_table.get("ZWACONTACT").map(|v| v.as_slice()).unwrap_or(&[]),
     );
 
-    // Extract calls
     let calls = extract_calls(
         by_table.get("ZWACALLINFO").map(|v| v.as_slice()).unwrap_or(&[]),
         tz_offset_secs,
     );
+
+    let forensic_warnings = detect_zsort_gaps(&zsort_by_chat, &chats);
 
     Ok(ExtractionResult {
         chats: chats.into_values().collect(),
@@ -97,9 +100,106 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         wal_deltas: Vec::new(),
         timezone_offset_seconds: Some(tz_offset_secs),
         schema_version: 32,
-        forensic_warnings: Vec::new(),
+        forensic_warnings,
         group_participant_events: Vec::new(),
     })
+}
+
+// ── Column map ────────────────────────────────────────────────────────────────
+
+/// Parse column positions from a CREATE TABLE DDL statement.
+/// Returns column_name (uppercase) → values-array index.
+/// Z_PK (INTEGER PRIMARY KEY) is included at index 0 (stored as Null by the btree walker).
+fn parse_column_positions(ddl: &str) -> HashMap<String, usize> {
+    let start = ddl.find('(').map(|i| i + 1).unwrap_or(0);
+    let end = ddl.rfind(')').unwrap_or(ddl.len());
+    let block = &ddl[start..end];
+
+    let mut map = HashMap::new();
+    let mut idx = 0usize;
+
+    for part in block.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let upper = part.to_uppercase();
+        // Skip table-level constraints — they don't consume a values slot.
+        if upper.starts_with("PRIMARY")
+            || upper.starts_with("UNIQUE")
+            || upper.starts_with("CHECK")
+            || upper.starts_with("FOREIGN")
+            || upper.starts_with("CONSTRAINT")
+        {
+            continue;
+        }
+        if let Some(col_name) = part.split_whitespace().next() {
+            map.insert(col_name.to_uppercase(), idx);
+        }
+        idx += 1;
+    }
+
+    map
+}
+
+/// Hardcoded fallback for the standard ZWAMESSAGE schema.
+fn default_msg_column_map() -> HashMap<String, usize> {
+    [
+        ("Z_PK", 0),
+        ("ZCHATSESSION", 1),
+        ("ZMESSAGEDATE", 2),
+        ("ZTEXT", 3),
+        ("ZMESSAGETYPE", 4),
+        ("ZMEDIAITEM", 5),
+        ("ZISFROMME", 6),
+        ("ZFROMJID", 7),
+        ("ZSTARRED", 8),
+        ("ZISFORWARDED", 9),
+        ("ZDELETED", 10),
+        ("ZSORT", 11),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), *v))
+    .collect()
+}
+
+// ── ZSORT gap detection ───────────────────────────────────────────────────────
+
+/// Detect selective deletion by analysing ZSORT sequence gaps per chat.
+/// Emits SelectiveDeletion when a gap is >5× the median gap and ≥10 units.
+fn detect_zsort_gaps(
+    zsort_by_chat: &HashMap<i64, Vec<f64>>,
+    chats: &HashMap<i64, Chat>,
+) -> Vec<ForensicWarning> {
+    let mut warnings = Vec::new();
+    for (chat_id, zsort_vals) in zsort_by_chat {
+        if zsort_vals.len() < 3 {
+            continue;
+        }
+        let mut sorted = zsort_vals.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let gaps: Vec<f64> = sorted.windows(2).map(|w| w[1] - w[0]).collect();
+        let mut sorted_gaps = gaps.clone();
+        sorted_gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median_gap = sorted_gaps[sorted_gaps.len() / 2];
+        let threshold = (median_gap * 5.0).max(10.0);
+        let suspicious: Vec<_> = gaps.iter().filter(|&&g| g > threshold).collect();
+        if !suspicious.is_empty() {
+            let suspect_jid = chats
+                .get(chat_id)
+                .map(|c| c.jid.clone())
+                .unwrap_or_default();
+            if suspect_jid.is_empty() {
+                continue;
+            }
+            let deletion_rate_pct = ((suspicious.len() * 100) / gaps.len()).min(100) as u8;
+            warnings.push(ForensicWarning::SelectiveDeletion {
+                suspect_jid,
+                deletion_rate_pct,
+            });
+        }
+    }
+    warnings
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -112,7 +212,6 @@ fn partition_by_table(records: &[RecoveredRecord]) -> HashMap<String, Vec<&Recov
     map
 }
 
-/// Build media item lookup: Z_PK → MediaRef fields.
 struct MediaInfo {
     mime_type: String,
     file_size: u64,
@@ -145,10 +244,9 @@ fn build_media_map(records: &[&RecoveredRecord]) -> HashMap<i64, MediaInfo> {
     map
 }
 
-/// ZWACHATSESSION → Chat
+/// ZWACHATSESSION → Chat (hardcoded — this table schema is stable).
 fn record_to_chat(r: &RecoveredRecord) -> Option<Chat> {
     let id = r.row_id?;
-    // [1]=ZARCHIVED, [2]=ZCONTACTIDENTIFIER, [3]=ZPARTNERNAME, [4]=ZLASTMESSAGEDATE, [5]=ZSESSIONTYPE
     let archived = match r.values.get(1) {
         Some(SqlValue::Int(n)) => *n != 0,
         _ => false,
@@ -168,64 +266,51 @@ fn record_to_chat(r: &RecoveredRecord) -> Option<Chat> {
     Some(Chat { id, jid, name, is_group, messages: Vec::new(), archived })
 }
 
-/// ZWAMESSAGE → Message
+/// ZWAMESSAGE → Message using a dynamic column map.
 fn record_to_message(
     r: &RecoveredRecord,
     media_map: &HashMap<i64, MediaInfo>,
     tz_offset_secs: i32,
+    col: &HashMap<String, usize>,
 ) -> Option<Message> {
     let id = r.row_id?;
-    // [1]=ZCHATSESSION, [2]=ZMESSAGEDATE, [3]=ZTEXT, [4]=ZMESSAGETYPE,
-    // [5]=ZMEDIAITEM, [6]=ZISFROMME, [7]=ZFROMJID, [8]=ZSTARRED,
-    // [9]=ZISFORWARDED, [10]=ZDELETED
-    let chat_id = match r.values.get(1)? {
-        SqlValue::Int(n) => *n,
-        _ => return None,
+
+    let get_int = |name: &str| -> Option<i64> {
+        match r.values.get(*col.get(name)?)? {
+            SqlValue::Int(n) => Some(*n),
+            _ => None,
+        }
     };
-    let ts_ms = match r.values.get(2)? {
-        SqlValue::Real(f) => apple_epoch_to_utc_ms(*f),
-        SqlValue::Int(n) => apple_epoch_to_utc_ms(*n as f64),
-        _ => return None,
+    let get_real = |name: &str| -> Option<f64> {
+        match r.values.get(*col.get(name)?)? {
+            SqlValue::Real(f) => Some(*f),
+            SqlValue::Int(n) => Some(*n as f64),
+            _ => None,
+        }
     };
-    let text = match r.values.get(3) {
-        Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-        _ => None,
+    let get_text = |name: &str| -> Option<String> {
+        match r.values.get(*col.get(name)?)? {
+            SqlValue::Text(s) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        }
     };
-    let msg_type_val = match r.values.get(4) {
-        Some(SqlValue::Int(n)) => *n as i32,
-        _ => 0,
-    };
-    let media_item_pk = match r.values.get(5) {
-        Some(SqlValue::Int(n)) => Some(*n),
-        _ => None,
-    };
-    let from_me = match r.values.get(6) {
-        Some(SqlValue::Int(n)) => *n != 0,
-        _ => false,
-    };
-    let sender_jid = match r.values.get(7) {
-        Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-        _ => None,
-    };
-    let starred = match r.values.get(8) {
-        Some(SqlValue::Int(n)) => *n != 0,
-        _ => false,
-    };
-    let is_forwarded = match r.values.get(9) {
-        Some(SqlValue::Int(n)) => *n != 0,
-        _ => false,
-    };
-    let deleted = match r.values.get(10) {
-        Some(SqlValue::Int(n)) => *n != 0,
-        _ => false,
-    };
+
+    let chat_id = get_int("ZCHATSESSION")?;
+    let ts_ms = get_real("ZMESSAGEDATE").map(apple_epoch_to_utc_ms)?;
+    let text = get_text("ZTEXT");
+    let msg_type_val = get_int("ZMESSAGETYPE").unwrap_or(0) as i32;
+    let media_item_pk = get_int("ZMEDIAITEM");
+    let from_me = get_int("ZISFROMME").unwrap_or(0) != 0;
+    let sender_jid = get_text("ZFROMJID");
+    let starred = get_int("ZSTARRED").unwrap_or(0) != 0;
+    let is_forwarded = get_int("ZISFORWARDED").unwrap_or(0) != 0;
+    let deleted = get_int("ZDELETED").unwrap_or(0) != 0;
 
     let content = if deleted || msg_type_val == msg_type::DELETED {
         MessageContent::Deleted
     } else if msg_type_val == msg_type::SYSTEM {
         MessageContent::System(text.unwrap_or_default())
     } else if is_media_type(msg_type_val) {
-        // Look up media item if we have a FK
         let media_info = media_item_pk.and_then(|pk| media_map.get(&pk));
         let mime = media_info
             .map(|m| m.mime_type.clone())
@@ -237,7 +322,7 @@ fn record_to_message(
             file_path,
             mime_type: mime,
             file_size,
-            extracted_name: text, // caption if any
+            extracted_name: text,
             thumbnail_b64: None,
             duration_secs: None,
             file_hash: None,
@@ -272,7 +357,6 @@ fn record_to_message(
 
 /// ZWACONTACT → Contact
 fn extract_contacts(records: &[&RecoveredRecord]) -> Vec<Contact> {
-    // [1]=ZABUSEIDENTIFIER (JID), [2]=ZPHONENUMBER, [3]=ZFULLNAME
     records
         .iter()
         .filter_map(|r| {
@@ -300,7 +384,6 @@ fn extract_contacts(records: &[&RecoveredRecord]) -> Vec<Contact> {
 
 /// ZWACALLINFO → CallRecord
 fn extract_calls(records: &[&RecoveredRecord], tz_offset_secs: i32) -> Vec<CallRecord> {
-    // [1]=ZCALLDATE, [2]=ZDURATION, [3]=ZISVIDEOCALL, [4]=ZPARTNERCONTACT, [5]=ZCALLTYPE
     records
         .iter()
         .filter_map(|r| {
@@ -321,7 +404,7 @@ fn extract_calls(records: &[&RecoveredRecord], tz_offset_secs: i32) -> Vec<CallR
             Some(CallRecord {
                 call_id,
                 participants: Vec::new(),
-                from_me: false, // iOS call log doesn't directly expose this field in ZWACALLINFO
+                from_me: false,
                 video,
                 group_call: false,
                 duration_secs,
