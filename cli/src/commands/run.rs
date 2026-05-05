@@ -34,20 +34,24 @@ pub struct RunArgs {
     pub page_size: usize,
 }
 
-pub fn run(args: RunArgs) -> Result<()> {
-    let fs = open_fs(&args.input)?;
-    let whatsapp = if let Some(ref key_path) = args.key_file {
-        let key_bytes = std::fs::read(key_path)
-            .with_context(|| format!("cannot read key file: {}", key_path.display()))?;
-        WhatsAppPlugin::with_key(key_bytes)
-    } else {
-        WhatsAppPlugin::new()
+/// All registered extraction plugins. Adding a new platform = one line here.
+pub fn registered_plugins(key_bytes: Option<Vec<u8>>) -> Vec<Box<dyn ForensicPlugin>> {
+    let whatsapp: Box<dyn ForensicPlugin> = match key_bytes {
+        Some(k) => Box::new(WhatsAppPlugin::with_key(k)),
+        None => Box::new(WhatsAppPlugin::new()),
     };
-    let plugins: Vec<Box<dyn ForensicPlugin>> = vec![
-        Box::new(whatsapp),
+    vec![
+        whatsapp,
         Box::new(SignalPlugin),
         Box::new(TelegramPlugin),
-    ];
+    ]
+}
+
+pub fn run(args: RunArgs) -> Result<()> {
+    let fs = open_fs(&args.input)?;
+    let key_bytes = args.key_file.as_ref().map(|p| std::fs::read(p)
+        .with_context(|| format!("cannot read key file: {}", p.display()))).transpose()?;
+    let plugins = registered_plugins(key_bytes);
 
     let bar = ProgressBar::new(plugins.len() as u64);
     bar.set_style(
@@ -172,6 +176,18 @@ mod tests {
             timestamp: ForensicTimestamp::from_millis(0, 0),
             source: EvidenceSource::Live,
         }
+    }
+
+    #[test]
+    fn registered_plugins_includes_all_three_platforms() {
+        let plugins = super::registered_plugins(None);
+        let names: Vec<&str> = plugins.iter().map(|p| p.name()).collect();
+        assert!(names.iter().any(|n| n.to_lowercase().contains("whatsapp")),
+            "must include WhatsApp plugin, got: {names:?}");
+        assert!(names.iter().any(|n| n.to_lowercase().contains("signal")),
+            "must include Signal plugin, got: {names:?}");
+        assert!(names.iter().any(|n| n.to_lowercase().contains("telegram")),
+            "must include Telegram plugin, got: {names:?}");
     }
 
     #[test]
