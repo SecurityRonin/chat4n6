@@ -239,7 +239,9 @@ fn record_to_message(
         })
     } else if let Some(text) = text_data {
         MessageContent::Text(text)
-    } else if msg_type == 0 {
+    } else if msg_type == 0 || msg_type == 15 {
+        // msg_type=0 with no text: revoked/deleted message
+        // msg_type=15: tombstone placeholder row — purged message, row exists but content is empty
         MessageContent::Deleted
     } else {
         MessageContent::Unknown(msg_type)
