@@ -11,16 +11,34 @@ pub enum PinExpiry {
 
 impl PinExpiry {
     pub fn from_secs(secs: u64) -> Self {
-        todo!("implement from_secs")
+        match secs {
+            0 => PinExpiry::NoExpiry,
+            86400 => PinExpiry::Hours24,
+            604800 => PinExpiry::Days7,
+            2592000 => PinExpiry::Days30,
+            other => PinExpiry::Custom(other),
+        }
     }
 
     /// Returns None for NoExpiry.
     pub fn as_secs(&self) -> Option<u64> {
-        todo!("implement as_secs")
+        match self {
+            PinExpiry::Hours24 => Some(86400),
+            PinExpiry::Days7 => Some(604800),
+            PinExpiry::Days30 => Some(2592000),
+            PinExpiry::Custom(s) => Some(*s),
+            PinExpiry::NoExpiry => None,
+        }
     }
 
     pub fn human_readable(&self) -> &'static str {
-        todo!("implement human_readable")
+        match self {
+            PinExpiry::Hours24 => "24 hours",
+            PinExpiry::Days7 => "7 days",
+            PinExpiry::Days30 => "30 days",
+            PinExpiry::Custom(_) => "custom duration",
+            PinExpiry::NoExpiry => "no expiry",
+        }
     }
 }
 
@@ -42,7 +60,14 @@ pub fn parse_pin(
     expiry_duration_secs: u64,
     pin_state: i32, // 1=active, 0=unpinned
 ) -> PinRecord {
-    todo!("implement parse_pin")
+    PinRecord {
+        message_id,
+        pinned_by_jid: pinned_by_jid.map(|s| s.to_string()),
+        conversation_id,
+        timestamp_ms,
+        expiry: PinExpiry::from_secs(expiry_duration_secs),
+        is_active: pin_state == 1,
+    }
 }
 
 #[cfg(test)]
