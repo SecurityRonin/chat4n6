@@ -295,6 +295,9 @@ pub fn extract_from_msgstore(
         schema_version,
         forensic_warnings: Vec::new(),
         group_participant_events,
+        extraction_started_at: None,
+        extraction_finished_at: None,
+        wal_snapshots: vec![],
     })
 }
 
@@ -516,6 +519,7 @@ fn record_to_message(
         is_forwarded: false,
         edit_history: Vec::new(),
         receipts: Vec::new(),
+        forwarded_from: None,
     })
 }
 
@@ -679,6 +683,7 @@ fn build_quoted_map(
                 is_forwarded: false,
                 edit_history: Vec::new(),
                 receipts: Vec::new(),
+                forwarded_from: None,
             },
         );
     }

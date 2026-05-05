@@ -102,6 +102,9 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         schema_version: 32,
         forensic_warnings,
         group_participant_events: Vec::new(),
+        extraction_started_at: None,
+        extraction_finished_at: None,
+        wal_snapshots: vec![],
     })
 }
 
@@ -352,6 +355,7 @@ fn record_to_message(
         is_forwarded,
         edit_history: Vec::new(),
         receipts: Vec::new(),
+        forwarded_from: None,
     })
 }
 

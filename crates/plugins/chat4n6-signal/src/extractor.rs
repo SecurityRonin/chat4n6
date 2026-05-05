@@ -106,6 +106,9 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
         schema_version: 185,
         forensic_warnings: Vec::new(),
         group_participant_events: Vec::new(),
+        extraction_started_at: None,
+        extraction_finished_at: None,
+        wal_snapshots: vec![],
     })
 }
 
@@ -362,6 +365,7 @@ fn record_to_message(
         is_forwarded: false,
         edit_history: Vec::new(),
         receipts: Vec::new(),
+        forwarded_from: None,
     })
 }
 

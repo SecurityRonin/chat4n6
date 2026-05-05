@@ -412,6 +412,7 @@ mod tests {
             is_forwarded: false,
             edit_history: vec![],
             receipts: vec![],
+            forwarded_from: None,
         }
     }
 
@@ -433,6 +434,9 @@ mod tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
+        extraction_started_at: None,
+        extraction_finished_at: None,
+        wal_snapshots: vec![],
         }
     }
 

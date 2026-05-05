@@ -296,6 +296,7 @@ mod tests {
             is_forwarded: false,
             edit_history: vec![],
             receipts: vec![],
+            forwarded_from: None,
         }
     }
 
@@ -332,6 +333,7 @@ mod tests {
             is_forwarded: false,
             edit_history: vec![],
             receipts: vec![],
+            forwarded_from: None,
         }
     }
 

@@ -549,6 +549,7 @@ mod tests {
             row_offset: 0,
             starred: false, forward_score: None, is_forwarded: false,
             edit_history: vec![], receipts: vec![],
+            forwarded_from: None,
         };
         let msg = Message {
             id: 1,
@@ -563,6 +564,7 @@ mod tests {
             row_offset: 0,
             starred: false, forward_score: None, is_forwarded: false,
             edit_history: vec![], receipts: vec![],
+            forwarded_from: None,
         };
         let media_msg = Message {
             id: 2,
@@ -588,6 +590,7 @@ mod tests {
             row_offset: 0,
             starred: false, forward_score: None, is_forwarded: false,
             edit_history: vec![], receipts: vec![],
+            forwarded_from: None,
         };
         let chat = Chat {
             id: 1,
@@ -617,6 +620,9 @@ mod tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
+        extraction_started_at: None,
+        extraction_finished_at: None,
+        wal_snapshots: vec![],
         }
     }
 
@@ -1003,6 +1009,7 @@ mod tests {
             forward_score: Some(3),
             is_forwarded: true,
             edit_history: vec![], receipts: vec![],
+            forwarded_from: None,
         };
         let chat = Chat {
             id: 1, jid: "alice@s.whatsapp.net".to_string(),
@@ -1043,6 +1050,7 @@ mod tests {
             forward_score: Some(10), // viral
             is_forwarded: true,
             edit_history: vec![], receipts: vec![],
+            forwarded_from: None,
         };
         let chat = Chat {
             id: 1, jid: "bob@s.whatsapp.net".to_string(),
@@ -1081,6 +1089,7 @@ mod tests {
             source: EvidenceSource::Live,
             row_offset: 0, starred: false, forward_score: None, is_forwarded: false,
             edit_history: vec![], receipts: vec![],
+            forwarded_from: None,
         };
         let chat = Chat {
             id: 1, jid: "6591234567@s.whatsapp.net".to_string(),
@@ -1094,6 +1103,9 @@ mod tests {
             contacts: vec![], calls: vec![], wal_deltas: vec![],
             timezone_offset_seconds: Some(0), schema_version: 200,
             forensic_warnings: vec![], group_participant_events: vec![],
+        extraction_started_at: None,
+        extraction_finished_at: None,
+        wal_snapshots: vec![],
         }
     }
 
@@ -1141,6 +1153,7 @@ mod tests {
             source: EvidenceSource::Live,
             row_offset: 0, starred: false, forward_score: None, is_forwarded: false,
             edit_history: vec![], receipts: vec![],
+            forwarded_from: None,
         };
         let msg_b1 = Message {
             id: 20, chat_id: 2,
@@ -1152,6 +1165,7 @@ mod tests {
             source: EvidenceSource::Live,
             row_offset: 0, starred: false, forward_score: None, is_forwarded: false,
             edit_history: vec![], receipts: vec![],
+            forwarded_from: None,
         };
         let msg_a2 = Message {
             id: 11, chat_id: 1,
@@ -1163,6 +1177,7 @@ mod tests {
             source: EvidenceSource::Live,
             row_offset: 0, starred: false, forward_score: None, is_forwarded: false,
             edit_history: vec![], receipts: vec![],
+            forwarded_from: None,
         };
         let chat_a = Chat {
             id: 1, jid: "alice@s.whatsapp.net".to_string(),

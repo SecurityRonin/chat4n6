@@ -265,6 +265,54 @@ pub struct GroupParticipantEvent {
     pub source: EvidenceSource,
 }
 
+// ── WAL snapshot ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WalSnapshot {
+    /// Sequential frame index within the WAL file.
+    pub frame_number: u32,
+    /// True if this frame is a commit record (salt matches, valid checksum).
+    pub commit_marker: bool,
+    /// ROWIDs of messages that first appear in this frame.
+    pub messages_added: Vec<i64>,
+    /// ROWIDs of messages whose row was deleted in this frame.
+    pub messages_removed: Vec<i64>,
+    /// ROWIDs of messages that were modified (content changed) in this frame.
+    pub messages_mutated: Vec<i64>,
+    /// Byte offset of this frame within the WAL file.
+    pub frame_offset: u64,
+}
+
+// ── Forward origin ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ForwardOriginKind {
+    User,
+    Channel,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ForwardOrigin {
+    pub origin_kind: ForwardOriginKind,
+    /// Platform-scoped identifier (JID, channel URL, etc.).
+    pub origin_id: String,
+    pub origin_name: Option<String>,
+    pub original_timestamp: Option<ForensicTimestamp>,
+}
+
+// ── ImpossibleReason ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ImpossibleReason {
+    /// Timestamp predates Unix epoch (1970-01-01).
+    BeforeUnixEpoch,
+    /// Timestamp is in the future relative to acquisition date.
+    AfterAcquisition,
+    /// Timestamp predates WhatsApp's founding (2009).
+    BeforeWhatsApp,
+}
+
 // ── Anti-forensics warnings ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -281,6 +329,45 @@ pub enum ForensicWarning {
     SchemaVersionMismatch { db_version: u32, app_version: String },
     /// SQLite change counter implies writes after acquisition date.
     HeaderTampered { change_counter: u32, expected_max: u32 },
+    /// iOS CoreData primary-key gap indicates deleted records.
+    CoreDataPkGap {
+        entity_name: String,
+        expected_max: u32,
+        observed_max: u32,
+        recovered_count: u32,
+    },
+    /// A message timestamp is logically impossible (before epoch, after acquisition, etc.).
+    ImpossibleTimestamp {
+        message_row_id: i64,
+        ts_utc: DateTime<Utc>,
+        reason: ImpossibleReason,
+    },
+    /// Two or more messages share the same stanza ID — possible replay or copy-paste injection.
+    DuplicateStanzaId { stanza_id: String, occurrences: u32 },
+    /// A ROWID was reused by rows with different timestamps — evidence of partial delete + reinsert.
+    RowIdReuseDetected {
+        table: String,
+        rowid: i64,
+        conflicting_timestamps: Vec<DateTime<Utc>>,
+    },
+    /// High ratio of orphaned thumbnail blobs with no corresponding message row.
+    ThumbnailOrphanHigh {
+        orphan_thumbnails: u32,
+        total_messages: u32,
+        ratio_pct: u8,
+    },
+    /// Per-file HMAC check failed (individual attachment / WAL segment).
+    PerFileHmacMismatch { file_name: String },
+    /// A chat has disappearing messages enabled — some content may be permanently lost.
+    DisappearingTimerActive {
+        chat_id: i64,
+        timer_seconds: u32,
+        vanished_count: u32,
+    },
+    /// Signal sealed-sender message whose sender identity could not be resolved.
+    SealedSenderUnresolved { thread_id: i64, count: u32 },
+    /// A forwarded message references a source message ID that is not present in any snapshot.
+    UnresolvedForwardSource { message_id: i64, forward_from_id: i64 },
 }
 
 impl fmt::Display for ForensicWarning {
@@ -301,6 +388,33 @@ impl fmt::Display for ForensicWarning {
             }
             Self::HeaderTampered { change_counter, expected_max } => {
                 write!(f, "Header tamper: change_counter={change_counter} > expected_max={expected_max}")
+            }
+            Self::CoreDataPkGap { entity_name, recovered_count, .. } => {
+                write!(f, "CoreData PK gap in {entity_name}: {recovered_count} potential deleted rows")
+            }
+            Self::ImpossibleTimestamp { message_row_id, reason, .. } => {
+                write!(f, "Impossible timestamp at row {message_row_id}: {reason:?}")
+            }
+            Self::DuplicateStanzaId { stanza_id, occurrences } => {
+                write!(f, "Duplicate stanza ID '{stanza_id}' seen {occurrences}×")
+            }
+            Self::RowIdReuseDetected { table, rowid, .. } => {
+                write!(f, "ROWID {rowid} reused in table '{table}'")
+            }
+            Self::ThumbnailOrphanHigh { orphan_thumbnails, ratio_pct, .. } => {
+                write!(f, "High thumbnail orphan rate: {orphan_thumbnails} orphans ({ratio_pct}%)")
+            }
+            Self::PerFileHmacMismatch { file_name } => {
+                write!(f, "Per-file HMAC mismatch: {file_name}")
+            }
+            Self::DisappearingTimerActive { chat_id, timer_seconds, vanished_count } => {
+                write!(f, "Disappearing timer on chat {chat_id} ({timer_seconds}s): {vanished_count} messages vanished")
+            }
+            Self::SealedSenderUnresolved { thread_id, count } => {
+                write!(f, "Sealed-sender unresolved: {count} messages in thread {thread_id}")
+            }
+            Self::UnresolvedForwardSource { message_id, forward_from_id } => {
+                write!(f, "Forward source missing: message {message_id} references absent ID {forward_from_id}")
             }
         }
     }
@@ -333,6 +447,9 @@ pub struct Message {
     /// Per-device delivery/read receipts (message_receipt_* tables).
     #[serde(default)]
     pub receipts: Vec<MessageReceipt>,
+    /// Resolved origin of a forwarded message (channel, user, unknown source).
+    #[serde(default)]
+    pub forwarded_from: Option<ForwardOrigin>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -376,11 +493,21 @@ pub struct ExtractionResult {
     pub calls: Vec<CallRecord>,
     pub wal_deltas: Vec<WalDelta>,
     pub timezone_offset_seconds: Option<i32>,
+    #[serde(default)]
     pub schema_version: u32,
     #[serde(default)]
     pub forensic_warnings: Vec<ForensicWarning>,
     #[serde(default)]
     pub group_participant_events: Vec<GroupParticipantEvent>,
+    /// Wall-clock time when extraction began (recorded by the CLI).
+    #[serde(default)]
+    pub extraction_started_at: Option<DateTime<Utc>>,
+    /// Wall-clock time when extraction completed.
+    #[serde(default)]
+    pub extraction_finished_at: Option<DateTime<Utc>>,
+    /// Per-WAL-frame change records for snapshot timeline view.
+    #[serde(default)]
+    pub wal_snapshots: Vec<WalSnapshot>,
 }
 
 #[cfg(test)]
@@ -527,6 +654,7 @@ mod new_types_tests {
             is_forwarded: true,
             edit_history: vec![],
             receipts: vec![],
+            forwarded_from: None,
         };
         let json = serde_json::to_string(&m).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();

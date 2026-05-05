@@ -111,6 +111,7 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
             is_forwarded: false,
             edit_history: Vec::new(),
             receipts: Vec::new(),
+            forwarded_from: None,
         };
 
         let chat = chats.entry(uid).or_insert_with(|| {
@@ -147,6 +148,9 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         schema_version: 0,
         forensic_warnings: Vec::new(),
         group_participant_events: Vec::new(),
+        extraction_started_at: None,
+        extraction_finished_at: None,
+        wal_snapshots: vec![],
     })
 }
 
