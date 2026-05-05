@@ -4,7 +4,7 @@
 /// a self-contained, no-external-deps HTML report.
 
 use std::collections::HashMap;
-use chrono::{DateTime, Datelike, FixedOffset, Timelike, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, Timelike};
 use serde::{Deserialize, Serialize};
 
 /// Activity heatmap: hour (0-23) → message count
