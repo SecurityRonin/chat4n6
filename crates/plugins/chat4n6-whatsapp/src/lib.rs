@@ -1,5 +1,6 @@
 // chat4n6-whatsapp
 
+pub mod cdn;
 pub mod contact_report;
 pub mod decrypt;
 pub mod extractor;
