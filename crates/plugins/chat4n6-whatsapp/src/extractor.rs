@@ -637,6 +637,35 @@ mod tests {
         }
     }
 
+    // ── F2: tombstone type-15 tests ──────────────────────────────────────
+
+    #[test]
+    fn test_tombstone_type15_creates_deleted() {
+        let db = make_modern_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        // Message 6 has message_type=15 (tombstone) — should produce MessageContent::Deleted
+        let msg6 = chat1.messages.iter().find(|m| m.id == 6).expect("msg 6 (tombstone)");
+        assert!(
+            matches!(&msg6.content, MessageContent::Deleted),
+            "msg_type=15 tombstone should produce MessageContent::Deleted, got {:?}",
+            msg6.content
+        );
+    }
+
+    #[test]
+    fn test_tombstone_preserved_not_dropped() {
+        let db = make_modern_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        // Tombstone message must appear in results, not be silently dropped
+        let tombstone = chat1.messages.iter().find(|m| m.id == 6);
+        assert!(
+            tombstone.is_some(),
+            "tombstone message (id=6, type=15) must be preserved in extraction results"
+        );
+    }
+
     #[test]
     fn test_is_media_type_helper() {
         assert!(is_media_type(1));  // image

@@ -51,6 +51,8 @@ INSERT INTO message VALUES (3, 1, NULL,   1, 1710513300000, NULL,          1, 'i
 INSERT INTO message VALUES (4, 1, 1,      0, 1710513400000, NULL,          2, 'audio/ogg; codecs=opus', 'Media/WhatsApp Audio/AUD-20240315-001.opus');  -- audio
 INSERT INTO message VALUES (5, 2, NULL,   1, 1710513500000, 'Check this',  3, 'video/mp4', 'Media/WhatsApp Video/VID-20240315-001.mp4');  -- video with caption
 
+INSERT INTO message VALUES (6, 1, NULL, 0, 1710513600000, NULL, 15, NULL, NULL);  -- tombstone
+
 -- Quoted-message cross-reference table
 CREATE TABLE message_quoted (
     _id INTEGER PRIMARY KEY,
