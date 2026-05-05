@@ -1,0 +1,24 @@
+[
+  {
+    "description": "timeline.html shows all messages across all chats sorted by timestamp",
+    "steps": [
+      "Produce an ExtractionResult with 2 chats, messages interleaved by timestamp",
+      "Render via ReportGenerator",
+      "Assert timeline.html exists",
+      "Assert messages appear in ascending timestamp order (earlier message before later)",
+      "Assert each row contains chat name, sender, and content",
+      "cargo test -p chat4n6-report -- timeline_sorted_by_timestamp passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "timeline.html includes a search/filter input and links back to index",
+    "steps": [
+      "Render timeline.html for any ExtractionResult with messages",
+      "Assert page contains a text input for searching",
+      "Assert page contains href pointing to index.html (breadcrumb)",
+      "cargo test -p chat4n6-report -- timeline_has_search_and_nav passes"
+    ],
+    "passes": false
+  }
+]
