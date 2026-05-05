@@ -23,6 +23,7 @@ struct Templates;
 
 pub struct ReportGenerator {
     tera: Tera,
+    page_size: usize,
 }
 
 impl ReportGenerator {
@@ -37,7 +38,12 @@ impl ReportGenerator {
             tera.add_raw_template(&file_path, content)
                 .with_context(|| format!("failed to parse template {file_path}"))?;
         }
-        Ok(Self { tera })
+        Ok(Self { tera, page_size: PAGE_SIZE })
+    }
+
+    pub fn with_page_size(mut self, n: usize) -> Self {
+        self.page_size = n.max(1);
+        self
     }
 
     /// Render the full report into `output_dir`.
@@ -145,7 +151,7 @@ impl ReportGenerator {
         if chat.messages.is_empty() {
             return Ok(());
         }
-        let pages = paginate(&chat.messages, PAGE_SIZE);
+        let pages = paginate(&chat.messages, self.page_size);
         let total_pages = pages.len();
 
         for (page_idx, page_msgs) in pages.iter().enumerate() {

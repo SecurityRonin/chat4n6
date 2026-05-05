@@ -29,6 +29,12 @@ pub struct RunArgs {
     /// Path to WhatsApp encryption key file (for .crypt14/.crypt15 databases)
     #[arg(long)]
     pub key_file: Option<PathBuf>,
+    /// Run only this plugin (e.g. "whatsapp", "signal", "telegram")
+    #[arg(long)]
+    pub plugin: Option<String>,
+    /// Messages per HTML page [default: 500]
+    #[arg(long, default_value_t = 500)]
+    pub page_size: usize,
 }
 
 pub fn run(args: RunArgs) -> Result<()> {
@@ -40,11 +46,26 @@ pub fn run(args: RunArgs) -> Result<()> {
     } else {
         WhatsAppPlugin::new()
     };
-    let plugins: Vec<Box<dyn ForensicPlugin>> = vec![
+    let all_plugins: Vec<Box<dyn ForensicPlugin>> = vec![
         Box::new(whatsapp),
         Box::new(SignalPlugin),
         Box::new(TelegramPlugin),
     ];
+
+    let plugins: Vec<Box<dyn ForensicPlugin>> = match args.plugin.as_deref() {
+        None => all_plugins,
+        Some(name) => {
+            let name_lc = name.to_ascii_lowercase();
+            let filtered: Vec<_> = all_plugins
+                .into_iter()
+                .filter(|p| p.name().to_ascii_lowercase().starts_with(&name_lc))
+                .collect();
+            if filtered.is_empty() {
+                anyhow::bail!("unknown plugin '{name}' — available: whatsapp, signal, telegram");
+            }
+            filtered
+        }
+    };
 
     let bar = ProgressBar::new(plugins.len() as u64);
     bar.set_style(
@@ -73,7 +94,9 @@ pub fn run(args: RunArgs) -> Result<()> {
         eprintln!("Warning: no artifacts found in {:?}", args.input);
     }
 
-    let generator = ReportGenerator::new().context("failed to load report templates")?;
+    let generator = ReportGenerator::new()
+        .context("failed to load report templates")?
+        .with_page_size(args.page_size);
     generator
         .render(&args.case_name, &combined, &args.output)
         .context("report generation failed")?;
@@ -125,7 +148,7 @@ fn open_fs(input: &Path) -> Result<Box<dyn chat4n6_plugin_api::ForensicFs>> {
     ))
 }
 
-fn resolve_tz_arg(tz: Option<&str>) -> Result<Option<i32>> {
+pub fn resolve_tz_arg(tz: Option<&str>) -> Result<Option<i32>> {
     match tz {
         None => Ok(None),
         Some(s) => chat4n6_whatsapp::timezone::resolve_timezone_offset(s)

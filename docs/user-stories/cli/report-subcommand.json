@@ -8,7 +8,7 @@
       "Assert the report is identical in structure to the run-generated one",
       "cargo test -p chat4n6 -- report_subcommand passes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "description": "--page-size flag controls messages per HTML page (default 500)",
@@ -17,6 +17,6 @@
       "Assert output contains at least 3 page files (page_001.html, page_002.html, page_003.html)",
       "cargo test -p chat4n6 -- page_size_flag passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]
