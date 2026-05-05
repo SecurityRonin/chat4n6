@@ -875,3 +875,114 @@ mod tests {
         assert!(!solo_calls[0].group_call);
     }
 }
+
+#[cfg(test)]
+mod proptest_tests {
+    use super::*;
+    use chat4n6_plugin_api::{CallRecord, CallResult, EvidenceSource, ForensicTimestamp};
+    use proptest::prelude::*;
+
+    fn make_call(call_id: i64, participant: &str, group_call: bool) -> CallRecord {
+        CallRecord {
+            call_id,
+            participants: vec![participant.to_string()],
+            from_me: false,
+            video: false,
+            group_call,
+            duration_secs: 60,
+            call_result: CallResult::Unknown,
+            timestamp: ForensicTimestamp::from_millis(1_710_513_127_000, 0),
+            source: EvidenceSource::Live,
+            call_creator_device_jid: None,
+        }
+    }
+
+    fn arb_call_record() -> impl Strategy<Value = (CallRecord, Option<i64>)> {
+        (
+            0i64..100i64,
+            "[a-z]{3,8}@s\\.whatsapp\\.net",
+            any::<bool>(),
+            any::<bool>(),
+            prop::option::of(0i64..10i64),
+        )
+            .prop_map(|(call_id, participant, from_me, video, call_row_id)| {
+                let ts = ForensicTimestamp::from_millis(1_710_513_127_000, 0);
+                let rec = CallRecord {
+                    call_id,
+                    participants: vec![participant],
+                    from_me,
+                    video,
+                    group_call: false,
+                    duration_secs: 60,
+                    call_result: CallResult::Unknown,
+                    timestamp: ts,
+                    source: EvidenceSource::Live,
+                    call_creator_device_jid: None,
+                };
+                (rec, call_row_id)
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn group_call_merge_no_participants_lost(
+            calls in prop::collection::vec(arb_call_record(), 0..20usize)
+        ) {
+            let all_participants: std::collections::HashSet<String> = calls
+                .iter()
+                .flat_map(|(c, _)| c.participants.iter().cloned())
+                .collect();
+
+            let merged = merge_group_calls(calls);
+
+            let merged_participants: std::collections::HashSet<String> = merged
+                .iter()
+                .flat_map(|c| c.participants.iter().cloned())
+                .collect();
+
+            prop_assert_eq!(all_participants, merged_participants,
+                "No participant should be lost during group call merging");
+        }
+
+        #[test]
+        fn group_call_merge_count_monotone(
+            calls in prop::collection::vec(arb_call_record(), 0..20usize)
+        ) {
+            let input_count = calls.len();
+            let merged = merge_group_calls(calls);
+            prop_assert!(merged.len() <= input_count,
+                "Merged call count must not exceed input count");
+        }
+
+        #[test]
+        fn group_call_merge_solo_calls_preserved(
+            calls in prop::collection::vec(arb_call_record(), 0..10usize)
+        ) {
+            // Calls with call_row_id=None are always solo and must not be lost.
+            // Calls with a unique call_row_id (only 1 record sharing it) also pass
+            // through as non-group. Both contribute to output !group_call count.
+            let solo_count = calls.iter().filter(|(_, rid)| rid.is_none()).count();
+
+            // Count call_row_ids that appear exactly once (single-participant group slots)
+            let mut rid_counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+            for (_, rid) in &calls {
+                if let Some(r) = rid {
+                    *rid_counts.entry(*r).or_insert(0) += 1;
+                }
+            }
+            let single_group_count = rid_counts.values().filter(|&&n| n == 1).count();
+
+            let expected_non_group = solo_count + single_group_count;
+            let merged = merge_group_calls(calls);
+            let output_non_group = merged.iter().filter(|c| !c.group_call).count();
+            prop_assert_eq!(expected_non_group, output_non_group,
+                "Solo calls and single-participant group slots must be preserved as non-group");
+        }
+    }
+
+    // Suppress unused-import warning for make_call helper used in doc
+    #[allow(dead_code)]
+    fn _uses_make_call() {
+        let _ = make_call(0, "a@s.whatsapp.net", false);
+    }
+}

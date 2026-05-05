@@ -529,3 +529,44 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod proptest_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn html_escape_no_lt_gt(s in ".*") {
+            let escaped = html_escape(&s);
+            prop_assert!(!escaped.contains('<'), "escaped output must not contain '<'");
+            prop_assert!(!escaped.contains('>'), "escaped output must not contain '>'");
+            // Any '&' in output must be part of a valid HTML entity
+            let mut remaining = escaped.as_str();
+            while let Some(pos) = remaining.find('&') {
+                let after = &remaining[pos..];
+                let valid = after.starts_with("&amp;")
+                    || after.starts_with("&lt;")
+                    || after.starts_with("&gt;")
+                    || after.starts_with("&quot;")
+                    || after.starts_with("&#39;");
+                prop_assert!(valid,
+                    "any '&' in output must be part of a valid HTML entity, got: {:?}", after);
+                remaining = &remaining[pos + 1..];
+            }
+        }
+
+        #[test]
+        fn html_escape_idempotent_on_safe_chars(s in "[a-zA-Z0-9 .,!?-]{0,100}") {
+            // Strings with only safe characters should be unchanged
+            let escaped = html_escape(&s);
+            prop_assert_eq!(&escaped, &s, "safe strings should be unchanged");
+        }
+
+        #[test]
+        fn html_escape_roundtrip_len(s in ".*") {
+            let escaped = html_escape(&s);
+            prop_assert!(escaped.len() >= s.len(), "escaping never reduces length");
+        }
+    }
+}
