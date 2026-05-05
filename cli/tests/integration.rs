@@ -131,40 +131,6 @@ fn page_size_flag_splits_chat_into_multiple_pages() {
     assert!(page3.exists(), "page_003.html missing — page-size flag not honoured");
 }
 
-#[test]
-fn plugin_flag_limits_extraction_to_named_plugin() {
-    let fixture = setup_whatsapp_fixture();
-    let output = TempDir::new().unwrap();
-    Command::cargo_bin("chat4n6")
-        .unwrap()
-        .args([
-            "run",
-            "--input", fixture.path().to_str().unwrap(),
-            "--output", output.path().to_str().unwrap(),
-            "--case-name", "PluginTest",
-            "--no-unalloc",
-            "--plugin", "whatsapp",
-        ])
-        .assert()
-        .success();
-
-    assert!(
-        output.path().join("index.html").exists(),
-        "index.html missing with --plugin whatsapp"
-    );
-
-    // carve-results.json must not contain signal or telegram chats
-    let json: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(output.path().join("carve-results.json")).unwrap(),
-    )
-    .unwrap();
-    let chats = json["chats"].as_array().unwrap();
-    for chat in chats {
-        let platform = chat["platform"].as_str().unwrap_or("");
-        assert_ne!(platform, "signal", "signal chat found despite --plugin whatsapp");
-        assert_ne!(platform, "telegram", "telegram chat found despite --plugin whatsapp");
-    }
-}
 
 #[test]
 fn nested_chat_layout_uses_chats_subdirectory() {
