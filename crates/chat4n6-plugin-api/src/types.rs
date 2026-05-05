@@ -92,6 +92,20 @@ pub struct MediaRef {
     pub extracted_name: Option<String>,
     pub thumbnail_b64: Option<String>,
     pub duration_secs: Option<u32>,
+    /// SHA-256 hex of plaintext (decrypted) bytes.
+    #[serde(default)]
+    pub file_hash: Option<String>,
+    /// SHA-256 hex of encrypted CDN bytes.
+    /// WhatsApp re-uses the encrypted blob for forwards — same encrypted_hash means same CDN object,
+    /// enabling cross-chat forward-chain deduplication regardless of re-encryption.
+    #[serde(default)]
+    pub encrypted_hash: Option<String>,
+    /// WhatsApp CDN download URL.
+    #[serde(default)]
+    pub cdn_url: Option<String>,
+    /// AES-256-CBC decrypt key (base64-encoded 32-byte media key).
+    #[serde(default)]
+    pub media_key_b64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

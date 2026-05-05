@@ -236,6 +236,10 @@ fn record_to_message(
             extracted_name: text_data, // caption stored as extracted_name
             thumbnail_b64: None,
             duration_secs: None,
+            file_hash: None,
+            encrypted_hash: None,
+            cdn_url: None,
+            media_key_b64: None,
         })
     } else if let Some(text) = text_data {
         MessageContent::Text(text)
