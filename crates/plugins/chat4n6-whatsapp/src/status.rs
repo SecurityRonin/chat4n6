@@ -35,13 +35,22 @@ pub enum StatusType {
 
 /// Parse a status type integer.
 pub fn classify_status_type(msg_type: i32) -> StatusType {
-    todo!("implement classify_status_type")
+    match msg_type {
+        1 => StatusType::Image,
+        2 => StatusType::Text,
+        3 => StatusType::Video,
+        43 => StatusType::Gif,
+        44 => StatusType::Audio,
+        other => StatusType::Unknown(other),
+    }
 }
 
 /// Merge status stats from status.db into a StatusRecord.
 /// If stats is None (status.db unavailable), record.stats remains None.
 pub fn enrich_with_stats(record: &mut StatusRecord, stats: Option<StatusStats>) {
-    todo!("implement enrich_with_stats")
+    if let Some(s) = stats {
+        record.stats = Some(s);
+    }
 }
 
 #[cfg(test)]

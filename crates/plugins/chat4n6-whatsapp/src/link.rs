@@ -1,4 +1,6 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExtractedLink {
@@ -8,15 +10,41 @@ pub struct ExtractedLink {
     pub path: String,
 }
 
+fn url_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // Match http:// or https:// followed by domain and optional path/query
+        // Explicitly NOT matching email addresses (requires no @ before scheme)
+        Regex::new(r"(?i)\b(https?)://([a-zA-Z0-9.\-]+(?:\.[a-zA-Z]{2,}))(/[^\s]*)?")
+            .expect("valid URL regex")
+    })
+}
+
 /// Extract all URLs from a text string using regex.
 /// Supports http:// and https:// URLs. Returns empty vec if none found.
 pub fn extract_urls(text: &str) -> Vec<ExtractedLink> {
-    todo!("implement extract_urls")
+    url_regex()
+        .captures_iter(text)
+        .filter_map(|cap| {
+            let full_url = cap.get(0)?.as_str();
+            parse_url_components(full_url)
+        })
+        .collect()
 }
 
 /// Parse a URL string into scheme, domain, path components.
 pub fn parse_url_components(url: &str) -> Option<ExtractedLink> {
-    todo!("implement parse_url_components")
+    let re = url_regex();
+    let caps = re.captures(url)?;
+    let scheme = caps.get(1)?.as_str().to_lowercase();
+    let domain = caps.get(2)?.as_str().to_string();
+    let path = caps.get(3).map(|m| m.as_str().to_string()).unwrap_or_default();
+    Some(ExtractedLink {
+        url: caps.get(0)?.as_str().to_string(),
+        scheme,
+        domain,
+        path,
+    })
 }
 
 #[cfg(test)]
