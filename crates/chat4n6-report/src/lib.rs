@@ -133,6 +133,13 @@ impl ReportGenerator {
             .collect();
         ctx.insert("chats", &chat_summaries);
 
+        let warnings: Vec<String> = result
+            .forensic_warnings
+            .iter()
+            .map(|w| w.to_string())
+            .collect();
+        ctx.insert("forensic_warnings", &warnings);
+
         let html = self
             .tera
             .render("index.html", &ctx)
@@ -536,7 +543,7 @@ mod tests {
             "index.html should surface DatabaseVacuumed warning"
         );
         assert!(
-            index.contains("Tampered") || index.contains("tampered") || index.contains("HeaderTampered"),
+            index.contains("tamper") || index.contains("Tamper") || index.contains("change_counter"),
             "index.html should surface HeaderTampered warning"
         );
     }

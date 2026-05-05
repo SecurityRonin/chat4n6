@@ -8,6 +8,6 @@
       "Assert index.html contains 'HeaderTampered' or 'Header Tampered'",
       "cargo test -p chat4n6-report -- forensic_warnings_in_index passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]

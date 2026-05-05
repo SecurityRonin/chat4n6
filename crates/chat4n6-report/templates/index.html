@@ -12,6 +12,17 @@
 <tr><td>Total Calls</td><td>{{ total_calls }}</td></tr>
 </table>
 
+{% if forensic_warnings %}
+<h2>&#9888; Forensic Warnings</h2>
+<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:.8rem 1rem;margin-bottom:1rem">
+<ul style="margin:0;padding-left:1.2rem">
+{% for warning in forensic_warnings %}
+<li><strong>{{ warning }}</strong></li>
+{% endfor %}
+</ul>
+</div>
+{% endif %}
+
 <h2>Chats</h2>
 <div class="search-bar">
   <input type="text" id="chat-search" placeholder="Search chats..." onkeyup="filterChats()">
