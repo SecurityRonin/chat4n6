@@ -1004,6 +1004,113 @@ mod proptest_tests {
     }
 }
 
+/// RED tests for features I1–I8: reactions, edit history, receipts, starred,
+/// group participant events, forwarded messages.
+#[cfg(test)]
+mod features_i1_i8_tests {
+    use super::*;
+    use crate::schema::SchemaVersion;
+
+    fn make_modern_msgstore() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn reactions_extracted_from_message_add_on() {
+        let db = make_modern_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg2 = chat1.messages.iter().find(|m| m.id == 2).expect("msg 2");
+        assert_eq!(
+            msg2.reactions.len(),
+            1,
+            "msg 2 should have 1 reaction, got {:?}",
+            msg2.reactions
+        );
+        assert_eq!(msg2.reactions[0].emoji, "👍");
+    }
+
+    #[test]
+    fn edit_history_extracted_from_message_edit_info() {
+        let db = make_modern_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg2 = chat1.messages.iter().find(|m| m.id == 2).expect("msg 2");
+        assert_eq!(
+            msg2.edit_history.len(),
+            1,
+            "msg 2 should have 1 edit history entry, got {:?}",
+            msg2.edit_history
+        );
+        assert_eq!(msg2.edit_history[0].original_text, "Hi back!");
+    }
+
+    #[test]
+    fn receipts_extracted_from_receipt_user() {
+        let db = make_modern_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg1 = chat1.messages.iter().find(|m| m.id == 1).expect("msg 1");
+        assert_eq!(
+            msg1.receipts.len(),
+            1,
+            "msg 1 should have 1 receipt, got {:?}",
+            msg1.receipts
+        );
+        assert_eq!(
+            msg1.receipts[0].receipt_type,
+            chat4n6_plugin_api::ReceiptType::Read
+        );
+    }
+
+    #[test]
+    fn starred_messages_extracted() {
+        let db = make_modern_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg2 = chat1.messages.iter().find(|m| m.id == 2).expect("msg 2");
+        assert!(msg2.starred, "msg 2 starred=1 in DB must produce Message.starred=true");
+        let msg1 = chat1.messages.iter().find(|m| m.id == 1).expect("msg 1");
+        assert!(!msg1.starred, "msg 1 starred=0 must be false");
+    }
+
+    #[test]
+    fn group_participant_events_in_result() {
+        let db = make_modern_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        assert_eq!(
+            result.group_participant_events.len(),
+            1,
+            "should have 1 group participant event, got {:?}",
+            result.group_participant_events
+        );
+        assert_eq!(
+            result.group_participant_events[0].action,
+            chat4n6_plugin_api::ParticipantAction::Added
+        );
+    }
+
+    #[test]
+    fn forwarded_message_has_forward_score() {
+        let db = make_modern_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat2 = result.chats.iter().find(|c| c.id == 2).expect("chat 2");
+        let msg5 = chat2.messages.iter().find(|m| m.id == 5).expect("msg 5");
+        assert_eq!(
+            msg5.forward_score,
+            Some(8),
+            "msg 5 forward_score should be Some(8)"
+        );
+        assert!(msg5.is_forwarded, "msg 5 with forward_score=8 must be is_forwarded=true");
+    }
+}
+
 #[cfg(test)]
 mod proptest_redo_tests {
     use super::*;
