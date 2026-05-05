@@ -587,4 +587,125 @@ mod new_types_tests {
         assert!(r.forensic_warnings.is_empty());
         assert!(r.group_participant_events.is_empty());
     }
+
+    // ── v2 data model tests (RED — new types not yet implemented) ─────────
+
+    #[test]
+    fn extraction_result_has_acquisition_timestamps() {
+        let r = ExtractionResult::default();
+        assert!(r.extraction_started_at.is_none(),
+            "extraction_started_at must default to None");
+        assert!(r.extraction_finished_at.is_none(),
+            "extraction_finished_at must default to None");
+        // Roundtrip with values set
+        let json = r#"{"chats":[],"contacts":[],"calls":[],"wal_deltas":[],
+            "extraction_started_at":"2026-05-06T10:00:00Z",
+            "extraction_finished_at":"2026-05-06T10:01:00Z"}"#;
+        let r2: ExtractionResult = serde_json::from_str(json).unwrap();
+        assert!(r2.extraction_started_at.is_some());
+        assert!(r2.extraction_finished_at.is_some());
+    }
+
+    #[test]
+    fn extraction_result_has_wal_snapshots() {
+        let r = ExtractionResult::default();
+        assert!(r.wal_snapshots.is_empty(), "wal_snapshots must default to empty");
+        // Build a snapshot and roundtrip
+        let snap = WalSnapshot {
+            frame_number: 3,
+            commit_marker: true,
+            messages_added: vec![100, 101],
+            messages_removed: vec![99],
+            messages_mutated: vec![],
+            frame_offset: 4096,
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: WalSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.frame_number, 3);
+        assert_eq!(back.messages_added, vec![100, 101]);
+        assert!(back.commit_marker);
+    }
+
+    #[test]
+    fn message_has_forwarded_from_field() {
+        let ts = ForensicTimestamp::from_millis(1_710_513_127_000, 0);
+        let origin = ForwardOrigin {
+            origin_kind: ForwardOriginKind::Channel,
+            origin_id: "tg-channel://123456".to_string(),
+            origin_name: Some("News Channel".to_string()),
+            original_timestamp: Some(ts),
+        };
+        let m = Message {
+            id: 1, chat_id: 1,
+            sender_jid: None, from_me: false,
+            timestamp: ForensicTimestamp::from_millis(1_710_513_200_000, 0),
+            content: MessageContent::Text("forwarded".to_string()),
+            reactions: vec![], quoted_message: None,
+            source: EvidenceSource::Live, row_offset: 0,
+            starred: false, forward_score: Some(3), is_forwarded: true,
+            edit_history: vec![], receipts: vec![],
+            forwarded_from: Some(origin),
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("Channel"), "ForwardOriginKind::Channel must serialise");
+        let back: Message = serde_json::from_str(&json).unwrap();
+        let fo = back.forwarded_from.unwrap();
+        assert_eq!(fo.origin_id, "tg-channel://123456");
+        assert!(matches!(fo.origin_kind, ForwardOriginKind::Channel));
+    }
+
+    #[test]
+    fn message_forwarded_from_defaults_to_none() {
+        // Old JSON without forwarded_from must still deserialise
+        let json = r#"{"id":1,"chat_id":1,"from_me":true,
+            "timestamp":{"utc":"2024-03-15T14:07:00Z","local_offset_seconds":0},
+            "content":{"Text":"hi"},"reactions":[],"source":"Live",
+            "row_offset":0}"#;
+        let m: Message = serde_json::from_str(json).unwrap();
+        assert!(m.forwarded_from.is_none());
+    }
+
+    #[test]
+    fn new_forensic_warning_variants_serialise() {
+        use chrono::Utc;
+        let warnings: Vec<ForensicWarning> = vec![
+            ForensicWarning::CoreDataPkGap {
+                entity_name: "ZWAMESSAGE".to_string(),
+                expected_max: 500, observed_max: 450, recovered_count: 10,
+            },
+            ForensicWarning::ImpossibleTimestamp {
+                message_row_id: 42,
+                ts_utc: Utc::now(),
+                reason: ImpossibleReason::BeforeUnixEpoch,
+            },
+            ForensicWarning::DuplicateStanzaId {
+                stanza_id: "ABC123".to_string(), occurrences: 2,
+            },
+            ForensicWarning::RowIdReuseDetected {
+                table: "messages".to_string(), rowid: 99,
+                conflicting_timestamps: vec![Utc::now(), Utc::now()],
+            },
+            ForensicWarning::ThumbnailOrphanHigh {
+                orphan_thumbnails: 5, total_messages: 10, ratio_pct: 50,
+            },
+            ForensicWarning::PerFileHmacMismatch {
+                file_name: "msgstore.db".to_string(),
+            },
+            ForensicWarning::DisappearingTimerActive {
+                chat_id: 1, timer_seconds: 86400, vanished_count: 3,
+            },
+            ForensicWarning::SealedSenderUnresolved {
+                thread_id: 7, count: 2,
+            },
+            ForensicWarning::UnresolvedForwardSource {
+                message_id: 55, forward_from_id: 99999,
+            },
+        ];
+        for w in &warnings {
+            let json = serde_json::to_string(w)
+                .unwrap_or_else(|e| panic!("failed to serialise {w:?}: {e}"));
+            let _back: ForensicWarning = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("failed to deserialise {json}: {e}"));
+        }
+    }
 }
