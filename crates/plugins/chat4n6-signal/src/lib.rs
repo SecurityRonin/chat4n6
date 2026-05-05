@@ -1,3 +1,5 @@
+pub mod extractor;
+
 use anyhow::Result;
 use chat4n6_plugin_api::{ExtractionResult, ForensicFs, ForensicPlugin};
 
