@@ -2,6 +2,7 @@
 
 pub mod decrypt;
 pub mod extractor;
+pub mod platform;
 pub mod schema;
 pub mod timezone;
 

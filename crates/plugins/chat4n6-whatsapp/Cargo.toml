@@ -21,6 +21,11 @@ aes = "0.8"
 aes-gcm = "0.10"
 cbc = "0.1"
 log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = "0.4"
+hmac = "0.12"
 
 [dev-dependencies]
 tempfile = "3"
