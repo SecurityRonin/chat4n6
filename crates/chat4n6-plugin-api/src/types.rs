@@ -169,6 +169,9 @@ pub struct CallRecord {
     pub call_result: CallResult,
     pub timestamp: ForensicTimestamp,
     pub source: EvidenceSource,
+    /// Device JID of the call creator (present in newer msgstore schemas).
+    #[serde(default)]
+    pub call_creator_device_jid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

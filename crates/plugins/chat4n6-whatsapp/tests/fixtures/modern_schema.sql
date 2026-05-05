@@ -33,7 +33,9 @@ CREATE TABLE call_log (
     video_call INTEGER NOT NULL DEFAULT 0,
     duration INTEGER NOT NULL DEFAULT 0,
     timestamp INTEGER NOT NULL,
-    call_result INTEGER NOT NULL DEFAULT 0
+    call_result INTEGER NOT NULL DEFAULT 0,
+    call_row_id INTEGER DEFAULT NULL,
+    call_creator_device_jid_row_id INTEGER DEFAULT NULL
 );
 
 -- Sample JIDs
@@ -70,5 +72,6 @@ CREATE TABLE message_quoted (
 -- Message 2 quotes message 1
 INSERT INTO message_quoted VALUES (1, 2, 1, NULL, 1, 1710513127000, 'Hello there', 0, NULL, NULL);
 
--- Sample call
-INSERT INTO call_log VALUES (1, 1, 1, 0, 120, 1710513400000, 1);  -- outgoing voice call, 120s, Connected
+-- Sample call (solo, no call_row_id, no creator JID)
+INSERT INTO call_log (jid_row_id, from_me, video_call, duration, timestamp, call_result)
+    VALUES (1, 1, 0, 120, 1710513400000, 1);  -- outgoing voice call, 120s, Connected

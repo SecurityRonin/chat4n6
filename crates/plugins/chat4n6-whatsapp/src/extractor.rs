@@ -308,6 +308,7 @@ fn record_to_call(
         call_result,
         timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
         source: r.source.clone(),
+        call_creator_device_jid: None, // populated by merge_group_calls
     })
 }
 
@@ -694,5 +695,119 @@ mod tests {
             matches!(&msg1.content, MessageContent::Text(s) if s == "Hello there"),
             "text messages should still be Text"
         );
+    }
+
+    // ── F17: call creator device JID ─────────────────────────────────────
+
+    fn make_msgstore_with_creator_jid() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 200;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+            CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL, sender_jid_row_id INTEGER, from_me INTEGER NOT NULL DEFAULT 0, timestamp INTEGER NOT NULL, text_data TEXT, message_type INTEGER NOT NULL DEFAULT 0, media_mime_type TEXT, media_name TEXT);
+            CREATE TABLE call_log (
+                _id INTEGER PRIMARY KEY,
+                jid_row_id INTEGER NOT NULL,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                video_call INTEGER NOT NULL DEFAULT 0,
+                duration INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                call_result INTEGER NOT NULL DEFAULT 0,
+                call_row_id INTEGER DEFAULT NULL,
+                call_creator_device_jid_row_id INTEGER DEFAULT NULL
+            );
+            INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+            INSERT INTO jid VALUES (2, 'bob@s.whatsapp.net');
+            INSERT INTO chat VALUES (1, 1, NULL);
+            INSERT INTO call_log VALUES (1, 1, 0, 0, 90, 1710513500000, 1, NULL, 2);
+        "#).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn test_call_creator_device_jid_extracted() {
+        let db = make_msgstore_with_creator_jid();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        assert_eq!(result.calls.len(), 1);
+        assert_eq!(
+            result.calls[0].call_creator_device_jid.as_deref(),
+            Some("bob@s.whatsapp.net"),
+            "creator JID should be resolved from jid_row_id=2"
+        );
+    }
+
+    #[test]
+    fn test_call_creator_device_jid_none_for_solo_call() {
+        let db = make_modern_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        assert_eq!(result.calls.len(), 1);
+        assert!(
+            result.calls[0].call_creator_device_jid.is_none(),
+            "solo call with NULL creator should have None"
+        );
+    }
+
+    // ── F21: multi-signal group call detection ───────────────────────────
+
+    fn make_msgstore_with_group_call() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 200;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+            CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL, sender_jid_row_id INTEGER, from_me INTEGER NOT NULL DEFAULT 0, timestamp INTEGER NOT NULL, text_data TEXT, message_type INTEGER NOT NULL DEFAULT 0, media_mime_type TEXT, media_name TEXT);
+            CREATE TABLE call_log (
+                _id INTEGER PRIMARY KEY,
+                jid_row_id INTEGER NOT NULL,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                video_call INTEGER NOT NULL DEFAULT 0,
+                duration INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                call_result INTEGER NOT NULL DEFAULT 0,
+                call_row_id INTEGER DEFAULT NULL,
+                call_creator_device_jid_row_id INTEGER DEFAULT NULL
+            );
+            INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+            INSERT INTO jid VALUES (2, 'bob@s.whatsapp.net');
+            INSERT INTO chat VALUES (1, 1, NULL);
+            -- 2 participants in same group call (call_row_id=42)
+            INSERT INTO call_log VALUES (1, 1, 0, 0, 120, 1710513400000, 1, 42, NULL);
+            INSERT INTO call_log VALUES (2, 2, 0, 0, 120, 1710513400000, 1, 42, NULL);
+            -- 1 solo call (no call_row_id)
+            INSERT INTO call_log VALUES (3, 1, 1, 0, 60, 1710513500000, 1, NULL, NULL);
+        "#).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn test_group_call_merged_into_one_record() {
+        let db = make_msgstore_with_group_call();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let group_calls: Vec<_> = result.calls.iter().filter(|c| c.group_call).collect();
+        assert_eq!(group_calls.len(), 1, "two rows with same call_row_id → 1 merged record");
+        assert_eq!(group_calls[0].participants.len(), 2);
+    }
+
+    #[test]
+    fn test_group_call_participants_contain_both_jids() {
+        let db = make_msgstore_with_group_call();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let gc = result.calls.iter().find(|c| c.group_call).expect("no group call");
+        assert!(gc.participants.contains(&"alice@s.whatsapp.net".to_string()));
+        assert!(gc.participants.contains(&"bob@s.whatsapp.net".to_string()));
+    }
+
+    #[test]
+    fn test_solo_call_not_merged_and_group_call_false() {
+        let db = make_msgstore_with_group_call();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let solo_calls: Vec<_> = result.calls.iter().filter(|c| !c.group_call).collect();
+        assert_eq!(solo_calls.len(), 1, "one solo call (call_row_id=NULL)");
+        assert!(!solo_calls[0].group_call);
     }
 }
