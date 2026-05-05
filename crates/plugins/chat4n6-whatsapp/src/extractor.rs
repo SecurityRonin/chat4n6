@@ -1,8 +1,9 @@
 use crate::schema::SchemaVersion;
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
-    CallRecord, CallResult, Chat, Contact, ExtractionResult, ForensicTimestamp, MediaRef,
-    Message, MessageContent, WalDelta,
+    CallRecord, CallResult, Chat, Contact, EditHistoryEntry, ExtractionResult, ForensicTimestamp,
+    GroupParticipantEvent, MediaRef, Message, MessageContent, MessageReceipt, ParticipantAction,
+    Reaction, ReceiptType, WalDelta,
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
@@ -83,6 +84,158 @@ pub fn extract_from_msgstore(
         }
     }
 
+    // ── Reactions (message_add_on type=56) ──────────────────────────────────
+    // Build map: message_row_id → Vec<Reaction>
+    let mut reactions_map: HashMap<i64, Vec<Reaction>> = HashMap::new();
+    let add_on_records = by_table
+        .get("message_add_on")
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    for r in add_on_records {
+        let msg_row_id = match r.values.get(1) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let add_on_type = match r.values.get(5) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        if add_on_type == 56 {
+            // Reaction: emoji in text_data
+            let emoji = match r.values.get(6) {
+                Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
+                _ => continue,
+            };
+            let ts_ms = match r.values.get(4) {
+                Some(SqlValue::Int(n)) => *n,
+                _ => 0,
+            };
+            let reactor_jid = match r.values.get(3) {
+                Some(SqlValue::Int(n)) => jid_map.get(n).cloned().unwrap_or_default(),
+                _ => String::new(),
+            };
+            reactions_map
+                .entry(msg_row_id)
+                .or_default()
+                .push(Reaction {
+                    emoji,
+                    reactor_jid,
+                    timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
+                    source: r.source.clone(),
+                });
+        }
+    }
+
+    // ── Edit history (message_edit_info) ────────────────────────────────────
+    // Build map: message_row_id → Vec<EditHistoryEntry>
+    let mut edits_map: HashMap<i64, Vec<EditHistoryEntry>> = HashMap::new();
+    let edit_records = by_table
+        .get("message_edit_info")
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    for r in edit_records {
+        let msg_row_id = match r.values.get(1) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let edited_ts = match r.values.get(2) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => 0,
+        };
+        let original_text = match r.values.get(3) {
+            Some(SqlValue::Text(s)) => s.clone(),
+            _ => continue,
+        };
+        edits_map
+            .entry(msg_row_id)
+            .or_default()
+            .push(EditHistoryEntry {
+                original_text,
+                edited_at: ForensicTimestamp::from_millis(edited_ts, tz_offset_secs),
+                source: r.source.clone(),
+            });
+    }
+
+    // ── Receipts (receipt_user) ─────────────────────────────────────────────
+    // Build map: message_row_id → Vec<MessageReceipt>
+    let mut receipts_map: HashMap<i64, Vec<MessageReceipt>> = HashMap::new();
+    let receipt_records = by_table
+        .get("receipt_user")
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    for r in receipt_records {
+        let msg_row_id = match r.values.get(1) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let jid_row_id = match r.values.get(2) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let status = match r.values.get(3) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let ts_ms = match r.values.get(4) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => 0,
+        };
+        let receipt_type = match status {
+            5 => ReceiptType::Delivered,
+            13 => ReceiptType::Read,
+            17 => ReceiptType::Played,
+            _ => continue, // skip unknown receipt statuses
+        };
+        let device_jid = jid_map.get(&jid_row_id).cloned().unwrap_or_default();
+        receipts_map
+            .entry(msg_row_id)
+            .or_default()
+            .push(MessageReceipt {
+                device_jid,
+                receipt_type,
+                timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
+                source: r.source.clone(),
+            });
+    }
+
+    // ── Forwarded messages (message_forwarded) ───────────────────────────────
+    // Build map: message_row_id → forward_score
+    let mut forwarded_map: HashMap<i64, u32> = HashMap::new();
+    let fwd_records = by_table
+        .get("message_forwarded")
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    for r in fwd_records {
+        let msg_row_id = match r.values.get(1) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let score = match r.values.get(2) {
+            Some(SqlValue::Int(n)) => *n as u32,
+            _ => continue,
+        };
+        forwarded_map.insert(msg_row_id, score);
+    }
+
+    // Attach reactions, edit history, receipts, and forwarding to messages
+    for chat in chats.values_mut() {
+        for msg in &mut chat.messages {
+            if let Some(rxns) = reactions_map.remove(&msg.id) {
+                msg.reactions = rxns;
+            }
+            if let Some(edits) = edits_map.remove(&msg.id) {
+                msg.edit_history = edits;
+            }
+            if let Some(recpts) = receipts_map.remove(&msg.id) {
+                msg.receipts = recpts;
+            }
+            if let Some(score) = forwarded_map.get(&msg.id) {
+                msg.forward_score = Some(*score);
+                msg.is_forwarded = true;
+            }
+        }
+    }
+
     // Sort messages by timestamp within each chat
     for chat in chats.values_mut() {
         chat.messages.sort_by_key(|m| m.timestamp.utc);
@@ -99,6 +252,14 @@ pub fn extract_from_msgstore(
         .collect();
     let calls = merge_group_calls(raw_calls);
 
+    // ── Group participant events (group_participant_user) ───────────────────
+    let gpe_records = by_table
+        .get("group_participant_user")
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    let group_participant_events =
+        build_group_participant_events(gpe_records, &jid_map, tz_offset_secs);
+
     // WAL deltas (placeholder — WAL integration in CLI layer)
     let wal_deltas: Vec<WalDelta> = Vec::new();
 
@@ -110,7 +271,7 @@ pub fn extract_from_msgstore(
         timezone_offset_seconds: Some(tz_offset_secs),
         schema_version: 200,
         forensic_warnings: Vec::new(),
-        group_participant_events: Vec::new(),
+        group_participant_events,
     })
 }
 
@@ -228,6 +389,7 @@ fn record_to_message(
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
+    let starred = matches!(r.values.get(9), Some(SqlValue::Int(n)) if *n != 0);
     let text_data = match r.values.get(5) {
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
@@ -284,7 +446,7 @@ fn record_to_message(
         quoted_message: None,
         source: r.source.clone(),
         row_offset: r.offset,
-        starred: false,
+        starred,
         forward_score: None,
         is_forwarded: false,
         edit_history: Vec::new(),
@@ -456,6 +618,54 @@ fn build_quoted_map(
         );
     }
     map
+}
+
+// ── Group participant events ─────────────────────────────────────────────────
+
+/// group_participant_user: [0]=Null(_id), [1]=group_jid_row_id, [2]=jid_row_id,
+/// [3]=user_action, [4]=action_ts, [5]=actor_jid_row_id
+fn build_group_participant_events(
+    records: &[&RecoveredRecord],
+    jid_map: &HashMap<i64, String>,
+    tz_offset_secs: i32,
+) -> Vec<GroupParticipantEvent> {
+    let mut events = Vec::new();
+    for r in records {
+        let group_jid_row_id = match r.values.get(1) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let jid_row_id = match r.values.get(2) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let user_action = match r.values.get(3) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let action_ts = match r.values.get(4) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => 0,
+        };
+        let action = match user_action {
+            0 => ParticipantAction::Added,
+            1 => ParticipantAction::Removed,
+            2 => ParticipantAction::Left,
+            5 => ParticipantAction::Promoted,
+            6 => ParticipantAction::Demoted,
+            _ => continue,
+        };
+        let group_jid = jid_map.get(&group_jid_row_id).cloned().unwrap_or_default();
+        let participant_jid = jid_map.get(&jid_row_id).cloned().unwrap_or_default();
+        events.push(GroupParticipantEvent {
+            group_jid,
+            participant_jid,
+            action,
+            timestamp: ForensicTimestamp::from_millis(action_ts, tz_offset_secs),
+            source: r.source.clone(),
+        });
+    }
+    events
 }
 
 // ── wa.db contact extraction ─────────────────────────────────────────────────
