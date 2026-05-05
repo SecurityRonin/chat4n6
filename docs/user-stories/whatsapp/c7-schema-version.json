@@ -1,0 +1,12 @@
+[
+  {
+    "description": "Schema version is read from PRAGMA user_version, not hardcoded",
+    "steps": [
+      "Create a test DB with PRAGMA user_version = 215",
+      "Call extract_from_msgstore on that DB",
+      "Assert ExtractionResult.schema_version == 215 (not 200)",
+      "cargo test -p chat4n6-whatsapp -- schema_version passes"
+    ],
+    "passes": false
+  }
+]

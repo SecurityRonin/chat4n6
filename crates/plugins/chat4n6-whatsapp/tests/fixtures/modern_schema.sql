@@ -50,6 +50,7 @@ INSERT INTO message VALUES (2, 1, 1,      0, 1710513200000, 'Hi back!',    0, NU
 INSERT INTO message VALUES (3, 1, NULL,   1, 1710513300000, NULL,          1, 'image/jpeg', 'Media/WhatsApp Images/IMG-20240315-001.jpg');  -- sent image
 INSERT INTO message VALUES (4, 1, 1,      0, 1710513400000, NULL,          2, 'audio/ogg; codecs=opus', 'Media/WhatsApp Audio/AUD-20240315-001.opus');  -- audio
 INSERT INTO message VALUES (5, 2, NULL,   1, 1710513500000, 'Check this',  3, 'video/mp4', 'Media/WhatsApp Video/VID-20240315-001.mp4');  -- video with caption
+INSERT INTO message VALUES (6, 1, 1,      0, 1710513600000, NULL,          15, NULL, NULL);  -- tombstone/deleted (msg_type=15)
 
 -- Quoted-message cross-reference table
 CREATE TABLE message_quoted (

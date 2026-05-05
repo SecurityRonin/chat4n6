@@ -1,0 +1,14 @@
+[
+  {
+    "description": "Ghost message content is recovered from message_quoted when parent is deleted (msg_type=15)",
+    "steps": [
+      "Create a test DB where message row has msg_type=15 (tombstone)",
+      "Add a message_quoted row referencing that message with text_data='Original deleted text'",
+      "Call extract_from_msgstore",
+      "Assert the recovered message has content containing 'Original deleted text'",
+      "Assert the recovered message source is CarvedUnalloc or similar forensic source",
+      "cargo test -p chat4n6-whatsapp -- ghost_message passes"
+    ],
+    "passes": false
+  }
+]

@@ -637,6 +637,66 @@ mod tests {
         }
     }
 
+    // ── C7: schema_version from PRAGMA user_version ──────────────────────
+    #[test]
+    fn schema_version_is_read_from_pragma_user_version() {
+        // The modern_schema.sql fixture has PRAGMA user_version = 200.
+        // We override to 215 to prove the value is actually read from the DB,
+        // not returned as a hardcoded constant.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
+            .unwrap();
+        conn.execute_batch("PRAGMA user_version = 215;").unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        assert_eq!(
+            result.schema_version, 215,
+            "schema_version must be read from PRAGMA user_version, not hardcoded"
+        );
+    }
+
+    // ── C8: ghost message recovery from message_quoted ───────────────────
+    #[test]
+    fn ghost_message_recovered_from_message_quoted() {
+        // Message 6 in modern_schema.sql is msg_type=15 (tombstone, no text).
+        // We insert a message_quoted row referencing it; the extractor must
+        // surface GhostRecovered with the quoted text.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO message_quoted VALUES (99, 6, 1, NULL, 1, 1710513600000, 'Secret deleted message', 0, NULL, NULL);",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let ghost = result
+            .chats
+            .iter()
+            .flat_map(|c| c.messages.iter())
+            .find(|m| matches!(&m.content, MessageContent::GhostRecovered(_)));
+        assert!(
+            ghost.is_some(),
+            "msg_type=15 with message_quoted entry must produce GhostRecovered"
+        );
+        if let Some(msg) = ghost {
+            if let MessageContent::GhostRecovered(text) = &msg.content {
+                assert!(
+                    text.contains("Secret deleted message"),
+                    "GhostRecovered text must contain the quoted text_data"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_is_media_type_helper() {
         assert!(is_media_type(1));  // image
