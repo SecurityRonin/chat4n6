@@ -96,16 +96,7 @@ impl ReportGenerator {
 
         // --- manifest.json (chain of custody) ---
         let mut manifest = ForensicManifest::new(case_name, &generated_at);
-        for entry in std::fs::read_dir(output_dir)? {
-            let entry = entry?;
-            if entry.file_type()?.is_file() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name != "manifest.json" {
-                    let data = std::fs::read(entry.path())?;
-                    manifest.add_output_hash(&name, &data);
-                }
-            }
-        }
+        hash_dir_recursive(output_dir, output_dir, &mut manifest)?;
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         std::fs::write(output_dir.join("manifest.json"), manifest_json)?;
 
@@ -127,12 +118,15 @@ impl ReportGenerator {
             .chats
             .iter()
             .map(|c| {
+                let dir_name = chat_dir_name(c.id, c.name.as_deref().unwrap_or(&c.jid));
+                let link = format!("chats/{}/page_001.html", dir_name);
                 serde_json::json!({
                     "id": c.id,
                     "jid": c.jid,
                     "name": c.name,
                     "is_group": c.is_group,
                     "message_count": c.messages.len(),
+                    "link": link,
                 })
             })
             .collect();
@@ -151,11 +145,26 @@ impl ReportGenerator {
         if chat.messages.is_empty() {
             return Ok(());
         }
+        let dir_name = chat_dir_name(chat.id, chat.name.as_deref().unwrap_or(&chat.jid));
+        let chat_dir = out.join("chats").join(&dir_name);
+        std::fs::create_dir_all(&chat_dir)?;
+
         let pages = paginate(&chat.messages, self.page_size);
         let total_pages = pages.len();
 
         for (page_idx, page_msgs) in pages.iter().enumerate() {
             let current_page = page_idx + 1;
+            let prev_link = if current_page > 1 {
+                Some(format!("page_{:03}.html", current_page - 1))
+            } else {
+                None
+            };
+            let next_link = if current_page < total_pages {
+                Some(format!("page_{:03}.html", current_page + 1))
+            } else {
+                None
+            };
+
             let mut ctx = TeraCtx::new();
             ctx.insert("case_name", &base.case_name);
             ctx.insert("generated_at_utc", &base.generated_at_utc);
@@ -164,6 +173,8 @@ impl ReportGenerator {
             ctx.insert("chat_name", &chat.name.as_deref().unwrap_or(&chat.jid));
             ctx.insert("current_page", &current_page);
             ctx.insert("total_pages", &total_pages);
+            ctx.insert("prev_link", &prev_link);
+            ctx.insert("next_link", &next_link);
 
             let msg_rows: Vec<Value> = page_msgs
                 .iter()
@@ -194,12 +205,12 @@ impl ReportGenerator {
                 .collect();
             ctx.insert("messages", &msg_rows);
 
-            let filename = format!("chat_{}_{}.html", chat.id, current_page);
+            let filename = format!("page_{:03}.html", current_page);
             let html = self
                 .tera
                 .render("chat_page.html", &ctx)
                 .context("render chat_page.html")?;
-            std::fs::write(out.join(&filename), html)?;
+            std::fs::write(chat_dir.join(&filename), html)?;
         }
         Ok(())
     }
@@ -344,6 +355,38 @@ fn render_content(content: &MessageContent) -> String {
     }
 }
 
+/// Sanitised directory name for a chat: `chat_{id}_{slug}` where slug keeps
+/// only alphanumeric/underscore chars (max 40) so the path is filesystem-safe.
+fn chat_dir_name(id: i64, display: &str) -> String {
+    let slug: String = display
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(40)
+        .collect();
+    format!("chat_{}_{}", id, slug)
+}
+
+/// Recursively hash all files under `dir`, storing paths relative to `root`.
+fn hash_dir_recursive(
+    root: &Path,
+    dir: &Path,
+    manifest: &mut manifest::ForensicManifest,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        let name = rel.to_string_lossy().to_string();
+        if path.is_dir() {
+            hash_dir_recursive(root, &path, manifest)?;
+        } else if name != "manifest.json" {
+            let data = std::fs::read(&path)?;
+            manifest.add_output_hash(&name, &data);
+        }
+    }
+    Ok(())
+}
+
 fn source_class(source: &EvidenceSource) -> String {
     match source {
         EvidenceSource::Live => "live",
@@ -481,7 +524,7 @@ mod tests {
         let gen = ReportGenerator::new().expect("template load");
         gen.render("TestCase", &make_test_result(), out.path())
             .unwrap();
-        assert!(out.path().join("chat_1_1.html").exists());
+        assert!(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html").exists());
     }
 
     #[test]
@@ -597,7 +640,7 @@ mod tests {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
-        let chat = std::fs::read_to_string(out.path().join("chat_1_1.html")).unwrap();
+        let chat = std::fs::read_to_string(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html")).unwrap();
         // Tera auto-escapes / to &#x2F;
         assert!(
             chat.contains("[Media: image&#x2F;jpeg]"),
@@ -612,7 +655,7 @@ mod tests {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
-        let chat = std::fs::read_to_string(out.path().join("chat_1_1.html")).unwrap();
+        let chat = std::fs::read_to_string(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html")).unwrap();
         assert!(chat.contains("id=\"msg-search\""), "chat page should have search input");
         assert!(chat.contains("filterMessages"), "chat page should have filter JS function");
     }
@@ -622,7 +665,7 @@ mod tests {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
-        let chat = std::fs::read_to_string(out.path().join("chat_1_1.html")).unwrap();
+        let chat = std::fs::read_to_string(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html")).unwrap();
         assert!(chat.contains("src-filter"), "chat page should have source filter checkboxes");
         assert!(chat.contains("data-source="), "rows should have data-source attribute");
     }
@@ -632,7 +675,7 @@ mod tests {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
-        let chat = std::fs::read_to_string(out.path().join("chat_1_1.html")).unwrap();
+        let chat = std::fs::read_to_string(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html")).unwrap();
         assert!(
             chat.contains("quoted-block"),
             "quoted messages should render with quoted-block class"

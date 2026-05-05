@@ -9,7 +9,7 @@
       "Assert root output dir does NOT contain any chat_{id}_{page}.html files",
       "cargo test -p chat4n6 -- nested_chat_layout passes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "description": "index.html links to chats/ subdirectory pages, not flat root files",
@@ -18,6 +18,6 @@
       "Assert index.html contains href='chats/chat_1_",
       "cargo test -p chat4n6 -- index_links_to_chats passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]

@@ -15,9 +15,9 @@
 </div>
 
 <div class="pagination">
-  {% if current_page > 1 %}<a href="chat_{{ chat_id }}_{{ current_page - 1 }}.html">&laquo; Prev</a>{% endif %}
+  {% if prev_link %}<a href="{{ prev_link }}">&laquo; Prev</a>{% endif %}
   <span class="active">{{ current_page }}</span>
-  {% if current_page < total_pages %}<a href="chat_{{ chat_id }}_{{ current_page + 1 }}.html">Next &raquo;</a>{% endif %}
+  {% if next_link %}<a href="{{ next_link }}">Next &raquo;</a>{% endif %}
 </div>
 
 <table id="msg-table">
@@ -34,9 +34,9 @@
 </table>
 
 <div class="pagination">
-  {% if current_page > 1 %}<a href="chat_{{ chat_id }}_{{ current_page - 1 }}.html">&laquo; Prev</a>{% endif %}
+  {% if prev_link %}<a href="{{ prev_link }}">&laquo; Prev</a>{% endif %}
   <span class="active">{{ current_page }}</span>
-  {% if current_page < total_pages %}<a href="chat_{{ chat_id }}_{{ current_page + 1 }}.html">Next &raquo;</a>{% endif %}
+  {% if next_link %}<a href="{{ next_link }}">Next &raquo;</a>{% endif %}
 </div>
 
 <script>

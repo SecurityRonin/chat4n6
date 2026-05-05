@@ -121,9 +121,14 @@ fn page_size_flag_splits_chat_into_multiple_pages() {
         .assert()
         .success();
 
-    // Chat id=1, page 3 → chat_1_3.html (flat layout: chat_{id}_{page}.html)
-    let page3 = output.path().join("chat_1_3.html");
-    assert!(page3.exists(), "chat_1_3.html missing — page-size flag not honoured");
+    // Chat id=1, page 3 → chats/chat_1_*/page_003.html
+    let chat_subdir = std::fs::read_dir(output.path().join("chats"))
+        .expect("chats/ missing")
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .expect("no chat subdir in chats/");
+    let page3 = chat_subdir.path().join("page_003.html");
+    assert!(page3.exists(), "page_003.html missing — page-size flag not honoured");
 }
 
 #[test]
