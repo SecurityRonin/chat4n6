@@ -108,6 +108,7 @@ impl ReportGenerator {
         ctx.insert("case_name", &base.case_name);
         ctx.insert("generated_at_utc", &base.generated_at_utc);
         ctx.insert("timezone_label", &base.timezone_label);
+        ctx.insert("root_href", &"");
 
         let total_messages: usize = result.chats.iter().map(|c| c.messages.len()).sum();
         ctx.insert("total_chats", &result.chats.len());
@@ -169,6 +170,7 @@ impl ReportGenerator {
             ctx.insert("case_name", &base.case_name);
             ctx.insert("generated_at_utc", &base.generated_at_utc);
             ctx.insert("timezone_label", &base.timezone_label);
+            ctx.insert("root_href", &"../../");
             ctx.insert("chat_id", &chat.id);
             ctx.insert("chat_name", &chat.name.as_deref().unwrap_or(&chat.jid));
             ctx.insert("current_page", &current_page);
@@ -220,6 +222,7 @@ impl ReportGenerator {
         ctx.insert("case_name", &base.case_name);
         ctx.insert("generated_at_utc", &base.generated_at_utc);
         ctx.insert("timezone_label", &base.timezone_label);
+        ctx.insert("root_href", &"");
 
         let call_rows: Vec<Value> = result
             .calls
@@ -252,6 +255,7 @@ impl ReportGenerator {
         ctx.insert("case_name", &base.case_name);
         ctx.insert("generated_at_utc", &base.generated_at_utc);
         ctx.insert("timezone_label", &base.timezone_label);
+        ctx.insert("root_href", &"");
 
         let media_items: Vec<Value> = result
             .chats
@@ -291,6 +295,7 @@ impl ReportGenerator {
         ctx.insert("case_name", &base.case_name);
         ctx.insert("generated_at_utc", &base.generated_at_utc);
         ctx.insert("timezone_label", &base.timezone_label);
+        ctx.insert("root_href", &"");
 
         let deleted: Vec<Value> = result
             .chats
@@ -309,6 +314,19 @@ impl ReportGenerator {
             })
             .collect();
         ctx.insert("deleted_messages", &deleted);
+
+        let wal_rows: Vec<Value> = result
+            .wal_deltas
+            .iter()
+            .map(|w| {
+                serde_json::json!({
+                    "table": w.table,
+                    "row_id": w.row_id,
+                    "status": format!("{:?}", w.status),
+                })
+            })
+            .collect();
+        ctx.insert("wal_deltas", &wal_rows);
 
         let html = self
             .tera

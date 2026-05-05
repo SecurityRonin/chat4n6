@@ -21,4 +21,19 @@
 <script>
 function filterDeleted(){var f=document.getElementById('del-search').value.toLowerCase();var rows=document.getElementById('del-table').getElementsByTagName('tr');for(var i=1;i<rows.length;i++){rows[i].style.display=rows[i].textContent.toLowerCase().indexOf(f)>-1?'':'none';}}
 </script>
+
+{% if wal_deltas %}
+<h2>WAL Delta Records</h2>
+<p>Schema changes detected between WAL frames and the main database file.</p>
+<table id="wal-delta-table">
+<tr><th>Table</th><th>Row ID</th><th>Status</th></tr>
+{% for w in wal_deltas %}
+<tr class="wal-delta">
+  <td>{{ w.table }}</td>
+  <td>{{ w.row_id }}</td>
+  <td><span class="badge badge-wal-pending">{{ w.status }}</span></td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
 {% endblock %}

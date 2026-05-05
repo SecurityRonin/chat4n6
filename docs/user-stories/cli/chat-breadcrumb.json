@@ -7,7 +7,7 @@
       "Assert the page contains href='../../index.html' or href pointing to index.html",
       "cargo test -p chat4n6 -- chat_page_has_breadcrumb passes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "description": "WAL delta records appear in deleted.html with [WAL-HISTORIC] or [WAL-PENDING] badge",
@@ -16,6 +16,6 @@
       "Assert deleted.html contains 'wal-delta' or 'WAL' text",
       "cargo test -p chat4n6-report -- wal_delta_in_deleted_page passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]
