@@ -147,7 +147,56 @@ fn merge_results(
     dst.contacts.extend(src.contacts);
     dst.calls.extend(src.calls);
     dst.wal_deltas.extend(src.wal_deltas);
+    dst.forensic_warnings.extend(src.forensic_warnings);
+    dst.group_participant_events.extend(src.group_participant_events);
     if dst.timezone_offset_seconds.is_none() {
         dst.timezone_offset_seconds = src.timezone_offset_seconds;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chat4n6_plugin_api::{ExtractionResult, ForensicWarning, GroupParticipantEvent,
+                              ParticipantAction, EvidenceSource, ForensicTimestamp};
+
+    fn make_warning() -> ForensicWarning {
+        ForensicWarning::DatabaseVacuumed { freelist_page_count: 3 }
+    }
+
+    fn make_event() -> GroupParticipantEvent {
+        GroupParticipantEvent {
+            group_jid: "g@g.us".to_string(),
+            participant_jid: "a@s.whatsapp.net".to_string(),
+            action: ParticipantAction::Added,
+            timestamp: ForensicTimestamp::from_millis(0, 0),
+            source: EvidenceSource::Live,
+        }
+    }
+
+    #[test]
+    fn merge_preserves_forensic_warnings_from_both_plugins() {
+        let mut dst = ExtractionResult::default();
+        dst.forensic_warnings.push(make_warning());
+
+        let mut src = ExtractionResult::default();
+        src.forensic_warnings.push(ForensicWarning::HmacMismatch);
+
+        merge_results(&mut dst, src);
+        assert_eq!(dst.forensic_warnings.len(), 2,
+            "warnings from both plugins must survive merge");
+    }
+
+    #[test]
+    fn merge_preserves_group_participant_events_from_both_plugins() {
+        let mut dst = ExtractionResult::default();
+        dst.group_participant_events.push(make_event());
+
+        let mut src = ExtractionResult::default();
+        src.group_participant_events.push(make_event());
+
+        merge_results(&mut dst, src);
+        assert_eq!(dst.group_participant_events.len(), 2,
+            "group_participant_events from both plugins must survive merge");
     }
 }
