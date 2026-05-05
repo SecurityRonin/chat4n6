@@ -1,5 +1,7 @@
+pub mod case_uco;
 pub mod manifest;
 pub mod paginator;
+pub mod thread_view;
 
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{Chat, EvidenceSource, ExtractionResult, MessageContent};
