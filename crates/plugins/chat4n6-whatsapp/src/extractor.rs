@@ -87,15 +87,16 @@ pub fn extract_from_msgstore(
         chat.messages.sort_by_key(|m| m.timestamp.utc);
     }
 
-    // Map call records
+    // Map call records, then merge group calls by shared call_row_id
     let call_records = by_table
         .get("call_log")
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
-    let calls: Vec<CallRecord> = call_records
+    let raw_calls: Vec<(CallRecord, Option<i64>)> = call_records
         .iter()
         .filter_map(|r| record_to_call(r, &jid_map, tz_offset_secs))
         .collect();
+    let calls = merge_group_calls(raw_calls);
 
     // WAL deltas (placeholder — WAL integration in CLI layer)
     let wal_deltas: Vec<WalDelta> = Vec::new();
@@ -266,12 +267,15 @@ fn record_to_message(
 }
 
 /// call_log: row_id=_id, values[0]=Null, [1]=jid_row_id, [2]=from_me,
-/// [3]=video_call, [4]=duration, [5]=timestamp, [6]=call_result
+/// [3]=video_call, [4]=duration, [5]=timestamp, [6]=call_result,
+/// [7]=call_row_id (optional grouping key), [8]=call_creator_device_jid_row_id (optional)
+///
+/// Returns `(CallRecord, call_row_id)` where call_row_id groups group-call participants.
 fn record_to_call(
     r: &RecoveredRecord,
     jid_map: &HashMap<i64, String>,
     tz_offset_secs: i32,
-) -> Option<CallRecord> {
+) -> Option<(CallRecord, Option<i64>)> {
     let id = r.row_id?;
     let jid_row_id = match r.values.get(1)? {
         SqlValue::Int(n) => *n,
@@ -298,18 +302,64 @@ fn record_to_call(
         Some(SqlValue::Int(n)) => CallResult::from(*n),
         _ => CallResult::Unknown,
     };
-    Some(CallRecord {
-        call_id: id,
-        participants: vec![participant],
-        from_me,
-        video,
-        group_call: false,
-        duration_secs: duration,
-        call_result,
-        timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
-        source: r.source.clone(),
-        call_creator_device_jid: None, // populated by merge_group_calls
-    })
+    let call_row_id = match r.values.get(7) {
+        Some(SqlValue::Int(n)) => Some(*n),
+        _ => None,
+    };
+    let call_creator_device_jid = match r.values.get(8) {
+        Some(SqlValue::Int(n)) => jid_map.get(n).cloned(),
+        _ => None,
+    };
+    Some((
+        CallRecord {
+            call_id: id,
+            participants: vec![participant],
+            from_me,
+            video,
+            group_call: false,
+            duration_secs: duration,
+            call_result,
+            timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
+            source: r.source.clone(),
+            call_creator_device_jid,
+        },
+        call_row_id,
+    ))
+}
+
+/// Merge call records that share the same `call_row_id` into a single `CallRecord`
+/// with `group_call = true` and all participants listed.
+/// Records with `call_row_id = None` are kept as solo calls.
+fn merge_group_calls(raw: Vec<(CallRecord, Option<i64>)>) -> Vec<CallRecord> {
+    let mut solo: Vec<CallRecord> = Vec::new();
+    let mut by_row_id: std::collections::BTreeMap<i64, Vec<CallRecord>> =
+        std::collections::BTreeMap::new();
+
+    for (record, call_row_id) in raw {
+        match call_row_id {
+            None => solo.push(record),
+            Some(rid) => by_row_id.entry(rid).or_default().push(record),
+        }
+    }
+
+    let mut result = solo;
+    for (_rid, mut group) in by_row_id {
+        if group.len() == 1 {
+            result.push(group.remove(0));
+        } else {
+            // Merge: take metadata from first record, collect all participants
+            let mut base = group.remove(0);
+            base.group_call = true;
+            for other in group {
+                base.participants.extend(other.participants);
+                if base.call_creator_device_jid.is_none() {
+                    base.call_creator_device_jid = other.call_creator_device_jid;
+                }
+            }
+            result.push(base);
+        }
+    }
+    result
 }
 
 // ── Quoted message support ───────────────────────────────────────────────────
