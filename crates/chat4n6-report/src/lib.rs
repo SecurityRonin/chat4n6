@@ -24,6 +24,7 @@ struct Templates;
 pub struct ReportGenerator {
     tera: Tera,
     page_size: usize,
+    obfuscate: bool,
 }
 
 impl ReportGenerator {
@@ -38,11 +39,16 @@ impl ReportGenerator {
             tera.add_raw_template(&file_path, content)
                 .with_context(|| format!("failed to parse template {file_path}"))?;
         }
-        Ok(Self { tera, page_size: PAGE_SIZE })
+        Ok(Self { tera, page_size: PAGE_SIZE, obfuscate: false })
     }
 
     pub fn with_page_size(mut self, n: usize) -> Self {
         self.page_size = n.max(1);
+        self
+    }
+
+    pub fn with_obfuscate(mut self, obfuscate: bool) -> Self {
+        self.obfuscate = obfuscate;
         self
     }
 
@@ -122,12 +128,14 @@ impl ReportGenerator {
             .chats
             .iter()
             .map(|c| {
-                let dir_name = chat_dir_name(c.id, c.name.as_deref().unwrap_or(&c.jid));
+                let dir_name = self.chat_dir(c.id, c.name.as_deref().unwrap_or(&c.jid));
                 let link = format!("chats/{}/page_001.html", dir_name);
+                let display_jid = self.maybe_obfuscate_jid(&c.jid);
+                let display_name = c.name.as_deref().map(|n| self.maybe_obfuscate_jid(n));
                 serde_json::json!({
                     "id": c.id,
-                    "jid": c.jid,
-                    "name": c.name,
+                    "jid": display_jid,
+                    "name": display_name,
                     "is_group": c.is_group,
                     "message_count": c.messages.len(),
                     "link": link,
@@ -156,7 +164,7 @@ impl ReportGenerator {
         if chat.messages.is_empty() {
             return Ok(());
         }
-        let dir_name = chat_dir_name(chat.id, chat.name.as_deref().unwrap_or(&chat.jid));
+        let dir_name = self.chat_dir(chat.id, chat.name.as_deref().unwrap_or(&chat.jid));
         let chat_dir = out.join("chats").join(&dir_name);
         std::fs::create_dir_all(&chat_dir)?;
 
@@ -346,6 +354,20 @@ impl ReportGenerator {
         Ok(())
     }
 
+    fn maybe_obfuscate_jid(&self, jid: &str) -> String {
+        if self.obfuscate { obfuscate_jid(jid) } else { jid.to_string() }
+    }
+
+    /// Returns the filesystem directory name for a chat.
+    /// When obfuscating, uses only the numeric ID to avoid leaking phone numbers in paths.
+    fn chat_dir(&self, id: i64, display: &str) -> String {
+        if self.obfuscate {
+            format!("chat_{id}")
+        } else {
+            chat_dir_name(id, display)
+        }
+    }
+
     fn render_timeline(&self, base: &BaseCtx, result: &ExtractionResult, out: &Path) -> Result<()> {
         let mut ctx = TeraCtx::new();
         ctx.insert("case_name", &base.case_name);
@@ -421,6 +443,34 @@ fn render_content(content: &MessageContent) -> String {
         MessageContent::System(s) => format!("[System: {s}]"),
         MessageContent::Unknown(t) => format!("[Unknown type {t}]"),
     }
+}
+
+/// Mask the middle digits of a phone number embedded in a WhatsApp JID.
+/// "6591234567@s.whatsapp.net" → "65912****7@s.whatsapp.net"
+/// Non-JID strings are returned unchanged.
+fn obfuscate_jid(jid: &str) -> String {
+    // Split on '@' to isolate the local part (phone or group id).
+    let (local, rest) = match jid.split_once('@') {
+        Some((l, r)) => (l, format!("@{r}")),
+        None => return jid.to_string(),
+    };
+    // Only obfuscate all-digit locals (phone numbers).
+    if !local.chars().all(|c| c.is_ascii_digit()) {
+        return jid.to_string();
+    }
+    let digits: Vec<char> = local.chars().collect();
+    let n = digits.len();
+    if n <= 4 {
+        return jid.to_string(); // too short to mask meaningfully
+    }
+    // Keep first 2 and last 1 chars visible; mask the middle with '*'.
+    let keep_start = 2.min(n.saturating_sub(2));
+    let keep_end = 1;
+    let mask_len = n - keep_start - keep_end;
+    let masked: String = digits[..keep_start].iter().collect::<String>()
+        + &"*".repeat(mask_len)
+        + &digits[n - keep_end..].iter().collect::<String>();
+    format!("{masked}{rest}")
 }
 
 /// Sanitised directory name for a chat: `chat_{id}_{slug}` where slug keeps
