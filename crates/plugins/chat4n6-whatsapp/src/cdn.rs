@@ -35,7 +35,7 @@ pub struct CdnAcquisitionRecord {
 /// slices the key bytes:
 /// - bytes 0..16: IV
 /// - bytes 16..48: AES-256-CBC key
-/// - HMAC verification is TODO — currently skipped
+/// - HMAC verification: TODO (currently skipped)
 ///
 /// `media_key_bytes`: the raw 32-byte media key decoded from base64
 /// `encrypted_bytes`: the full downloaded CDN blob
@@ -43,9 +43,31 @@ pub fn decrypt_whatsapp_media(
     media_key_bytes: &[u8],
     encrypted_bytes: &[u8],
 ) -> Result<Vec<u8>, CdnError> {
-    // STUB — not yet implemented
-    let _ = (media_key_bytes, encrypted_bytes);
-    Err(CdnError::KeyTooShort(0))
+    use aes::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+    type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+
+    // Minimum: need at least 1 AES block (16 bytes) of ciphertext — check blob first
+    if encrypted_bytes.len() < 16 {
+        return Err(CdnError::BlobTooShort(16, encrypted_bytes.len()));
+    }
+    // Need at least 48 bytes: 16 (IV) + 32 (AES-256 key)
+    if media_key_bytes.len() < 48 {
+        return Err(CdnError::KeyTooShort(media_key_bytes.len()));
+    }
+
+    let iv = &media_key_bytes[0..16];
+    let aes_key = &media_key_bytes[16..48];
+
+    // TODO: HMAC-SHA256 verification against MAC key (bytes 48..80 of expanded key).
+    // Skipped in MVP — HKDF expansion not yet implemented.
+
+    let mut buf = encrypted_bytes.to_vec();
+    let plaintext_len = Aes256CbcDec::new(aes_key.into(), iv.into())
+        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+        .map_err(|_| CdnError::HmacMismatch)?  // unpad failure treated as decrypt error
+        .len();
+    buf.truncate(plaintext_len);
+    Ok(buf)
 }
 
 /// Generate a CDN acquisition log record for writing to cdn_acquisition.jsonl.
@@ -56,16 +78,27 @@ pub fn build_acquisition_record(
     plaintext: Option<&[u8]>,
     examiner: Option<&str>,
 ) -> CdnAcquisitionRecord {
-    // STUB — not yet implemented
-    let _ = (cdn_url, media_key_bytes, plaintext, examiner);
+    let url_hash = hex::encode(Sha256::digest(cdn_url.as_bytes()));
+    let media_key_hash = hex::encode(Sha256::digest(media_key_bytes));
+
+    let now = chrono::Utc::now();
+    let timestamp_utc = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    let (file_hash_result, file_size_bytes, success) = if let Some(pt) = plaintext {
+        let hash = hex::encode(Sha256::digest(pt));
+        (Some(hash), Some(pt.len() as u64), true)
+    } else {
+        (None, None, false)
+    };
+
     CdnAcquisitionRecord {
-        url_hash: String::new(),
-        media_key_hash: String::new(),
-        timestamp_utc: String::new(),
-        file_hash_result: None,
-        file_size_bytes: None,
-        examiner: None,
-        success: false,
+        url_hash,
+        media_key_hash,
+        timestamp_utc,
+        file_hash_result,
+        file_size_bytes,
+        examiner: examiner.map(String::from),
+        success,
     }
 }
 
@@ -75,8 +108,13 @@ pub fn append_to_log(
     log_path: &std::path::Path,
     record: &CdnAcquisitionRecord,
 ) -> Result<(), CdnError> {
-    // STUB — not yet implemented
-    let _ = (log_path, record);
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    let line = serde_json::to_string(record)?;
+    writeln!(file, "{}", line)?;
     Ok(())
 }
 
