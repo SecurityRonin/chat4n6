@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Timeline — chat4n6{% endblock %}
+{% block content %}
+<h2>Cross-Chat Timeline</h2>
+<p>All messages across all chats, sorted by timestamp ascending.</p>
+<div class="search-bar">
+  <input type="text" id="tl-search" placeholder="Search timeline..." onkeyup="filterTimeline()">
+</div>
+<table id="tl-table">
+<tr><th>Timestamp</th><th>Chat</th><th>Dir</th><th>Sender</th><th>Content</th><th>Source</th></tr>
+{% for row in timeline_rows %}
+<tr>
+  <td>{{ row.timestamp_utc }}</td>
+  <td>{{ row.chat_name }}</td>
+  <td>{% if row.from_me %}Out{% else %}In{% endif %}</td>
+  <td>{{ row.sender | default(value="—") }}</td>
+  <td>{{ row.content }}</td>
+  <td><span class="badge badge-{{ row.source_class }}">{{ row.source }}</span></td>
+</tr>
+{% endfor %}
+</table>
+<script>
+function filterTimeline(){var f=document.getElementById('tl-search').value.toLowerCase();var rows=document.getElementById('tl-table').getElementsByTagName('tr');for(var i=1;i<rows.length;i++){rows[i].style.display=rows[i].textContent.toLowerCase().indexOf(f)>-1?'':'none';}}
+</script>
+{% endblock %}

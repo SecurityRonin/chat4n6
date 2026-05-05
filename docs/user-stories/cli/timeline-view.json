@@ -9,7 +9,7 @@
       "Assert each row contains chat name, sender, and content",
       "cargo test -p chat4n6-report -- timeline_sorted_by_timestamp passes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "description": "timeline.html includes a search/filter input and links back to index",
@@ -19,6 +19,6 @@
       "Assert page contains href pointing to index.html (breadcrumb)",
       "cargo test -p chat4n6-report -- timeline_has_search_and_nav passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]

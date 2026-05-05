@@ -82,6 +82,9 @@ impl ReportGenerator {
         // --- deleted.html ---
         self.render_deleted(&base_ctx, result, output_dir)?;
 
+        // --- timeline.html ---
+        self.render_timeline(&base_ctx, result, output_dir)?;
+
         // --- thread-view.html ---
         let thread_html = crate::thread_view::render_thread_view(result, case_name);
         std::fs::write(output_dir.join("thread-view.html"), thread_html)?;
@@ -340,6 +343,46 @@ impl ReportGenerator {
             .render("deleted.html", &ctx)
             .context("render deleted.html")?;
         std::fs::write(out.join("deleted.html"), html)?;
+        Ok(())
+    }
+
+    fn render_timeline(&self, base: &BaseCtx, result: &ExtractionResult, out: &Path) -> Result<()> {
+        let mut ctx = TeraCtx::new();
+        ctx.insert("case_name", &base.case_name);
+        ctx.insert("generated_at_utc", &base.generated_at_utc);
+        ctx.insert("timezone_label", &base.timezone_label);
+        ctx.insert("root_href", &"");
+
+        // Flatten all messages across all chats, annotate with chat name, sort by timestamp.
+        let mut rows: Vec<(i64, Value)> = result
+            .chats
+            .iter()
+            .flat_map(|chat| {
+                let chat_name = chat.name.clone().unwrap_or_else(|| chat.jid.clone());
+                chat.messages.iter().map(move |m| {
+                    let epoch_ms = m.timestamp.utc.timestamp_millis();
+                    let row = serde_json::json!({
+                        "timestamp_utc": m.timestamp.utc_str(),
+                        "chat_name": chat_name,
+                        "from_me": m.from_me,
+                        "sender": m.sender_jid,
+                        "content": render_content(&m.content),
+                        "source": m.source.to_string(),
+                        "source_class": source_class(&m.source),
+                    });
+                    (epoch_ms, row)
+                })
+            })
+            .collect();
+        rows.sort_by_key(|(ms, _)| *ms);
+        let timeline_rows: Vec<Value> = rows.into_iter().map(|(_, v)| v).collect();
+        ctx.insert("timeline_rows", &timeline_rows);
+
+        let html = self
+            .tera
+            .render("timeline.html", &ctx)
+            .context("render timeline.html")?;
+        std::fs::write(out.join("timeline.html"), html)?;
         Ok(())
     }
 }
