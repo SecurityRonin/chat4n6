@@ -7,7 +7,7 @@
       "Assert the chat page contains 'Forwarded' text for that message",
       "cargo test -p chat4n6-report -- forwarded_badge_in_chat_page passes"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "description": "High forward_score (>=5) triggers a ViralContent forensic warning in ExtractionResult",
@@ -17,6 +17,6 @@
       "OR: assert the rendered chat page shows forward_score in a distinct style vs low-score forwards",
       "cargo test -p chat4n6-report -- high_forward_score_is_notable passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]

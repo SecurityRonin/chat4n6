@@ -27,7 +27,7 @@
   <td>{{ msg.timestamp_utc }}</td>
   <td>{% if msg.from_me %}&#8599;{% else %}&#8600;{% endif %}</td>
   <td>{{ msg.sender | default(value="Me") }}</td>
-  <td class="{% if msg.deleted %}msg-deleted{% endif %}">{% if msg.quoted %}<div class="quoted-block">&#8618; {{ msg.quoted.sender | default(value="Me") }}: {{ msg.quoted.content }}</div>{% endif %}{{ msg.content }}</td>
+  <td class="{% if msg.deleted %}msg-deleted{% endif %}">{% if msg.quoted %}<div class="quoted-block">&#8618; {{ msg.quoted.sender | default(value="Me") }}: {{ msg.quoted.content }}</div>{% endif %}{% if msg.is_forwarded %}{% if msg.forward_score and msg.forward_score >= 5 %}<span class="badge badge-forwarded-viral">&#8635; fwd:{{ msg.forward_score }}</span> {% else %}<span class="badge badge-forwarded">&#8635; Forwarded</span> {% endif %}{% endif %}{{ msg.content }}</td>
   <td><span class="badge badge-{{ msg.source_class }}">{{ msg.source }}</span></td>
 </tr>
 {% endfor %}

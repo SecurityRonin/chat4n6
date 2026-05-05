@@ -220,6 +220,8 @@ impl ReportGenerator {
                         "source": source_str,
                         "source_class": source_class,
                         "quoted": quoted,
+                        "is_forwarded": m.is_forwarded,
+                        "forward_score": m.forward_score,
                     })
                 })
                 .collect();
