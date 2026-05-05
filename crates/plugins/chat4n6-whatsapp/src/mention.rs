@@ -18,7 +18,14 @@ pub struct Mention {
 /// Parse mention type integer to MentionType.
 /// Meta AI bot JIDs take priority over raw type.
 pub fn classify_mention_type(raw_type: Option<i32>, jid: &str) -> MentionType {
-    todo!("implement classify_mention_type")
+    if is_meta_ai_bot(jid) {
+        return MentionType::MetaAiBot;
+    }
+    match raw_type {
+        Some(1) => MentionType::GroupBroadcast,
+        Some(2) => MentionType::Everyone,
+        _ => MentionType::Person,
+    }
 }
 
 /// Known Meta AI bot JID prefixes/numbers.
@@ -26,7 +33,13 @@ pub fn classify_mention_type(raw_type: Option<i32>, jid: &str) -> MentionType {
 /// Real production numbers may differ.
 /// Returns true if the JID matches a known Meta AI bot identifier.
 pub fn is_meta_ai_bot(jid: &str) -> bool {
-    todo!("implement is_meta_ai_bot")
+    const META_AI_NUMBERS: &[&str] = &["13135550002", "18005551234"];
+    for number in META_AI_NUMBERS {
+        if jid.starts_with(number) && jid.ends_with("@s.whatsapp.net") {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

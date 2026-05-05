@@ -48,17 +48,43 @@ pub fn build_trajectory(
     share_duration_secs: Option<u64>,
     raw_points: Vec<LocationPoint>,
 ) -> LiveLocationTrajectory {
-    todo!("implement build_trajectory")
+    let mut filtered: Vec<LocationPoint> = raw_points
+        .into_iter()
+        .filter(|p| !(p.latitude == 0.0 && p.longitude == 0.0))
+        .collect();
+
+    filtered.sort_by_key(|p| p.timestamp_ms);
+
+    let wal_points_count = filtered
+        .iter()
+        .filter(|p| p.source == LocationPointSource::WalRecovered)
+        .count();
+
+    LiveLocationTrajectory {
+        sharer_jid: sharer_jid.to_string(),
+        session_start_ms,
+        session_end_ms,
+        share_duration_secs,
+        points: filtered,
+        wal_points_count,
+    }
 }
 
 /// Generate an OpenStreetMap preview URL for a coordinate pair.
 pub fn osm_url(lat: f64, lon: f64) -> String {
-    todo!("implement osm_url")
+    format!(
+        "https://www.openstreetmap.org/?mlat={lat}&mlon={lon}&zoom=15",
+        lat = lat,
+        lon = lon
+    )
 }
 
 /// Returns true if the coordinate is a valid GPS fix (not 0,0 and within range).
 pub fn is_valid_coordinate(lat: f64, lon: f64) -> bool {
-    todo!("implement is_valid_coordinate")
+    if lat == 0.0 && lon == 0.0 {
+        return false;
+    }
+    lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0
 }
 
 #[cfg(test)]

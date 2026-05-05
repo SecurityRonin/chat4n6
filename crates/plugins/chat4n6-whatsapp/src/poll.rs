@@ -28,7 +28,43 @@ pub fn build_poll(
     options: Vec<(&str, Vec<String>)>,
     voter_name_map: &HashMap<String, String>,
 ) -> PollRecord {
-    todo!("implement build_poll")
+    use std::collections::HashSet;
+
+    let mut all_voters: HashSet<String> = HashSet::new();
+
+    let poll_options: Vec<PollOption> = options
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (option_text, voter_jids))| {
+            // Deduplicate voter JIDs for this option
+            let unique_jids: Vec<String> = {
+                let mut seen = HashSet::new();
+                voter_jids.into_iter().filter(|j| seen.insert(j.clone())).collect()
+            };
+            for jid in &unique_jids {
+                all_voters.insert(jid.clone());
+            }
+            let voter_names: Vec<String> = unique_jids
+                .iter()
+                .map(|jid| voter_name_map.get(jid).cloned().unwrap_or_else(|| jid.clone()))
+                .collect();
+            PollOption {
+                option_id: idx as i64,
+                option_text: option_text.to_string(),
+                vote_count: unique_jids.len() as u32,
+                voter_jids: unique_jids,
+                voter_names,
+            }
+        })
+        .collect();
+
+    PollRecord {
+        message_id,
+        question: question.to_string(),
+        allow_multiple_answers: allow_multiple,
+        total_voters: all_voters.len() as u32,
+        options: poll_options,
+    }
 }
 
 #[cfg(test)]
@@ -83,7 +119,6 @@ mod tests {
             ("B", jids(&["c@s.whatsapp.net"])),
         ];
         let r = build_poll(5, "Q?", false, opts, &HashMap::new());
-        // total_voters = unique voter count
         assert_eq!(r.total_voters, 3);
     }
 
@@ -96,7 +131,6 @@ mod tests {
 
     #[test]
     fn test_duplicate_vote_dedup() {
-        // Same JID voting for the same option twice should count once
         let opts = vec![("Yes", jids(&["a@s.whatsapp.net", "a@s.whatsapp.net"]))];
         let r = build_poll(7, "Q?", false, opts, &HashMap::new());
         assert_eq!(r.options[0].vote_count, 1);
@@ -114,7 +148,6 @@ mod tests {
     fn test_option_ids_assigned() {
         let opts = vec![("A", vec![]), ("B", vec![])];
         let r = build_poll(8, "Q?", false, opts, &HashMap::new());
-        // option_ids should be distinct
         assert_ne!(r.options[0].option_id, r.options[1].option_id);
     }
 }

@@ -36,7 +36,39 @@ pub fn parse_group_change(
     new_value: Option<&str>,
     timestamp_ms: i64,
 ) -> GroupChangeRecord {
-    todo!("implement parse_group_change")
+    let change = match action_type {
+        1 => GroupChangeKind::SubjectChanged {
+            old: old_value.map(|s| s.to_string()),
+            new: new_value.unwrap_or("").to_string(),
+        },
+        6 => GroupChangeKind::IconChanged {
+            old_jpeg_b64: old_value.map(|s| s.to_string()),
+            new_jpeg_b64: new_value.map(|s| s.to_string()),
+        },
+        19 | 27 => GroupChangeKind::DescriptionChanged {
+            old: old_value.map(|s| s.to_string()),
+            new: new_value.unwrap_or("").to_string(),
+        },
+        29 => GroupChangeKind::AdminOnlyEditChanged { admins_only: true },
+        30 => GroupChangeKind::AdminOnlyEditChanged { admins_only: false },
+        31 => GroupChangeKind::AdminOnlySendChanged { admins_only: true },
+        32 => GroupChangeKind::AdminOnlySendChanged { admins_only: false },
+        56 => GroupChangeKind::DisappearingTimerChanged {
+            old_secs: old_value.and_then(|s| s.parse::<u64>().ok()),
+            new_secs: new_value.and_then(|s| s.parse::<u64>().ok()),
+        },
+        83 => GroupChangeKind::InviteLinkReset,
+        84 => GroupChangeKind::ApprovalModeChanged { requires_approval: true },
+        85 => GroupChangeKind::ApprovalModeChanged { requires_approval: false },
+        other => GroupChangeKind::Unknown(other),
+    };
+
+    GroupChangeRecord {
+        message_id,
+        actor_jid: actor_jid.map(|s| s.to_string()),
+        change,
+        timestamp_ms,
+    }
 }
 
 #[cfg(test)]

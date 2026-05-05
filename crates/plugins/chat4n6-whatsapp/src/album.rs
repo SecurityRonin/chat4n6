@@ -13,7 +13,22 @@ pub struct AlbumRecord {
 /// If missing_count > 0, sets note to
 /// "WhatsApp expected N images; M found; K missing — possible evidence gap"
 pub fn analyze_album(album_message_id: i64, expected_count: u32, actual_count: u32) -> AlbumRecord {
-    todo!("implement analyze_album")
+    let missing_count = expected_count.saturating_sub(actual_count);
+    let note = if missing_count > 0 {
+        Some(format!(
+            "WhatsApp expected {} images; {} found; {} missing — possible evidence gap",
+            expected_count, actual_count, missing_count
+        ))
+    } else {
+        None
+    };
+    AlbumRecord {
+        album_message_id,
+        expected_count,
+        actual_count,
+        missing_count,
+        note,
+    }
 }
 
 #[cfg(test)]
