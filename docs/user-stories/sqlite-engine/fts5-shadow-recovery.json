@@ -2,5 +2,5 @@
   "id": "sqlite-engine/fts5-shadow-recovery",
   "title": "FTS5 shadow table content recovery",
   "description": "Extract text fragments from FTS5 _content shadow tables using the forensic B-tree walker.",
-  "passes": false
+  "passes": true
 }

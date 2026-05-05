@@ -2,5 +2,5 @@
   "id": "sqlite-engine/header-tamper-detection",
   "title": "SQLite header tamper detection",
   "description": "Detect external tampering via SQLite file header field analysis: write/read counter mismatch and page-size/count vs file-size discrepancy.",
-  "passes": false
+  "passes": true
 }
