@@ -233,3 +233,34 @@ fn index_links_to_chats_subdirectory() {
         "index.html does not link into chats/ subdirectory"
     );
 }
+
+#[test]
+fn chat_page_has_breadcrumb_to_index() {
+    let fixture = setup_whatsapp_fixture();
+    let output = TempDir::new().unwrap();
+    Command::cargo_bin("chat4n6")
+        .unwrap()
+        .args([
+            "run",
+            "--input", fixture.path().to_str().unwrap(),
+            "--output", output.path().to_str().unwrap(),
+            "--case-name", "BreadcrumbTest",
+            "--no-unalloc",
+        ])
+        .assert()
+        .success();
+
+    // Find page_001.html in any chat subdir (lives at chats/chat_1_*/page_001.html)
+    let chat_subdir = std::fs::read_dir(output.path().join("chats"))
+        .expect("chats/ missing")
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .expect("no chat subdir");
+    let page = std::fs::read_to_string(chat_subdir.path().join("page_001.html")).unwrap();
+
+    // The nav link must use ../../index.html (two levels up from chats/chat_*/page.html)
+    assert!(
+        page.contains("../../index.html"),
+        "chat page_001.html nav link must use ../../index.html (nested two levels deep)"
+    );
+}

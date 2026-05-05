@@ -501,6 +501,26 @@ mod tests {
     }
 
     #[test]
+    fn wal_delta_appears_in_deleted_page() {
+        use chat4n6_plugin_api::WalDelta;
+        let mut result = make_test_result();
+        result.wal_deltas.push(WalDelta {
+            table: "message".to_string(),
+            row_id: 99,
+            status: chat4n6_plugin_api::WalDeltaStatus::DeletedInWal,
+        });
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("WalTest", &result, out.path()).unwrap();
+        let deleted = std::fs::read_to_string(out.path().join("deleted.html")).unwrap();
+        // Must include a row with row_id=99 from the WalDelta we inserted
+        assert!(
+            deleted.contains("99") && (deleted.contains("DeletedInWal") || deleted.contains("wal-delta")),
+            "deleted.html must render actual WalDelta rows (row_id=99, status=DeletedInWal)"
+        );
+    }
+
+    #[test]
     fn test_report_creates_index_html() {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().expect("template load");
