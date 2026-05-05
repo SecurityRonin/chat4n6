@@ -5,6 +5,7 @@ pub mod decrypt;
 pub mod extractor;
 pub mod orphaned_media;
 pub mod platform;
+pub mod system_event;
 pub mod schema;
 pub mod timezone;
 pub mod album;
