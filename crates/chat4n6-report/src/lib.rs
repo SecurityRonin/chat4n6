@@ -318,6 +318,7 @@ fn render_content(content: &MessageContent) -> String {
                 format!("[Location: {lat}, {lon}]")
             }
         }
+        MessageContent::ViewOnce(m) => format!("[View-Once: {}]", m.mime_type),
         MessageContent::VCard(v) => format!("[Contact: {v}]"),
         MessageContent::Deleted => "[Deleted]".to_string(),
         MessageContent::System(s) => format!("[System: {s}]"),
@@ -365,6 +366,8 @@ mod tests {
             quoted_message: None,
             source: EvidenceSource::Live,
             row_offset: 0,
+            starred: false, forward_score: None, is_forwarded: false,
+            edit_history: vec![], receipts: vec![],
         };
         let msg = Message {
             id: 1,
@@ -377,6 +380,8 @@ mod tests {
             quoted_message: Some(Box::new(quoted)),
             source: EvidenceSource::Live,
             row_offset: 0,
+            starred: false, forward_score: None, is_forwarded: false,
+            edit_history: vec![], receipts: vec![],
         };
         let media_msg = Message {
             id: 2,
@@ -400,6 +405,8 @@ mod tests {
             quoted_message: None,
             source: EvidenceSource::Live,
             row_offset: 0,
+            starred: false, forward_score: None, is_forwarded: false,
+            edit_history: vec![], receipts: vec![],
         };
         let chat = Chat {
             id: 1,
@@ -407,6 +414,7 @@ mod tests {
             name: None,
             is_group: false,
             messages: vec![msg, media_msg],
+            archived: false,
         };
         ExtractionResult {
             chats: vec![chat],
@@ -426,6 +434,8 @@ mod tests {
             wal_deltas: vec![],
             timezone_offset_seconds: Some(0),
             schema_version: 200,
+            forensic_warnings: vec![],
+            group_participant_events: vec![],
         }
     }
 

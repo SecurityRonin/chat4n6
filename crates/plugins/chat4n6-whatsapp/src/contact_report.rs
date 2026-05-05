@@ -291,6 +291,11 @@ mod tests {
             quoted_message: None,
             source: EvidenceSource::Live,
             row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
         }
     }
 
@@ -322,6 +327,11 @@ mod tests {
             quoted_message: None,
             source: EvidenceSource::Live,
             row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
         }
     }
 

@@ -178,6 +178,9 @@ pub struct CallRecord {
 pub enum MessageContent {
     Text(String),
     Media(MediaRef),
+    /// View-once image (msg_type 53) or video (msg_type 54).
+    /// Media key and CDN URL survive long after the user "viewed" it.
+    ViewOnce(MediaRef),
     Location {
         lat: f64,
         lon: f64,
@@ -187,6 +190,117 @@ pub enum MessageContent {
     Deleted,
     System(String),
     Unknown(i32),
+}
+
+// ── Edit history ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EditHistoryEntry {
+    pub original_text: String,
+    pub edited_at: ForensicTimestamp,
+    pub source: EvidenceSource,
+}
+
+// ── Message receipts ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ReceiptType {
+    Delivered,
+    Read,
+    Played,
+}
+
+impl fmt::Display for ReceiptType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Delivered => write!(f, "Delivered"),
+            Self::Read => write!(f, "Read"),
+            Self::Played => write!(f, "Played"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessageReceipt {
+    pub device_jid: String,
+    pub receipt_type: ReceiptType,
+    pub timestamp: ForensicTimestamp,
+    pub source: EvidenceSource,
+}
+
+// ── Group participant events ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ParticipantAction {
+    Joined,
+    Left,
+    Added,
+    Removed,
+    Promoted,
+    Demoted,
+}
+
+impl fmt::Display for ParticipantAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Joined => write!(f, "Joined"),
+            Self::Left => write!(f, "Left"),
+            Self::Added => write!(f, "Added"),
+            Self::Removed => write!(f, "Removed"),
+            Self::Promoted => write!(f, "Promoted"),
+            Self::Demoted => write!(f, "Demoted"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupParticipantEvent {
+    pub group_jid: String,
+    pub participant_jid: String,
+    pub action: ParticipantAction,
+    pub timestamp: ForensicTimestamp,
+    pub source: EvidenceSource,
+}
+
+// ── Anti-forensics warnings ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ForensicWarning {
+    /// SQLite VACUUM was run — freelist erased, potentially destroying deleted record remnants.
+    DatabaseVacuumed { freelist_page_count: u32 },
+    /// ROWID gaps concentrate on one JID: possible targeted scrubbing.
+    SelectiveDeletion { suspect_jid: String, deletion_rate_pct: u8 },
+    /// Timestamp order violated: a later ROWID has an earlier timestamp.
+    TimestampAnomaly { message_row_id: i64, description: String },
+    /// Backup crypt14/15 HMAC does not match payload — file may have been tampered.
+    HmacMismatch,
+    /// PRAGMA user_version inconsistent with claimed app version.
+    SchemaVersionMismatch { db_version: u32, app_version: String },
+    /// SQLite change counter implies writes after acquisition date.
+    HeaderTampered { change_counter: u32, expected_max: u32 },
+}
+
+impl fmt::Display for ForensicWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DatabaseVacuumed { freelist_page_count } => {
+                write!(f, "VACUUM detected (freelist pages remaining: {freelist_page_count})")
+            }
+            Self::SelectiveDeletion { suspect_jid, deletion_rate_pct } => {
+                write!(f, "Selective deletion: {suspect_jid} ({deletion_rate_pct}% gap rate)")
+            }
+            Self::TimestampAnomaly { message_row_id, description } => {
+                write!(f, "Timestamp anomaly at row {message_row_id}: {description}")
+            }
+            Self::HmacMismatch => write!(f, "HMAC mismatch — backup integrity check FAILED"),
+            Self::SchemaVersionMismatch { db_version, app_version } => {
+                write!(f, "Schema v{db_version} incompatible with app version {app_version}")
+            }
+            Self::HeaderTampered { change_counter, expected_max } => {
+                write!(f, "Header tamper: change_counter={change_counter} > expected_max={expected_max}")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -201,6 +315,21 @@ pub struct Message {
     pub quoted_message: Option<Box<Message>>,
     pub source: EvidenceSource,
     pub row_offset: u64,
+    /// User deliberately starred this message — proof of awareness.
+    #[serde(default)]
+    pub starred: bool,
+    /// Number of times this message has been forwarded (from message.forward_score).
+    #[serde(default)]
+    pub forward_score: Option<u32>,
+    /// True when forward_score > 0 or message_type indicates forwarded content.
+    #[serde(default)]
+    pub is_forwarded: bool,
+    /// Prior versions of this message's text (message_edit_history table).
+    #[serde(default)]
+    pub edit_history: Vec<EditHistoryEntry>,
+    /// Per-device delivery/read receipts (message_receipt_* tables).
+    #[serde(default)]
+    pub receipts: Vec<MessageReceipt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -218,6 +347,9 @@ pub struct Chat {
     pub name: Option<String>,
     pub is_group: bool,
     pub messages: Vec<Message>,
+    /// User deliberately archived this chat — potential concealment indicator.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -242,6 +374,10 @@ pub struct ExtractionResult {
     pub wal_deltas: Vec<WalDelta>,
     pub timezone_offset_seconds: Option<i32>,
     pub schema_version: u32,
+    #[serde(default)]
+    pub forensic_warnings: Vec<ForensicWarning>,
+    #[serde(default)]
+    pub group_participant_events: Vec<GroupParticipantEvent>,
 }
 
 #[cfg(test)]

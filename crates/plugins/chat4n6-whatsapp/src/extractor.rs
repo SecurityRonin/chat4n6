@@ -59,6 +59,7 @@ pub fn extract_from_msgstore(
                     name: None,
                     is_group: false,
                     messages: Vec::new(),
+                    archived: false,
                 })
                 .messages
                 .push(msg);
@@ -108,6 +109,8 @@ pub fn extract_from_msgstore(
         wal_deltas,
         timezone_offset_seconds: Some(tz_offset_secs),
         schema_version: 200,
+        forensic_warnings: Vec::new(),
+        group_participant_events: Vec::new(),
     })
 }
 
@@ -182,6 +185,7 @@ fn build_chats(records: &[&RecoveredRecord], jid_map: &HashMap<i64, String>) -> 
                 name: subject,
                 is_group,
                 messages: Vec::new(),
+                archived: false,
             },
         );
     }
@@ -263,6 +267,11 @@ fn record_to_message(
         quoted_message: None,
         source: r.source.clone(),
         row_offset: r.offset,
+        starred: false,
+        forward_score: None,
+        is_forwarded: false,
+        edit_history: Vec::new(),
+        receipts: Vec::new(),
     })
 }
 
@@ -421,6 +430,11 @@ fn build_quoted_map(
                 quoted_message: None,
                 source: r.source.clone(),
                 row_offset: r.offset,
+                starred: false,
+                forward_score: None,
+                is_forwarded: false,
+                edit_history: Vec::new(),
+                receipts: Vec::new(),
             },
         );
     }
