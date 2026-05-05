@@ -13,6 +13,7 @@ members = [
     "crates/plugins/chat4n6-whatsapp",
     "crates/plugins/chat4n6-signal",
     "crates/plugins/chat4n6-telegram",
+    "crates/plugins/chat4n6-ios-whatsapp",
     "crates/chat4n6-report",
     "crates/dar-archive",
     "crates/ios-backup",
