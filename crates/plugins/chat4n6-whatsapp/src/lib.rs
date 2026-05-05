@@ -281,4 +281,73 @@ mod tests {
         let p = WhatsAppPlugin::new();
         assert!(p.resolve_key(&fs).is_none());
     }
+
+    fn db_to_bytes(conn: &rusqlite::Connection) -> Vec<u8> {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    fn minimal_msgstore(jid: &str) -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "
+            PRAGMA user_version = 200;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+            CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL,
+                sender_jid_row_id INTEGER, from_me INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL, text_data TEXT, message_type INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE call_log (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL,
+                from_me INTEGER NOT NULL DEFAULT 0, video_call INTEGER NOT NULL DEFAULT 0,
+                duration INTEGER NOT NULL DEFAULT 0, timestamp INTEGER NOT NULL);
+            INSERT INTO jid VALUES (1, '{jid}');
+            INSERT INTO chat VALUES (1, 1, NULL);
+            INSERT INTO message VALUES (1, 1, NULL, 1, 1710513127000, 'hi', 0);
+            "
+        )).unwrap();
+        db_to_bytes(&conn)
+    }
+
+    fn minimal_wa_db(jid: &str, display_name: &str) -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "
+            CREATE TABLE wa_contacts (_id INTEGER PRIMARY KEY,
+                jid TEXT, display_name TEXT, status TEXT, number TEXT);
+            INSERT INTO wa_contacts VALUES (1, '{jid}', '{display_name}', NULL, NULL);
+            "
+        )).unwrap();
+        db_to_bytes(&conn)
+    }
+
+    #[test]
+    fn wa_db_contact_names_applied_to_chats() {
+        let msgstore = minimal_msgstore("alice@s.whatsapp.net");
+        let wa_db = minimal_wa_db("alice@s.whatsapp.net", "Alice");
+        let fs = MockFs::new()
+            .add(DB_PATH, msgstore)
+            .add(WA_DB_PATH, wa_db);
+        let result = WhatsAppPlugin::new().extract(&fs, None).unwrap();
+        let chat = result.chats.first().expect("expected at least one chat");
+        assert_eq!(
+            chat.name.as_deref(),
+            Some("Alice"),
+            "chat name should be populated from wa.db display_name"
+        );
+    }
+
+    #[test]
+    fn timezone_autodetect_from_property_file() {
+        let msgstore = minimal_msgstore("test@s.whatsapp.net");
+        let fs = MockFs::new()
+            .add(DB_PATH, msgstore)
+            .add("data/property/persist.sys.timezone", b"Asia/Manila\n".to_vec());
+        let result = WhatsAppPlugin::new().extract(&fs, None).unwrap();
+        assert_eq!(
+            result.timezone_offset_seconds,
+            Some(8 * 3600),
+            "timezone_offset_seconds should be 28800 (UTC+8) for Asia/Manila"
+        );
+    }
 }

@@ -1,0 +1,13 @@
+[
+  {
+    "description": "Contact display names from wa.db are used as chat names when no subject is set",
+    "steps": [
+      "Create a fixture with wa.db containing a contact with display_name='Alice'",
+      "Ensure msgstore.db has a chat with the same JID, no subject",
+      "Call extract_from_msgstore (or the plugin extract)",
+      "Assert the chat name is 'Alice' (from wa.db), not the raw JID",
+      "cargo test -p chat4n6-whatsapp -- wa_db_contact_names passes"
+    ],
+    "passes": true
+  }
+]

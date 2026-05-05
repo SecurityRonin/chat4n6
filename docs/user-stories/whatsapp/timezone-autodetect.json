@@ -1,0 +1,12 @@
+[
+  {
+    "description": "Timezone is auto-detected from settings.db when --timezone flag is omitted",
+    "steps": [
+      "Create a test filesystem with settings.db containing time_zone='Asia/Manila'",
+      "Call extract_from_msgstore without a timezone override",
+      "Assert ExtractionResult.timezone_offset_seconds == 28800 (UTC+8)",
+      "cargo test -p chat4n6-whatsapp -- timezone_autodetect passes"
+    ],
+    "passes": false
+  }
+]
