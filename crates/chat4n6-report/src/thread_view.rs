@@ -1,9 +1,365 @@
-use chat4n6_plugin_api::{EvidenceSource, ExtractionResult, MessageContent};
+use chat4n6_plugin_api::{EvidenceSource, ExtractionResult, Message, MessageContent};
 use std::path::Path;
+
+fn evidence_color(source: &EvidenceSource) -> &'static str {
+    match source {
+        EvidenceSource::Live => "#22c55e",
+        EvidenceSource::WalPending | EvidenceSource::WalHistoric | EvidenceSource::WalDeleted => {
+            "#f97316"
+        }
+        EvidenceSource::Freelist | EvidenceSource::FtsOnly => "#eab308",
+        EvidenceSource::CarvedUnalloc { .. }
+        | EvidenceSource::CarvedIntraPage { .. }
+        | EvidenceSource::CarvedOverflow
+        | EvidenceSource::CarvedDb => "#ef4444",
+        EvidenceSource::Journal | EvidenceSource::IndexRecovery => "#8b5cf6",
+    }
+}
+
+fn evidence_class(source: &EvidenceSource) -> &'static str {
+    match source {
+        EvidenceSource::Live => "src-live",
+        EvidenceSource::WalPending | EvidenceSource::WalHistoric | EvidenceSource::WalDeleted => {
+            "src-wal"
+        }
+        EvidenceSource::Freelist | EvidenceSource::FtsOnly => "src-freelist",
+        EvidenceSource::CarvedUnalloc { .. }
+        | EvidenceSource::CarvedIntraPage { .. }
+        | EvidenceSource::CarvedOverflow
+        | EvidenceSource::CarvedDb => "src-carved",
+        EvidenceSource::Journal | EvidenceSource::IndexRecovery => "src-journal",
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn render_message_content(content: &MessageContent) -> String {
+    match content {
+        MessageContent::Text(t) => html_escape(t),
+        MessageContent::Media(m) => format!(
+            "<span class=\"media-label\">[Media: {}]</span>",
+            html_escape(&m.mime_type)
+        ),
+        MessageContent::ViewOnce(m) => format!(
+            "<span class=\"view-once-label\">🔒 View Once — media key preserved ({})</span>",
+            html_escape(&m.mime_type)
+        ),
+        MessageContent::Location { lat, lon, name } => {
+            let label = name.as_deref().unwrap_or("Location");
+            format!(
+                "<span class=\"location-label\">[{}: {:.6}, {:.6}]</span>",
+                html_escape(label),
+                lat,
+                lon
+            )
+        }
+        MessageContent::VCard(v) => format!("<span class=\"vcard-label\">[Contact: {}]</span>", html_escape(v)),
+        MessageContent::Deleted => "<span class=\"deleted-label\">[Deleted]</span>".to_string(),
+        MessageContent::System(s) => {
+            format!("<span class=\"system-label\">[System: {}]</span>", html_escape(s))
+        }
+        MessageContent::Unknown(t) => format!("<span class=\"unknown-label\">[Unknown type {t}]</span>"),
+    }
+}
+
+fn render_message_bubble(msg: &Message) -> String {
+    let dir_class = if msg.from_me { "sent" } else { "received" };
+    let color = evidence_color(&msg.source);
+    let src_class = evidence_class(&msg.source);
+    let source_label = msg.source.to_string();
+    let ts = msg.timestamp.utc_str();
+    let content_html = render_message_content(&msg.content);
+
+    let sender_html = if !msg.from_me {
+        let jid = msg.sender_jid.as_deref().unwrap_or("unknown");
+        format!("<div class=\"sender-jid\">{}</div>", html_escape(jid))
+    } else {
+        String::new()
+    };
+
+    let starred_html = if msg.starred {
+        "<span class=\"star-indicator\">⭐</span> ".to_string()
+    } else {
+        String::new()
+    };
+
+    let forwarded_html = if msg.is_forwarded {
+        "<span class=\"fwd-indicator\">↪ Forwarded</span> ".to_string()
+    } else {
+        String::new()
+    };
+
+    let quoted_html = if let Some(ref q) = msg.quoted_message {
+        let q_sender = q.sender_jid.as_deref().unwrap_or("me");
+        let q_content = render_message_content(&q.content);
+        format!(
+            "<div class=\"quoted-msg\"><span class=\"quoted-sender\">{}</span>: {}</div>",
+            html_escape(q_sender),
+            q_content
+        )
+    } else {
+        String::new()
+    };
+
+    let reactions_html = if !msg.reactions.is_empty() {
+        let r: Vec<String> = msg
+            .reactions
+            .iter()
+            .map(|r| {
+                format!(
+                    "<span class=\"reaction\" title=\"{}\">{}</span>",
+                    html_escape(&r.reactor_jid),
+                    html_escape(&r.emoji)
+                )
+            })
+            .collect();
+        format!("<div class=\"reactions\">{}</div>", r.join(" "))
+    } else {
+        String::new()
+    };
+
+    format!(
+        r#"<div class="msg {dir_class}" data-from-me="{from_me}" data-source="{source_label}">
+  {sender_html}
+  <div class="bubble">
+    {starred_html}{forwarded_html}{quoted_html}
+    <div class="content">{content_html}</div>
+    <div class="meta">
+      <span class="timestamp">{ts}</span>
+      <span class="evidence-badge {src_class}" style="background:{color}" title="{source_label}"> </span>
+    </div>
+  </div>
+  {reactions_html}
+</div>"#,
+        dir_class = dir_class,
+        from_me = msg.from_me,
+        source_label = html_escape(&source_label),
+        sender_html = sender_html,
+        starred_html = starred_html,
+        forwarded_html = forwarded_html,
+        quoted_html = quoted_html,
+        content_html = content_html,
+        ts = html_escape(&ts),
+        src_class = src_class,
+        color = color,
+        reactions_html = reactions_html,
+    )
+}
 
 /// Render a WhatsApp-style thread view HTML report.
 pub fn render_thread_view(result: &ExtractionResult, case_name: &str) -> String {
-    todo!("implement render_thread_view")
+    let warning_banner = if result.forensic_warnings.is_empty() {
+        String::new()
+    } else {
+        let items: Vec<String> = result
+            .forensic_warnings
+            .iter()
+            .map(|w| format!("<li>{}</li>", html_escape(&w.to_string())))
+            .collect();
+        format!(
+            r#"<div class="forensic-warnings">
+  <strong>Forensic Warnings</strong>
+  <ul>{}</ul>
+</div>"#,
+            items.join("\n")
+        )
+    };
+
+    let mut chat_sections = String::new();
+    for chat in &result.chats {
+        let chat_title = chat
+            .name
+            .as_deref()
+            .unwrap_or(&chat.jid)
+            .to_string();
+
+        let messages_html: String = chat.messages.iter().map(render_message_bubble).collect();
+
+        chat_sections.push_str(&format!(
+            r#"<section class="chat-section" id="chat-{id}">
+  <h2 class="chat-title">{title}</h2>
+  <div class="messages">{msgs}</div>
+</section>"#,
+            id = chat.id,
+            title = html_escape(&chat_title),
+            msgs = messages_html,
+        ));
+    }
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Thread View — {case_name}</title>
+<style>
+body {{
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f0f2f5;
+  margin: 0; padding: 0;
+}}
+header {{
+  background: #075e54;
+  color: white;
+  padding: 12px 24px;
+}}
+.forensic-warnings {{
+  background: #fee2e2;
+  border-left: 4px solid #ef4444;
+  margin: 16px 24px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  color: #7f1d1d;
+}}
+.search-bar {{
+  padding: 12px 24px;
+  background: white;
+  border-bottom: 1px solid #ddd;
+}}
+#msg-search {{
+  width: 100%; max-width: 400px;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 20px;
+  font-size: 14px;
+}}
+.chat-section {{
+  max-width: 900px;
+  margin: 24px auto;
+  background: #e5ddd5;
+  border-radius: 8px;
+  overflow: hidden;
+}}
+.chat-title {{
+  background: #128c7e;
+  color: white;
+  margin: 0;
+  padding: 12px 20px;
+  font-size: 16px;
+}}
+.messages {{
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}}
+.msg {{
+  max-width: 70%;
+  display: flex;
+  flex-direction: column;
+}}
+.msg.sent {{
+  align-self: flex-end;
+  align-items: flex-end;
+}}
+.msg.received {{
+  align-self: flex-start;
+  align-items: flex-start;
+}}
+.bubble {{
+  background: white;
+  padding: 8px 12px;
+  border-radius: 8px;
+  box-shadow: 0 1px 1px rgba(0,0,0,.13);
+  position: relative;
+}}
+.msg.sent .bubble {{
+  background: #dcf8c6;
+  border-radius: 8px 0 8px 8px;
+}}
+.msg.received .bubble {{
+  border-radius: 0 8px 8px 8px;
+}}
+.sender-jid {{
+  font-size: 11px;
+  color: #667781;
+  margin-bottom: 2px;
+  padding-left: 2px;
+}}
+.quoted-msg {{
+  background: rgba(0,0,0,.05);
+  border-left: 3px solid #128c7e;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}}
+.meta {{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  justify-content: flex-end;
+}}
+.timestamp {{
+  font-size: 11px;
+  color: #667781;
+}}
+.evidence-badge {{
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}}
+.reactions {{
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}}
+.reaction {{
+  background: white;
+  border-radius: 12px;
+  padding: 2px 6px;
+  font-size: 14px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.2);
+}}
+.star-indicator, .fwd-indicator {{
+  font-size: 12px;
+  margin-right: 4px;
+}}
+.view-once-label {{
+  color: #5f6368;
+  font-style: italic;
+}}
+.deleted-label {{
+  color: #9e9e9e;
+  font-style: italic;
+}}
+.hidden {{ display: none !important; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>Thread View — {case_name_esc}</h1>
+</header>
+{warning_banner}
+<div class="search-bar">
+  <input type="text" id="msg-search" placeholder="Search messages..." oninput="filterMessages(this.value)">
+</div>
+{chat_sections}
+<script>
+function filterMessages(query) {{
+  var q = query.toLowerCase();
+  document.querySelectorAll('.msg').forEach(function(el) {{
+    var text = el.querySelector('.content') ? el.querySelector('.content').textContent.toLowerCase() : '';
+    el.classList.toggle('hidden', q.length > 0 && !text.includes(q));
+  }});
+}}
+</script>
+</body>
+</html>"#,
+        case_name = html_escape(case_name),
+        case_name_esc = html_escape(case_name),
+        warning_banner = warning_banner,
+        chat_sections = chat_sections,
+    )
 }
 
 /// Write the thread view HTML to `path/thread-view.html`.
@@ -12,7 +368,9 @@ pub fn write_thread_view(
     case_name: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
-    todo!("implement write_thread_view")
+    let html = render_thread_view(result, case_name);
+    std::fs::write(path.join("thread-view.html"), html)?;
+    Ok(())
 }
 
 #[cfg(test)]

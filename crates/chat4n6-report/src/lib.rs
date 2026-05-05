@@ -74,6 +74,13 @@ impl ReportGenerator {
         // --- deleted.html ---
         self.render_deleted(&base_ctx, result, output_dir)?;
 
+        // --- thread-view.html ---
+        let thread_html = crate::thread_view::render_thread_view(result, case_name);
+        std::fs::write(output_dir.join("thread-view.html"), thread_html)?;
+
+        // --- case-uco.json ---
+        crate::case_uco::write_case_uco(result, case_name, env!("CARGO_PKG_VERSION"), output_dir)?;
+
         // --- carve-results.json ---
         let json_path = output_dir.join("carve-results.json");
         let json = serde_json::to_string_pretty(result)?;

@@ -4,17 +4,101 @@ use std::path::Path;
 
 /// Serialize an ExtractionResult to a CASE/UCO JSON-LD document.
 pub fn to_case_uco(result: &ExtractionResult, case_id: &str, tool_version: &str) -> Value {
-    todo!("implement CASE/UCO export")
+    let mut objects: Vec<Value> = Vec::new();
+
+    // Collect all messages across all chats
+    for chat in &result.chats {
+        for msg in &chat.messages {
+            let mut obj = json!({
+                "@type": "uco-observable:Message",
+                "@id": format!("msg-{}", msg.id),
+                "uco-observable:sentTime": msg.timestamp.utc.to_rfc3339(),
+                "uco-observable:isRead": true,
+            });
+
+            // Message text
+            if let MessageContent::Text(ref text) = msg.content {
+                obj["uco-observable:messageText"] = json!(text);
+            }
+
+            // Content type for media
+            let cdn_url: Option<String> = match &msg.content {
+                MessageContent::Media(m) | MessageContent::ViewOnce(m) => {
+                    obj["uco-observable:contentType"] = json!(m.mime_type);
+                    m.cdn_url.clone()
+                }
+                _ => None,
+            };
+
+            // Sender: only for received messages (from_me=false)
+            if !msg.from_me {
+                if let Some(ref jid) = msg.sender_jid {
+                    obj["uco-observable:sender"] = json!({ "@id": format!("contact-{jid}") });
+                }
+            }
+
+            // Starred → isHighlighted
+            if msg.starred {
+                obj["uco-observable:isHighlighted"] = json!(true);
+            }
+
+            // Evidence provenance facet
+            let source_str = msg.source.to_string();
+            let mut facet = json!({
+                "@type": "case-investigation:ProvenanceRecord",
+                "case-investigation:exhibitNumber": format!("chat-{}-msg-{}", msg.chat_id, msg.id),
+                "uco-observable:evidenceSource": source_str,
+            });
+
+            if let Some(url) = cdn_url {
+                facet["uco-observable:cdnUrl"] = json!(url);
+            }
+
+            obj["uco-core:hasFacet"] = json!([facet]);
+
+            objects.push(obj);
+        }
+    }
+
+    // Bundle-level examiner notes from ForensicWarnings
+    if !result.forensic_warnings.is_empty() {
+        let notes: Vec<String> = result.forensic_warnings.iter().map(|w| w.to_string()).collect();
+        objects.push(json!({
+            "@type": "case-investigation:ExaminerNotes",
+            "case-investigation:caseId": case_id,
+            "uco-core:description": notes,
+        }));
+    }
+
+    json!({
+        "@context": {
+            "uco-core": "https://ontology.unifiedcyberontology.org/uco/core/",
+            "uco-observable": "https://ontology.unifiedcyberontology.org/uco/observable/",
+            "case-investigation": "https://caseontology.org/ontology/case/investigation/"
+        },
+        "@type": "uco-core:Bundle",
+        "uco-core:name": "chat4n6-export",
+        "uco-core:createdBy": {
+            "@type": "uco-core:Tool",
+            "uco-core:name": "chat4n6",
+            "uco-core:version": tool_version,
+        },
+        "uco-core:caseId": case_id,
+        "uco-core:object": objects,
+    })
 }
 
-/// Write the CASE/UCO JSON-LD document to `path`.
+/// Write the CASE/UCO JSON-LD document to `path/case-uco.json`.
 pub fn write_case_uco(
     result: &ExtractionResult,
     case_id: &str,
     tool_version: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
-    todo!("implement write_case_uco")
+    let doc = to_case_uco(result, case_id, tool_version);
+    let json = serde_json::to_string_pretty(&doc)?;
+    std::fs::write(path.join("case-uco.json"), json)?;
+    Ok(())
 }
 
 #[cfg(test)]
