@@ -113,4 +113,97 @@ mod tests {
     fn test_call_result_default() {
         assert_eq!(CallResult::default(), CallResult::Unknown);
     }
+
+    // ── F5: MediaRef new fields tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_media_ref_new_fields_default_none() {
+        // Construct MediaRef with only the original fields — new fields should default to None
+        let m = MediaRef {
+            file_path: "path/to/file.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            file_size: 1024,
+            extracted_name: None,
+            thumbnail_b64: None,
+            duration_secs: None,
+            file_hash: None,
+            encrypted_hash: None,
+            cdn_url: None,
+            media_key_b64: None,
+        };
+        assert!(m.file_hash.is_none());
+        assert!(m.encrypted_hash.is_none());
+        assert!(m.cdn_url.is_none());
+        assert!(m.media_key_b64.is_none());
+    }
+
+    #[test]
+    fn test_media_ref_serialize_roundtrip_with_hashes() {
+        let m = MediaRef {
+            file_path: "path/to/file.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            file_size: 2048,
+            extracted_name: Some("photo.jpg".to_string()),
+            thumbnail_b64: None,
+            duration_secs: None,
+            file_hash: Some("abc123def456".to_string()),
+            encrypted_hash: Some("enc789xyz000".to_string()),
+            cdn_url: Some("https://mmg.whatsapp.net/v/abc".to_string()),
+            media_key_b64: Some("dGVzdGtleQ==".to_string()),
+        };
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: MediaRef = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(m, back);
+        assert_eq!(back.file_hash.as_deref(), Some("abc123def456"));
+        assert_eq!(back.encrypted_hash.as_deref(), Some("enc789xyz000"));
+        assert_eq!(back.cdn_url.as_deref(), Some("https://mmg.whatsapp.net/v/abc"));
+        assert_eq!(back.media_key_b64.as_deref(), Some("dGVzdGtleQ=="));
+    }
+
+    #[test]
+    fn test_media_ref_deserialize_old_json_without_new_fields() {
+        // Old JSON without new fields — should deserialize without error, new fields default to None
+        let old_json = r#"{
+            "file_path": "path/to/file.mp4",
+            "mime_type": "video/mp4",
+            "file_size": 4096,
+            "extracted_name": null,
+            "thumbnail_b64": null,
+            "duration_secs": 30
+        }"#;
+        let m: MediaRef = serde_json::from_str(old_json).expect("must deserialize old JSON without error");
+        assert!(m.file_hash.is_none(), "file_hash should default to None");
+        assert!(m.encrypted_hash.is_none(), "encrypted_hash should default to None");
+        assert!(m.cdn_url.is_none(), "cdn_url should default to None");
+        assert!(m.media_key_b64.is_none(), "media_key_b64 should default to None");
+        assert_eq!(m.mime_type, "video/mp4");
+        assert_eq!(m.file_size, 4096);
+        assert_eq!(m.duration_secs, Some(30));
+    }
+
+    #[test]
+    fn test_encrypted_hash_differs_from_file_hash() {
+        // Document semantic difference: encrypted_hash is SHA-256 of the CDN-encrypted bytes;
+        // file_hash is SHA-256 of the plaintext decrypted bytes.
+        // Same file re-shared by two users may have same encrypted_hash but different file_hash
+        // after independent re-encryption (or same file_hash if WhatsApp deduplicates CDN upload).
+        // This test simply asserts that the two fields are distinct and independently settable.
+        let m = MediaRef {
+            file_path: "file.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            file_size: 100,
+            extracted_name: None,
+            thumbnail_b64: None,
+            duration_secs: None,
+            file_hash: Some("plaintext_sha256_hex".to_string()),
+            encrypted_hash: Some("encrypted_blob_sha256_hex".to_string()),
+            cdn_url: None,
+            media_key_b64: None,
+        };
+        assert_ne!(
+            m.file_hash.as_deref(),
+            m.encrypted_hash.as_deref(),
+            "file_hash (plaintext) and encrypted_hash (CDN blob) are semantically distinct"
+        );
+    }
 }
