@@ -20,17 +20,132 @@ pub struct PlatformClassification {
 
 /// Classify the sending platform from a WhatsApp `key_id` hex string.
 ///
-/// Classification rules validated against real devices by WAInsight.
-/// TODO: implement full classification logic.
+/// Classification rules validated against real devices by WAInsight:
+/// - len=8:  from_me=true → Android 0.85; false → Android 0.75
+/// - len=16: prefix "AC" → Android 0.97; else Android 0.85
+/// - len=18: → BusinessApi 0.95 (exclusive 18-char space)
+/// - len=20: prefix "3A"/"5E"/"4A"/"2A" → IPhone 0.95;
+///           prefix "3F"/"3E"/"3B" → Companion 0.80; else IPhone 0.70
+/// - len=22: prefix "3EB0" → Companion 0.95; prefix "3E" → Companion 0.92;
+///           else Companion 0.70
+/// - len=32: device_number>0 → AndroidLinked 0.90; prefix "AC" → Android 0.97;
+///           else Android 0.90
+/// - len=40: → Companion 0.75
+/// - len≤10 AND all digits: → OldAndroid 0.70
+/// - empty OR anything else: → Unknown 0.0
 pub fn classify_key_id(
-    _key_id: &str,
-    _from_me: bool,
-    _device_number: Option<u32>,
+    key_id: &str,
+    from_me: bool,
+    device_number: Option<u32>,
 ) -> PlatformClassification {
-    // STUB — always returns Unknown; tests will fail until implemented
-    PlatformClassification {
-        platform: SenderPlatform::Unknown,
-        confidence: 0.0,
+    if key_id.is_empty() {
+        return PlatformClassification {
+            platform: SenderPlatform::Unknown,
+            confidence: 0.0,
+        };
+    }
+
+    let upper = key_id.to_uppercase();
+    let len = key_id.len();
+
+    match len {
+        8 => {
+            let confidence = if from_me { 0.85 } else { 0.75 };
+            PlatformClassification {
+                platform: SenderPlatform::Android,
+                confidence,
+            }
+        }
+        16 => {
+            let confidence = if upper.starts_with("AC") { 0.97 } else { 0.85 };
+            PlatformClassification {
+                platform: SenderPlatform::Android,
+                confidence,
+            }
+        }
+        18 => PlatformClassification {
+            platform: SenderPlatform::BusinessApi,
+            confidence: 0.95,
+        },
+        20 => {
+            if upper.starts_with("3A")
+                || upper.starts_with("5E")
+                || upper.starts_with("4A")
+                || upper.starts_with("2A")
+            {
+                PlatformClassification {
+                    platform: SenderPlatform::IPhone,
+                    confidence: 0.95,
+                }
+            } else if upper.starts_with("3F")
+                || upper.starts_with("3E")
+                || upper.starts_with("3B")
+            {
+                PlatformClassification {
+                    platform: SenderPlatform::Companion,
+                    confidence: 0.80,
+                }
+            } else {
+                PlatformClassification {
+                    platform: SenderPlatform::IPhone,
+                    confidence: 0.70,
+                }
+            }
+        }
+        22 => {
+            if upper.starts_with("3EB0") {
+                PlatformClassification {
+                    platform: SenderPlatform::Companion,
+                    confidence: 0.95,
+                }
+            } else if upper.starts_with("3E") {
+                PlatformClassification {
+                    platform: SenderPlatform::Companion,
+                    confidence: 0.92,
+                }
+            } else {
+                PlatformClassification {
+                    platform: SenderPlatform::Companion,
+                    confidence: 0.70,
+                }
+            }
+        }
+        32 => {
+            if device_number.map_or(false, |d| d > 0) {
+                PlatformClassification {
+                    platform: SenderPlatform::AndroidLinked,
+                    confidence: 0.90,
+                }
+            } else if upper.starts_with("AC") {
+                PlatformClassification {
+                    platform: SenderPlatform::Android,
+                    confidence: 0.97,
+                }
+            } else {
+                PlatformClassification {
+                    platform: SenderPlatform::Android,
+                    confidence: 0.90,
+                }
+            }
+        }
+        40 => PlatformClassification {
+            platform: SenderPlatform::Companion,
+            confidence: 0.75,
+        },
+        _ => {
+            // OldAndroid: len≤10 AND all hex chars are digits (0-9)
+            if len <= 10 && key_id.chars().all(|c| c.is_ascii_digit()) {
+                PlatformClassification {
+                    platform: SenderPlatform::OldAndroid,
+                    confidence: 0.70,
+                }
+            } else {
+                PlatformClassification {
+                    platform: SenderPlatform::Unknown,
+                    confidence: 0.0,
+                }
+            }
+        }
     }
 }
 
