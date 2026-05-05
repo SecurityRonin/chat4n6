@@ -519,6 +519,29 @@ mod tests {
     }
 
     #[test]
+    fn forensic_warnings_appear_in_index() {
+        use chat4n6_plugin_api::ForensicWarning;
+        let mut result = make_test_result();
+        result.forensic_warnings.push(ForensicWarning::DatabaseVacuumed { freelist_page_count: 0 });
+        result.forensic_warnings.push(ForensicWarning::HeaderTampered {
+            change_counter: 99,
+            expected_max: 5,
+        });
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("WarnTest", &result, out.path()).unwrap();
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        assert!(
+            index.contains("VACUUM") || index.contains("DatabaseVacuumed") || index.contains("vacuumed"),
+            "index.html should surface DatabaseVacuumed warning"
+        );
+        assert!(
+            index.contains("Tampered") || index.contains("tampered") || index.contains("HeaderTampered"),
+            "index.html should surface HeaderTampered warning"
+        );
+    }
+
+    #[test]
     fn wal_delta_appears_in_deleted_page() {
         use chat4n6_plugin_api::WalDelta;
         let mut result = make_test_result();

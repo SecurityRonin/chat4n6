@@ -1,0 +1,13 @@
+[
+  {
+    "description": "Forensic warnings (HeaderTampered, DatabaseVacuumed, SelectiveDeletion) appear in index.html as highlighted alerts",
+    "steps": [
+      "Produce an ExtractionResult with forensic_warnings=[DatabaseVacuumed, HeaderTampered]",
+      "Render via ReportGenerator",
+      "Assert index.html contains 'DatabaseVacuumed' or 'Database Vacuumed'",
+      "Assert index.html contains 'HeaderTampered' or 'Header Tampered'",
+      "cargo test -p chat4n6-report -- forensic_warnings_in_index passes"
+    ],
+    "passes": false
+  }
+]
