@@ -1,0 +1,22 @@
+[
+  {
+    "description": "ReportGenerator::with_obfuscate(true) masks phone numbers in rendered HTML",
+    "steps": [
+      "Produce an ExtractionResult where sender_jid contains '6591234567@s.whatsapp.net'",
+      "Render via ReportGenerator::new().with_obfuscate(true)",
+      "Assert index.html does NOT contain '91234567'",
+      "Assert index.html contains '9****567' or '9**...' (middle digits masked)",
+      "cargo test -p chat4n6-report -- obfuscation_masks_phone_in_index passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "Without obfuscation flag, full phone numbers appear in output",
+    "steps": [
+      "Render the same ExtractionResult without with_obfuscate",
+      "Assert index.html contains the full '91234567' digits",
+      "cargo test -p chat4n6-report -- no_obfuscation_shows_full_number passes"
+    ],
+    "passes": false
+  }
+]

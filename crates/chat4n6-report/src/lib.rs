@@ -935,6 +935,63 @@ mod tests {
         // The primary assertions are the magic and SHA-256 mention tests
     }
 
+    // ── Obfuscation tests ────────────────────────────────────────────────────
+
+    fn make_phone_result() -> ExtractionResult {
+        let msg = Message {
+            id: 1, chat_id: 1,
+            sender_jid: Some("6591234567@s.whatsapp.net".to_string()),
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(1710513127000, 0),
+            content: MessageContent::Text("obfuscation test".to_string()),
+            reactions: vec![], quoted_message: None,
+            source: EvidenceSource::Live,
+            row_offset: 0, starred: false, forward_score: None, is_forwarded: false,
+            edit_history: vec![], receipts: vec![],
+        };
+        let chat = Chat {
+            id: 1, jid: "6591234567@s.whatsapp.net".to_string(),
+            name: None, // no display name so jid renders as the name
+            is_group: false,
+            messages: vec![msg],
+            archived: false,
+        };
+        ExtractionResult {
+            chats: vec![chat],
+            contacts: vec![], calls: vec![], wal_deltas: vec![],
+            timezone_offset_seconds: Some(0), schema_version: 200,
+            forensic_warnings: vec![], group_participant_events: vec![],
+        }
+    }
+
+    #[test]
+    fn obfuscation_masks_phone_in_index() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap().with_obfuscate(true);
+        gen.render("ObfuscTest", &make_phone_result(), out.path()).unwrap();
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        assert!(
+            !index.contains("91234567"),
+            "index.html must NOT contain full phone digits when obfuscation is on"
+        );
+        assert!(
+            index.contains("****") || index.contains("***"),
+            "index.html must contain masked digits (****) when obfuscation is on"
+        );
+    }
+
+    #[test]
+    fn no_obfuscation_shows_full_number() {
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap(); // no with_obfuscate
+        gen.render("NoObfuscTest", &make_phone_result(), out.path()).unwrap();
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        assert!(
+            index.contains("91234567"),
+            "index.html must contain full phone digits when obfuscation is off"
+        );
+    }
+
     // ── Timeline view tests ──────────────────────────────────────────────────
 
     #[test]
