@@ -1,0 +1,23 @@
+[
+  {
+    "description": "HTML report writes chat pages into chats/chat_{id}_{name}/ subdirectories, not the output root",
+    "steps": [
+      "Run 'chat4n6 run' on a WhatsApp fixture with at least one message",
+      "Assert output/chats/ directory exists",
+      "Assert output/chats/chat_1_<name>/ subdirectory exists",
+      "Assert page_001.html exists inside that subdirectory",
+      "Assert root output dir does NOT contain any chat_{id}_{page}.html files",
+      "cargo test -p chat4n6 -- nested_chat_layout passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "index.html links to chats/ subdirectory pages, not flat root files",
+    "steps": [
+      "Run 'chat4n6 run' on a WhatsApp fixture",
+      "Assert index.html contains href='chats/chat_1_",
+      "cargo test -p chat4n6 -- index_links_to_chats passes"
+    ],
+    "passes": false
+  }
+]

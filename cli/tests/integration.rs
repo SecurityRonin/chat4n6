@@ -160,3 +160,71 @@ fn plugin_flag_limits_extraction_to_named_plugin() {
         assert_ne!(platform, "telegram", "telegram chat found despite --plugin whatsapp");
     }
 }
+
+#[test]
+fn nested_chat_layout_uses_chats_subdirectory() {
+    let fixture = setup_whatsapp_fixture();
+    let output = TempDir::new().unwrap();
+    Command::cargo_bin("chat4n6")
+        .unwrap()
+        .args([
+            "run",
+            "--input", fixture.path().to_str().unwrap(),
+            "--output", output.path().to_str().unwrap(),
+            "--case-name", "LayoutTest",
+            "--no-unalloc",
+        ])
+        .assert()
+        .success();
+
+    // Must have chats/ directory
+    let chats_dir = output.path().join("chats");
+    assert!(chats_dir.exists(), "chats/ directory missing");
+
+    // Must have a chat subdirectory inside chats/
+    let chat_subdir = std::fs::read_dir(&chats_dir)
+        .expect("chats/ unreadable")
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .expect("no chat subdirectory inside chats/");
+
+    // page_001.html must exist inside the chat subdir
+    assert!(
+        chat_subdir.path().join("page_001.html").exists(),
+        "page_001.html not found in chat subdir {:?}", chat_subdir.path()
+    );
+
+    // No flat chat_{id}_{page}.html files in root
+    let root_has_flat = std::fs::read_dir(output.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| {
+            let name = e.file_name();
+            let s = name.to_string_lossy();
+            s.starts_with("chat_") && s.ends_with(".html")
+        });
+    assert!(!root_has_flat, "flat chat_{{id}}_{{page}}.html files found in report root");
+}
+
+#[test]
+fn index_links_to_chats_subdirectory() {
+    let fixture = setup_whatsapp_fixture();
+    let output = TempDir::new().unwrap();
+    Command::cargo_bin("chat4n6")
+        .unwrap()
+        .args([
+            "run",
+            "--input", fixture.path().to_str().unwrap(),
+            "--output", output.path().to_str().unwrap(),
+            "--case-name", "LinkTest",
+            "--no-unalloc",
+        ])
+        .assert()
+        .success();
+
+    let index = std::fs::read_to_string(output.path().join("index.html")).unwrap();
+    assert!(
+        index.contains("chats/"),
+        "index.html does not link into chats/ subdirectory"
+    );
+}
