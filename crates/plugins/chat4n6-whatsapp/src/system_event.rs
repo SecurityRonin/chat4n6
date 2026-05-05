@@ -72,20 +72,75 @@ pub struct SystemEvent {
 /// Parse a WhatsApp system event from message_type + optional text_data.
 ///
 /// For number change events, text_data contains JSON with nc_old_phone / nc_new_phone.
-/// STUB — always returns Unknown.
 pub fn parse_system_event(
     msg_type: i32,
     text_data: Option<&str>,
     actor_jid: Option<&str>,
     target_jid: Option<&str>,
 ) -> SystemEvent {
-    let _ = (msg_type, text_data, actor_jid, target_jid);
+    let (event_type, label) = decode_event(msg_type, text_data);
     SystemEvent {
-        event_type: SystemEventType::Unknown(msg_type),
-        label: String::new(),
+        event_type,
+        label,
         actor_jid: actor_jid.map(String::from),
         target_jid: target_jid.map(String::from),
     }
+}
+
+fn decode_event(msg_type: i32, text_data: Option<&str>) -> (SystemEventType, String) {
+    match msg_type {
+        1 => (SystemEventType::GroupSubjectChanged, "Group subject changed".to_string()),
+        5 => (SystemEventType::ParticipantLeft, "Participant left group".to_string()),
+        6 => (SystemEventType::GroupIconChanged, "Group icon changed".to_string()),
+        12 => (SystemEventType::ParticipantAdded, "Participant added to group".to_string()),
+        14 => (SystemEventType::ParticipantRemoved, "Participant removed from group".to_string()),
+        18 => (SystemEventType::SecurityCodeChanged, "Security code changed".to_string()),
+        19 => (SystemEventType::GroupDescriptionChanged, "Group description changed".to_string()),
+        20 => (SystemEventType::ParticipantJoinedViaLink, "Participant joined via link".to_string()),
+        46 => {
+            let label = decode_number_change(text_data);
+            (SystemEventType::NumberChanged, label)
+        }
+        56 => (SystemEventType::DisappearingTimerChanged, "Disappearing timer changed".to_string()),
+        67 => (SystemEventType::E2EEncryptedNotification, "End-to-end encryption enabled".to_string()),
+        77 => (SystemEventType::PermissionAddMemberChanged, "Permission to add members changed".to_string()),
+        78 => (SystemEventType::PermissionEditChanged, "Permission to edit group changed".to_string()),
+        79 => (SystemEventType::MessagePinned, "Message pinned".to_string()),
+        83 => (SystemEventType::GroupInviteLinkReset, "Group invite link reset".to_string()),
+        84 => (SystemEventType::ParticipantPromotedToAdmin, "Participant promoted to admin".to_string()),
+        97 => (SystemEventType::CommunityCreated, "Community created".to_string()),
+        98 => (SystemEventType::CommunityJoined, "Joined community".to_string()),
+        99 => (SystemEventType::CommunitySubgroupAdded, "Community subgroup added".to_string()),
+        100 => (SystemEventType::CommunitySubgroupRemoved, "Community subgroup removed".to_string()),
+        101 => (SystemEventType::CommunitySubgroupUnlinked, "Community subgroup unlinked".to_string()),
+        102 => (SystemEventType::CommunityOwnerChanged, "Community owner changed".to_string()),
+        104 => (SystemEventType::PermissionSendMessageChanged, "Permission to send messages changed".to_string()),
+        105 => (SystemEventType::PermissionInviteChanged, "Permission to invite members changed".to_string()),
+        106 => (SystemEventType::PermissionJoinChanged, "Permission to join changed".to_string()),
+        117 => (SystemEventType::MetaAiDisclaimer, "Meta AI disclaimer".to_string()),
+        118 => (SystemEventType::BusinessMetaManaged, "Business managed by Meta".to_string()),
+        134 => (SystemEventType::ChannelCreated, "Channel created".to_string()),
+        135 => (SystemEventType::ChannelDeleted, "Channel deleted".to_string()),
+        136 => (SystemEventType::ChannelPrivacyNotice, "Channel privacy notice".to_string()),
+        other => (SystemEventType::Unknown(other), format!("Unknown system event (type={other})")),
+    }
+}
+
+fn decode_number_change(text_data: Option<&str>) -> String {
+    if let Some(text) = text_data {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+            let old = v.get("nc_old_phone")
+                .and_then(|p| p.as_str())
+                .unwrap_or("");
+            let new = v.get("nc_new_phone")
+                .and_then(|p| p.as_str())
+                .unwrap_or("");
+            if !old.is_empty() || !new.is_empty() {
+                return format!("Phone number changed: {} → {}", old, new);
+            }
+        }
+    }
+    "Phone number changed".to_string()
 }
 
 #[cfg(test)]
