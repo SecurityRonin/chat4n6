@@ -1,0 +1,22 @@
+[
+  {
+    "description": "Forwarded messages display a [Forwarded] badge in chat pages",
+    "steps": [
+      "Produce a Message with is_forwarded=true and forward_score=Some(5)",
+      "Render via ReportGenerator",
+      "Assert the chat page contains 'Forwarded' text for that message",
+      "cargo test -p chat4n6-report -- forwarded_badge_in_chat_page passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "High forward_score (>=5) triggers a ViralContent forensic warning in ExtractionResult",
+    "steps": [
+      "Extract from a msgstore.db where a message has forward_score >= 5",
+      "Assert ExtractionResult.forensic_warnings contains SelectiveDeletion or a new HighForwardScore variant",
+      "OR: assert the rendered chat page shows forward_score in a distinct style vs low-score forwards",
+      "cargo test -p chat4n6-report -- high_forward_score_is_notable passes"
+    ],
+    "passes": false
+  }
+]

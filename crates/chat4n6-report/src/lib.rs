@@ -985,6 +985,87 @@ mod tests {
         // The primary assertions are the magic and SHA-256 mention tests
     }
 
+    // ── Forwarded message tests ──────────────────────────────────────────────
+
+    #[test]
+    fn forwarded_badge_in_chat_page() {
+        let fwd_msg = Message {
+            id: 42, chat_id: 1,
+            sender_jid: Some("alice@s.whatsapp.net".to_string()),
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(1710513127000, 0),
+            content: MessageContent::Text("forwarded content here".to_string()),
+            reactions: vec![], quoted_message: None,
+            source: EvidenceSource::Live,
+            row_offset: 0, starred: false,
+            forward_score: Some(3),
+            is_forwarded: true,
+            edit_history: vec![], receipts: vec![],
+        };
+        let chat = Chat {
+            id: 1, jid: "alice@s.whatsapp.net".to_string(),
+            name: Some("Alice".to_string()),
+            is_group: false, messages: vec![fwd_msg], archived: false,
+        };
+        let mut result = make_test_result();
+        result.chats = vec![chat];
+
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("FwdTest", &result, out.path()).unwrap();
+
+        // Find the chat page directory
+        let chat_dir = std::fs::read_dir(out.path().join("chats"))
+            .unwrap()
+            .next().unwrap().unwrap()
+            .path();
+        let page = std::fs::read_to_string(chat_dir.join("page_001.html")).unwrap();
+        // Must show a forwarded label separate from message content — not just the content text
+        assert!(
+            page.contains("badge-forwarded") || page.contains("[Forwarded]") || page.contains("&#8635;"),
+            "chat page must show a dedicated Forwarded badge element for is_forwarded=true messages"
+        );
+    }
+
+    #[test]
+    fn high_forward_score_is_notable() {
+        let viral_msg = Message {
+            id: 99, chat_id: 1,
+            sender_jid: Some("bob@s.whatsapp.net".to_string()),
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(1710513127000, 0),
+            content: MessageContent::Text("viral message".to_string()),
+            reactions: vec![], quoted_message: None,
+            source: EvidenceSource::Live,
+            row_offset: 0, starred: false,
+            forward_score: Some(10), // viral
+            is_forwarded: true,
+            edit_history: vec![], receipts: vec![],
+        };
+        let chat = Chat {
+            id: 1, jid: "bob@s.whatsapp.net".to_string(),
+            name: Some("Bob".to_string()),
+            is_group: false, messages: vec![viral_msg], archived: false,
+        };
+        let mut result = make_test_result();
+        result.chats = vec![chat];
+
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("ViralTest", &result, out.path()).unwrap();
+
+        let chat_dir = std::fs::read_dir(out.path().join("chats"))
+            .unwrap()
+            .next().unwrap().unwrap()
+            .path();
+        let page = std::fs::read_to_string(chat_dir.join("page_001.html")).unwrap();
+        // High forward_score (>=5) must show the numeric score in a distinct element
+        assert!(
+            page.contains("badge-forwarded-viral") || page.contains("fwd:10") || page.contains("×10") || page.contains("score=10"),
+            "chat page must highlight high forward_score (10) with a distinct viral indicator"
+        );
+    }
+
     // ── Obfuscation tests ────────────────────────────────────────────────────
 
     fn make_phone_result() -> ExtractionResult {
