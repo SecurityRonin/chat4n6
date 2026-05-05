@@ -243,3 +243,209 @@ pub struct ExtractionResult {
     pub timezone_offset_seconds: Option<i32>,
     pub schema_version: u32,
 }
+
+#[cfg(test)]
+mod new_types_tests {
+    use super::*;
+
+    // ── EditHistoryEntry ──────────────────────────────────────────────────
+    #[test]
+    fn edit_history_entry_roundtrip() {
+        let ts = ForensicTimestamp::from_millis(1_710_513_127_000, 0);
+        let entry = EditHistoryEntry {
+            original_text: "original".to_string(),
+            edited_at: ts.clone(),
+            source: EvidenceSource::Live,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: EditHistoryEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.original_text, "original");
+        assert_eq!(back.source, EvidenceSource::Live);
+    }
+
+    // ── ReceiptType / MessageReceipt ──────────────────────────────────────
+    #[test]
+    fn receipt_type_display() {
+        assert_eq!(format!("{}", ReceiptType::Delivered), "Delivered");
+        assert_eq!(format!("{}", ReceiptType::Read), "Read");
+        assert_eq!(format!("{}", ReceiptType::Played), "Played");
+    }
+
+    #[test]
+    fn message_receipt_roundtrip() {
+        let ts = ForensicTimestamp::from_millis(1_710_513_127_000, 0);
+        let r = MessageReceipt {
+            device_jid: "4155550100.0:1@s.whatsapp.net".to_string(),
+            receipt_type: ReceiptType::Read,
+            timestamp: ts,
+            source: EvidenceSource::WalHistoric,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: MessageReceipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.device_jid, "4155550100.0:1@s.whatsapp.net");
+    }
+
+    // ── ParticipantAction / GroupParticipantEvent ─────────────────────────
+    #[test]
+    fn participant_action_display() {
+        assert_eq!(format!("{}", ParticipantAction::Joined), "Joined");
+        assert_eq!(format!("{}", ParticipantAction::Left), "Left");
+        assert_eq!(format!("{}", ParticipantAction::Added), "Added");
+        assert_eq!(format!("{}", ParticipantAction::Removed), "Removed");
+        assert_eq!(format!("{}", ParticipantAction::Promoted), "Promoted");
+        assert_eq!(format!("{}", ParticipantAction::Demoted), "Demoted");
+    }
+
+    #[test]
+    fn group_participant_event_roundtrip() {
+        let ts = ForensicTimestamp::from_millis(1_710_513_127_000, 0);
+        let ev = GroupParticipantEvent {
+            group_jid: "group123@g.us".to_string(),
+            participant_jid: "alice@s.whatsapp.net".to_string(),
+            action: ParticipantAction::Added,
+            timestamp: ts,
+            source: EvidenceSource::Live,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: GroupParticipantEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.group_jid, "group123@g.us");
+        assert_eq!(format!("{}", back.action), "Added");
+    }
+
+    // ── ForensicWarning ───────────────────────────────────────────────────
+    #[test]
+    fn forensic_warning_vacuum_display() {
+        let w = ForensicWarning::DatabaseVacuumed { freelist_page_count: 0 };
+        let s = format!("{}", w);
+        assert!(s.contains("VACUUM") || s.contains("vacuum") || s.contains("Vacuum"), "got: {s}");
+    }
+
+    #[test]
+    fn forensic_warning_selective_deletion_display() {
+        let w = ForensicWarning::SelectiveDeletion {
+            suspect_jid: "bad@s.whatsapp.net".to_string(),
+            deletion_rate_pct: 87,
+        };
+        let s = format!("{}", w);
+        assert!(s.contains("87") || s.contains("selective") || s.contains("Selective"), "got: {s}");
+    }
+
+    #[test]
+    fn forensic_warning_hmac_mismatch() {
+        let w = ForensicWarning::HmacMismatch;
+        let json = serde_json::to_string(&w).unwrap();
+        assert!(json.contains("Hmac") || json.contains("hmac") || json.contains("HMAC"), "got: {json}");
+    }
+
+    #[test]
+    fn forensic_warning_roundtrip() {
+        let w = ForensicWarning::TimestampAnomaly {
+            message_row_id: 42,
+            description: "backwards".to_string(),
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        let back: ForensicWarning = serde_json::from_str(&json).unwrap();
+        if let ForensicWarning::TimestampAnomaly { message_row_id, .. } = back {
+            assert_eq!(message_row_id, 42);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    // ── Message new fields ────────────────────────────────────────────────
+    #[test]
+    fn message_starred_default_false() {
+        let json = r#"{
+            "id":1,"chat_id":1,"from_me":true,
+            "timestamp":{"utc":"2024-03-15T14:07:00Z","local_offset_seconds":0},
+            "content":{"Text":"hi"},
+            "reactions":[],"source":"Live","row_offset":0
+        }"#;
+        let m: Message = serde_json::from_str(json).unwrap();
+        assert!(!m.starred, "starred should default to false");
+        assert!(!m.is_forwarded);
+        assert_eq!(m.forward_score, None);
+        assert!(m.edit_history.is_empty());
+        assert!(m.receipts.is_empty());
+    }
+
+    #[test]
+    fn message_starred_true_roundtrip() {
+        let ts = ForensicTimestamp::from_millis(1_710_513_127_000, 0);
+        let m = Message {
+            id: 1,
+            chat_id: 1,
+            sender_jid: None,
+            from_me: true,
+            timestamp: ts,
+            content: MessageContent::Text("hello".to_string()),
+            reactions: vec![],
+            quoted_message: None,
+            source: EvidenceSource::Live,
+            row_offset: 0,
+            starred: true,
+            forward_score: Some(5),
+            is_forwarded: true,
+            edit_history: vec![],
+            receipts: vec![],
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert!(back.starred);
+        assert!(back.is_forwarded);
+        assert_eq!(back.forward_score, Some(5));
+    }
+
+    // ── ViewOnce MessageContent variant ──────────────────────────────────
+    #[test]
+    fn message_content_view_once_roundtrip() {
+        let mr = MediaRef {
+            file_path: "Media/WhatsApp Images/IMG-001.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            file_size: 1234,
+            extracted_name: None,
+            thumbnail_b64: None,
+            duration_secs: None,
+            file_hash: None,
+            encrypted_hash: None,
+            cdn_url: None,
+            media_key_b64: None,
+        };
+        let c = MessageContent::ViewOnce(mr);
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("ViewOnce"), "got: {json}");
+        let back: MessageContent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, MessageContent::ViewOnce(_)));
+    }
+
+    // ── Chat.archived ─────────────────────────────────────────────────────
+    #[test]
+    fn chat_archived_default_false() {
+        let json = r#"{"id":1,"jid":"alice@s.whatsapp.net","is_group":false,"messages":[]}"#;
+        let c: Chat = serde_json::from_str(json).unwrap();
+        assert!(!c.archived, "archived should default to false");
+    }
+
+    #[test]
+    fn chat_archived_true_roundtrip() {
+        let c = Chat {
+            id: 1,
+            jid: "alice@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages: vec![],
+            archived: true,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Chat = serde_json::from_str(&json).unwrap();
+        assert!(back.archived);
+    }
+
+    // ── ExtractionResult new fields ───────────────────────────────────────
+    #[test]
+    fn extraction_result_new_fields_default_empty() {
+        let r = ExtractionResult::default();
+        assert!(r.forensic_warnings.is_empty());
+        assert!(r.group_participant_events.is_empty());
+    }
+}
