@@ -1,0 +1,33 @@
+[package]
+name = "chat4n6-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+chat4n6-sqlite-forensics = { path = "../crates/chat4n6-sqlite-forensics" }
+chat4n6-plugin-api = { path = "../crates/chat4n6-plugin-api" }
+
+[[bin]]
+name = "fuzz_btree_parser"
+path = "fuzz_targets/fuzz_btree_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_decrypt_crypt15"
+path = "fuzz_targets/fuzz_decrypt_crypt15.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_varint_decode"
+path = "fuzz_targets/fuzz_varint_decode.rs"
+test = false
+doc = false
