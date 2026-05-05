@@ -7,6 +7,6 @@
       "Assert ExtractionResult.timezone_offset_seconds == 28800 (UTC+8)",
       "cargo test -p chat4n6-whatsapp -- timezone_autodetect passes"
     ],
-    "passes": false
+    "passes": true
   }
 ]

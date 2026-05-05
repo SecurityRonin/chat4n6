@@ -30,6 +30,7 @@ const DB_CRYPT14: &str = "data/data/com.whatsapp/databases/msgstore.db.crypt14";
 const DB_CRYPT15: &str = "data/data/com.whatsapp/databases/msgstore.db.crypt15";
 const KEY_PATH: &str = "data/data/com.whatsapp/files/key";
 const WA_DB_PATH: &str = "data/data/com.whatsapp/databases/wa.db";
+const TZ_PROPERTY_PATH: &str = "data/property/persist.sys.timezone";
 
 pub struct WhatsAppPlugin {
     key: Option<Vec<u8>>,
@@ -107,7 +108,7 @@ impl ForensicPlugin for WhatsAppPlugin {
                 .with_context(|| format!("decrypting {crypt_path}"))?
         };
 
-        let tz = local_offset_seconds.unwrap_or(0);
+        let tz = local_offset_seconds.unwrap_or_else(|| detect_timezone(fs));
 
         // Detect schema version
         let user_version = if db_bytes.len() >= 64 {
@@ -137,6 +138,20 @@ impl ForensicPlugin for WhatsAppPlugin {
 
         Ok(result)
     }
+}
+
+/// Try to detect the device timezone from the Android property file.
+/// Falls back to 0 (UTC) if the file is absent or unrecognised.
+fn detect_timezone(fs: &dyn ForensicFs) -> i32 {
+    if let Ok(data) = fs.read(TZ_PROPERTY_PATH) {
+        if let Ok(s) = std::str::from_utf8(&data) {
+            let name = s.trim();
+            if let Some(offset) = timezone::resolve_timezone_offset(name) {
+                return offset;
+            }
+        }
+    }
+    0
 }
 
 impl WhatsAppPlugin {
