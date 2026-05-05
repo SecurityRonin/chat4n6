@@ -667,7 +667,40 @@ mod tests {
 /// Extract text fragments from FTS5 _content shadow tables.
 /// Returns a map of table_name → Vec<String> (text fragments).
 pub fn extract_fts5_content(db_bytes: &[u8]) -> Result<HashMap<String, Vec<String>>> {
-    todo!("implement extract_fts5_content")
+    let engine = ForensicEngine::new(db_bytes, None)
+        .context("failed to open database for FTS5 content extraction")?;
+    let records = engine.recover_layer1().context("FTS5 layer 1 recovery")?;
+
+    let mut result: HashMap<String, Vec<String>> = HashMap::new();
+
+    for record in &records {
+        if !record.table.ends_with("_content") {
+            continue;
+        }
+        let texts: Vec<String> = record
+            .values
+            .iter()
+            .filter_map(|v| {
+                if let SqlValue::Text(s) = v {
+                    if !s.is_empty() {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !texts.is_empty() {
+            result
+                .entry(record.table.clone())
+                .or_default()
+                .extend(texts);
+        }
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]

@@ -79,7 +79,70 @@ pub fn detect_timestamp_anomalies(
 /// 1. write_counter ≠ read_counter (and not WAL mode) → SchemaVersionMismatch
 /// 2. page_size × page_count ≠ actual file length     → SuspiciousSequenceGap
 pub fn detect_header_tamper(db_bytes: &[u8]) -> Vec<ForensicWarning> {
-    todo!("implement detect_header_tamper")
+    // Need at least 100 bytes for a valid SQLite header.
+    if db_bytes.len() < 100 {
+        return vec![];
+    }
+
+    // Check magic — if wrong, this is not a SQLite file; return empty.
+    if &db_bytes[..16] != b"SQLite format 3\0" {
+        return vec![];
+    }
+
+    let mut warnings = Vec::new();
+
+    // ── Check 1: write_counter vs read_counter ───────────────────────────
+    // Byte 18: file format write version (1 = journal, 2 = WAL)
+    let write_version = db_bytes[18];
+    let write_counter = u32::from_be_bytes([
+        db_bytes[92],
+        db_bytes[93],
+        db_bytes[94],
+        db_bytes[95],
+    ]);
+    let read_counter = u32::from_be_bytes([
+        db_bytes[96],
+        db_bytes[97],
+        db_bytes[98],
+        db_bytes[99],
+    ]);
+    // Mismatch is suspicious only when NOT in WAL mode (write_version == 2).
+    if write_counter != read_counter && write_version != 2 {
+        warnings.push(ForensicWarning::SchemaVersionMismatch {
+            found: write_counter,
+            expected: read_counter,
+        });
+    }
+
+    // ── Check 2: page_size × page_count vs actual file size ─────────────
+    // bytes 16–17: page_size (big-endian u16; value 1 means 65536)
+    let raw_page_size = u16::from_be_bytes([db_bytes[16], db_bytes[17]]);
+    let page_size: u64 = if raw_page_size == 1 {
+        65536
+    } else {
+        raw_page_size as u64
+    };
+    // bytes 28–31: page_count (big-endian u32)
+    let page_count = u32::from_be_bytes([
+        db_bytes[28],
+        db_bytes[29],
+        db_bytes[30],
+        db_bytes[31],
+    ]) as u64;
+
+    let expected_size = page_size * page_count;
+    let actual_size = db_bytes.len() as u64;
+
+    // Only emit when actual >= 100 (i.e., the file has a full header).
+    if actual_size >= 100 && actual_size != expected_size {
+        warnings.push(ForensicWarning::SuspiciousSequenceGap {
+            table: "sqlite_header".to_string(),
+            gap_start: expected_size as i64,
+            gap_end: actual_size as i64,
+        });
+    }
+
+    warnings
 }
 
 // ── Top-level analyser ────────────────────────────────────────────────────────
@@ -88,7 +151,12 @@ pub fn detect_header_tamper(db_bytes: &[u8]) -> Vec<ForensicWarning> {
 ///
 /// `db_bytes` is the raw SQLite file content, used for header-level checks.
 pub fn analyse(result: &ExtractionResult, db_bytes: &[u8]) -> AntiForensicsReport {
-    todo!("implement analyse")
+    let mut warnings = Vec::new();
+    warnings.extend(detect_vacuum(db_bytes));
+    warnings.extend(detect_selective_deletion(result));
+    warnings.extend(detect_timestamp_anomalies(result));
+    warnings.extend(detect_header_tamper(db_bytes));
+    AntiForensicsReport { warnings }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
