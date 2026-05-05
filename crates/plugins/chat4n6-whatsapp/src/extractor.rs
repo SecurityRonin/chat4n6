@@ -986,3 +986,99 @@ mod proptest_tests {
         let _ = make_call(0, "a@s.whatsapp.net", false);
     }
 }
+
+#[cfg(test)]
+mod proptest_redo_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn make_db_with_sql(extra_sql: &str) -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql")).unwrap();
+        conn.execute_batch(extra_sql).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn view_once_msg_type_53_produces_view_once_content() {
+        // RED: msg_type 53 is currently treated as Unknown(53), not ViewOnce
+        let db = make_db_with_sql(
+            "INSERT INTO message (chat_row_id, sender_jid_row_id, from_me, timestamp, text_data, message_type, media_mime_type, media_name)
+             VALUES (1, 1, 0, 1710514000000, NULL, 53, 'image/jpeg', 'Media/WhatsApp View Once/VIEW-001.jpg');",
+        );
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let view_once_count = result.chats.iter()
+            .flat_map(|c| c.messages.iter())
+            .filter(|m| matches!(&m.content, MessageContent::ViewOnce(_)))
+            .count();
+        assert_eq!(view_once_count, 1, "msg_type 53 must produce ViewOnce, not Unknown");
+    }
+
+    #[test]
+    fn view_once_msg_type_54_produces_view_once_content() {
+        // RED: msg_type 54 (view-once video) also unhandled
+        let db = make_db_with_sql(
+            "INSERT INTO message (chat_row_id, sender_jid_row_id, from_me, timestamp, text_data, message_type, media_mime_type, media_name)
+             VALUES (1, 1, 0, 1710514100000, NULL, 54, 'video/mp4', 'Media/WhatsApp View Once/VIEW-002.mp4');",
+        );
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let view_once_count = result.chats.iter()
+            .flat_map(|c| c.messages.iter())
+            .filter(|m| matches!(&m.content, MessageContent::ViewOnce(_)))
+            .count();
+        assert_eq!(view_once_count, 1, "msg_type 54 must produce ViewOnce");
+    }
+
+    #[test]
+    fn chat_archived_column_is_extracted() {
+        // RED: build_chat_map() currently hardcodes archived: false regardless of DB value
+        let db = make_db_with_sql(
+            "ALTER TABLE chat ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+             UPDATE chat SET archived = 1 WHERE _id = 2;",
+        );
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let archived_chats: Vec<_> = result.chats.iter().filter(|c| c.archived).collect();
+        assert!(!archived_chats.is_empty(), "archived=1 in DB must produce Chat.archived=true");
+    }
+
+    #[test]
+    fn jid_type_1_implies_is_group() {
+        // RED: is_group is currently derived from subject.is_some(), not jid.type
+        // A group JID ending @g.us should always be is_group=true
+        let db = make_db_with_sql(
+            "INSERT INTO jid VALUES (10, 'group123@g.us');
+             INSERT INTO chat VALUES (10, 10, NULL);", // no subject — old heuristic fails
+        );
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let g = result.chats.iter().find(|c| c.jid == "group123@g.us");
+        assert!(
+            g.map_or(false, |c| c.is_group),
+            "chat with @g.us JID must be is_group=true even without a subject"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn view_once_never_classified_as_media(
+            msg_type in prop::sample::select(vec![53i32, 54])
+        ) {
+            // Property: ViewOnce types must never produce MessageContent::Media
+            let sql = format!(
+                "INSERT INTO message (chat_row_id, from_me, timestamp, message_type, media_mime_type, media_name) \
+                 VALUES (1, 1, 1710515000000, {}, 'image/jpeg', 'test.jpg');",
+                msg_type
+            );
+            let db = make_db_with_sql(&sql);
+            let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+            let media_count = result.chats.iter()
+                .flat_map(|c| c.messages.iter())
+                .filter(|m| matches!(&m.content, MessageContent::Media(_)))
+                .count();
+            // Should be 0 view-once media classified as regular Media
+            prop_assert_eq!(media_count, 0,
+                "msg_type {} must not produce MessageContent::Media", msg_type);
+        }
+    }
+}
