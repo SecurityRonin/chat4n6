@@ -1,0 +1,12 @@
+[
+  {
+    "description": "--plugin flag limits extraction to a single named plugin",
+    "steps": [
+      "Run 'chat4n6 run ... --plugin whatsapp' on a fixture with only WhatsApp data",
+      "Assert Signal and Telegram plugins are not invoked (no signal/telegram artifacts)",
+      "Assert run succeeds and index.html is generated",
+      "cargo test -p chat4n6 -- plugin_flag passes"
+    ],
+    "passes": false
+  }
+]

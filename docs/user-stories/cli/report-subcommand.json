@@ -1,0 +1,22 @@
+[
+  {
+    "description": "chat4n6 report regenerates HTML from carve-results.json without re-extracting",
+    "steps": [
+      "Run 'chat4n6 run' to produce carve-results.json in output dir",
+      "Run 'chat4n6 report --from <output>/carve-results.json --output <new-dir> --case-name X'",
+      "Assert new output dir contains index.html",
+      "Assert the report is identical in structure to the run-generated one",
+      "cargo test -p chat4n6 -- report_subcommand passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "--page-size flag controls messages per HTML page (default 500)",
+    "steps": [
+      "Run 'chat4n6 run ... --page-size 2' on a fixture with 5 messages in one chat",
+      "Assert output contains at least 3 page files (page_001.html, page_002.html, page_003.html)",
+      "cargo test -p chat4n6 -- page_size_flag passes"
+    ],
+    "passes": false
+  }
+]
