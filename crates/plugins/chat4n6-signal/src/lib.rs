@@ -21,11 +21,16 @@ impl ForensicPlugin for SignalPlugin {
 
     fn extract(
         &self,
-        _fs: &dyn ForensicFs,
-        _local_offset_seconds: Option<i32>,
+        fs: &dyn ForensicFs,
+        local_offset_seconds: Option<i32>,
     ) -> Result<ExtractionResult> {
-        log::warn!("Signal extraction is not yet implemented; returning empty result");
-        Ok(ExtractionResult::default())
+        let db_path = DB_PATHS
+            .iter()
+            .find(|p| fs.exists(p))
+            .ok_or_else(|| anyhow::anyhow!("signal.sqlite not found in filesystem image"))?;
+        let db_bytes = fs.read(db_path)?;
+        let tz = local_offset_seconds.unwrap_or(0);
+        extractor::extract_from_signal_db(&db_bytes, tz)
     }
 }
 
@@ -89,12 +94,10 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_returns_empty() {
-        let fs = MockFs::new()
-            .with_file("data/data/org.thoughtcrime.securesms/databases/signal.sqlite");
-        let r = SignalPlugin.extract(&fs, None).unwrap();
-        assert!(r.chats.is_empty());
-        assert!(r.calls.is_empty());
+    fn test_extract_no_db_errors() {
+        // No DB present → extract returns Err (not panic)
+        let fs = MockFs::new();
+        assert!(SignalPlugin.extract(&fs, None).is_err());
     }
 
     #[test]
