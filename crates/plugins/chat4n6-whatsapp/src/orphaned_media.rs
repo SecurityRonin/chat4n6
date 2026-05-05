@@ -28,15 +28,49 @@ pub fn scan_orphaned_media(
     media_dir: &Path,
     known_paths: &HashSet<String>,
 ) -> Vec<OrphanedMedia> {
-    // STUB — not yet implemented
-    let _ = (media_dir, known_paths);
-    Vec::new()
+    let mut orphans = Vec::new();
+    let read_dir = match std::fs::read_dir(media_dir) {
+        Ok(rd) => rd,
+        Err(_) => return orphans,
+    };
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if !is_recognized_extension(&ext) {
+            continue;
+        }
+        let path_str = path.to_string_lossy().to_string();
+        if known_paths.contains(&path_str) {
+            continue;
+        }
+        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        orphans.push(OrphanedMedia {
+            file_path: path,
+            file_size,
+            extension: ext,
+            file_hash: None,
+            linked_media_path: None,
+        });
+    }
+    orphans
 }
 
 /// For each orphan, compute SHA-256 of its bytes and store in file_hash.
 pub fn hash_orphans(orphans: &mut Vec<OrphanedMedia>) {
-    // STUB — not yet implemented
-    let _ = orphans;
+    use sha2::{Digest, Sha256};
+    for orphan in orphans.iter_mut() {
+        if let Ok(bytes) = std::fs::read(&orphan.file_path) {
+            orphan.file_hash = Some(hex::encode(Sha256::digest(&bytes)));
+        }
+    }
 }
 
 /// Rescue pass: match orphans to missing_media entries by file size first,
@@ -48,9 +82,37 @@ pub fn rescue_orphans(
     orphans: &mut Vec<OrphanedMedia>,
     missing_media: &[(String, u64, Option<String>)],
 ) -> usize {
-    // STUB — not yet implemented
-    let _ = (orphans, missing_media);
-    0
+    use base64::Engine;
+    let mut matched = 0;
+
+    for orphan in orphans.iter_mut() {
+        if orphan.linked_media_path.is_some() {
+            continue; // already rescued
+        }
+        for (expected_path, expected_size, expected_hash_b64) in missing_media {
+            // Size must match first
+            if orphan.file_size != *expected_size {
+                continue;
+            }
+            // If hash provided, must also match
+            if let Some(expected_b64) = expected_hash_b64 {
+                // Decode base64 hash to bytes, then to hex for comparison
+                let expected_hex = base64::engine::general_purpose::STANDARD
+                    .decode(expected_b64)
+                    .ok()
+                    .map(hex::encode);
+                if let Some(exp_hex) = expected_hex {
+                    if orphan.file_hash.as_deref() != Some(exp_hex.as_str()) {
+                        continue; // hash mismatch — reject size collision
+                    }
+                }
+            }
+            orphan.linked_media_path = Some(expected_path.clone());
+            matched += 1;
+            break;
+        }
+    }
+    matched
 }
 
 #[cfg(test)]
