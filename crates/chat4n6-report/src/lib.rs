@@ -1233,7 +1233,90 @@ mod tests {
         );
         assert!(
             timeline.contains("index.html"),
-            "timeline.html must contain a breadcrumb link to index.html"
+            "timeline.html must contain a breadcrumb link to index.html"        );
+    }
+
+    // ── §2.3 WAL Snapshot Timeline tests ────────────────────────────────────
+
+    fn make_wal_snapshot_result() -> ExtractionResult {
+        use chat4n6_plugin_api::WalSnapshot;
+        let mut result = make_test_result();
+        result.wal_snapshots = vec![
+            WalSnapshot {
+                frame_number: 1,
+                commit_marker: true,
+                messages_added: vec![100, 101],
+                messages_removed: vec![],
+                messages_mutated: vec![],
+                frame_offset: 0,
+            },
+            WalSnapshot {
+                frame_number: 2,
+                commit_marker: true,
+                messages_added: vec![],
+                messages_removed: vec![],
+                messages_mutated: vec![100],
+                frame_offset: 4096,
+            },
+            WalSnapshot {
+                frame_number: 3,
+                commit_marker: false,
+                messages_added: vec![],
+                messages_removed: vec![101],
+                messages_mutated: vec![],
+                frame_offset: 8192,
+            },
+        ];
+        result
+    }
+
+    #[test]
+    fn snapshot_timeline_renders_frame_sections() {
+        let result = make_wal_snapshot_result();
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("SnapTest", &result, out.path()).unwrap();
+
+        let snap_path = out.path().join("snapshots.html");
+        assert!(snap_path.exists(), "snapshots.html must be generated when wal_snapshots is non-empty");
+
+        let html = std::fs::read_to_string(&snap_path).unwrap();
+        assert!(html.contains("Frame 1") || html.contains("frame-1") || html.contains("frame_1"),
+            "snapshots.html must contain Frame 1");
+        assert!(html.contains("Frame 2") || html.contains("frame-2") || html.contains("frame_2"),
+            "snapshots.html must contain Frame 2");
+        assert!(html.contains("Frame 3") || html.contains("frame-3") || html.contains("frame_3"),
+            "snapshots.html must contain Frame 3");
+        // ROWID 100 appears in frame 1 (added) and frame 2 (mutated)
+        assert!(html.contains("100"), "snapshots.html must show ROWID 100");
+        // ROWID 101 appears in frame 1 (added) and frame 3 (removed)
+        assert!(html.contains("101"), "snapshots.html must show ROWID 101");
+    }
+
+    #[test]
+    fn snapshot_commit_styling_classes() {
+        let result = make_wal_snapshot_result();
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("SnapStyleTest", &result, out.path()).unwrap();
+
+        let html = std::fs::read_to_string(out.path().join("snapshots.html")).unwrap();
+        assert!(html.contains("frame-committed"),
+            "snapshots.html must have class 'frame-committed' for committed frames");
+        assert!(html.contains("frame-uncommitted"),
+            "snapshots.html must have class 'frame-uncommitted' for uncommitted frames (frame 3)");
+    }
+
+    #[test]
+    fn snapshots_html_not_generated_when_wal_snapshots_empty() {
+        let result = make_test_result(); // has wal_snapshots: vec![]
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("NoSnapTest", &result, out.path()).unwrap();
+
+        assert!(
+            !out.path().join("snapshots.html").exists(),
+            "snapshots.html must NOT be generated when wal_snapshots is empty"
         );
     }
 }
