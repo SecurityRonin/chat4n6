@@ -33,6 +33,10 @@ pub struct RunArgs {
     /// Messages per HTML page [default: 500]
     #[arg(long, default_value_t = 500)]
     pub page_size: usize,
+    /// Copy referenced media from the forensic image into output/media/by-chat/
+    /// and generate EXHIBIT-INDEX.csv
+    #[arg(long)]
+    pub export_media: bool,
 }
 
 /// All registered extraction plugins. Adding a new platform = one line here.
@@ -80,6 +84,15 @@ pub fn run(args: RunArgs) -> Result<()> {
 
     if combined.chats.is_empty() && combined.calls.is_empty() {
         eprintln!("Warning: no artifacts found in {:?}", args.input);
+    }
+
+    // --- media export (before report render so hashes appear in carve-results.json) ---
+    if args.export_media {
+        let export_fs = open_fs(&args.input)?;
+        chat4n6_report::media_export::export_media(&mut combined, export_fs.as_ref(), &args.output)
+            .context("media export failed")?;
+        println!("  EXHIBIT-INDEX.csv");
+        println!("  media/by-chat/");
     }
 
     let generator = ReportGenerator::new()

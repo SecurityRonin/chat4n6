@@ -27,6 +27,7 @@ pub struct ReportGenerator {
     tera: Tera,
     page_size: usize,
     obfuscate: bool,
+    export_media_fs: Option<Box<dyn chat4n6_plugin_api::ForensicFs>>,
 }
 
 impl ReportGenerator {
@@ -41,7 +42,7 @@ impl ReportGenerator {
             tera.add_raw_template(&file_path, content)
                 .with_context(|| format!("failed to parse template {file_path}"))?;
         }
-        Ok(Self { tera, page_size: PAGE_SIZE, obfuscate: false })
+        Ok(Self { tera, page_size: PAGE_SIZE, obfuscate: false, export_media_fs: None })
     }
 
     pub fn with_page_size(mut self, n: usize) -> Self {
@@ -54,7 +55,19 @@ impl ReportGenerator {
         self
     }
 
+    /// Enable media export: copies referenced media files from `fs` into the
+    /// output directory and generates `EXHIBIT-INDEX.csv`.
+    pub fn with_export_media(mut self, fs: Box<dyn chat4n6_plugin_api::ForensicFs>) -> Self {
+        self.export_media_fs = Some(fs);
+        self
+    }
+
     /// Render the full report into `output_dir`.
+    ///
+    /// If `with_export_media` was configured, media files are copied from the
+    /// forensic image into `output_dir/media/by-chat/` and `EXHIBIT-INDEX.csv`
+    /// is written. The result is cloned internally so the caller's copy is
+    /// unchanged.
     pub fn render(
         &self,
         case_name: &str,
