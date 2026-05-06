@@ -6,6 +6,7 @@ use chat4n6_plugin_api::{
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
+    partition_by_table,
     record::{RecoveredRecord, SqlValue},
 };
 use std::collections::HashMap;
@@ -239,14 +240,6 @@ fn detect_zsort_gaps(
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-fn partition_by_table(records: &[RecoveredRecord]) -> HashMap<String, Vec<&RecoveredRecord>> {
-    let mut map: HashMap<String, Vec<&RecoveredRecord>> = HashMap::new();
-    for r in records {
-        map.entry(r.table.clone()).or_default().push(r);
-    }
-    map
-}
 
 struct MediaInfo {
     mime_type: String,

@@ -97,6 +97,55 @@ pub fn decode_serial_type(
     }
 }
 
+impl RecoveredRecord {
+    pub fn int_val(&self, idx: usize) -> Option<i64> {
+        match self.values.get(idx) {
+            Some(SqlValue::Int(n)) => Some(*n),
+            _ => None,
+        }
+    }
+
+    pub fn int_val_or(&self, idx: usize, default: i64) -> i64 {
+        self.int_val(idx).unwrap_or(default)
+    }
+
+    pub fn text_val(&self, idx: usize) -> Option<String> {
+        match self.values.get(idx) {
+            Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn real_val(&self, idx: usize) -> Option<f64> {
+        match self.values.get(idx) {
+            Some(SqlValue::Real(f)) => Some(*f),
+            _ => None,
+        }
+    }
+
+    pub fn require_row_id(&self) -> Option<i64> {
+        self.row_id
+    }
+}
+
+/// Groups `RecoveredRecord` references by their `table` name.
+pub fn partition_by_table(records: &[RecoveredRecord]) -> std::collections::HashMap<String, Vec<&RecoveredRecord>> {
+    let mut map: std::collections::HashMap<String, Vec<&RecoveredRecord>> = std::collections::HashMap::new();
+    for r in records {
+        map.entry(r.table.clone()).or_default().push(r);
+    }
+    map
+}
+
+/// Reads the SQLite schema version from the user_version pragma field (bytes 60–63, big-endian).
+pub fn read_schema_version(db_bytes: &[u8]) -> u32 {
+    if db_bytes.len() >= 64 {
+        u32::from_be_bytes([db_bytes[60], db_bytes[61], db_bytes[62], db_bytes[63]])
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -472,6 +472,20 @@ pub struct Chat {
     pub archived: bool,
 }
 
+impl Chat {
+    /// Creates a minimal placeholder Chat; fill in jid/name/is_group at the call site.
+    pub fn stub(id: i64) -> Self {
+        Chat {
+            id,
+            jid: String::new(),
+            name: None,
+            is_group: false,
+            messages: Vec::new(),
+            archived: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum WalDeltaStatus {
     AddedInWal,

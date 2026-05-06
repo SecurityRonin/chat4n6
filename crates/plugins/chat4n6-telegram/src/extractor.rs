@@ -1,10 +1,11 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
     CallRecord, CallResult, Chat, ExtractionResult, ForensicTimestamp, ForensicWarning,
     ForwardOrigin, ForwardOriginKind, MediaRef, Message, MessageContent,
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
+    partition_by_table,
     record::{RecoveredRecord, SqlValue},
 };
 use std::collections::{HashMap, HashSet};
@@ -23,11 +24,11 @@ use std::collections::{HashMap, HashSet};
 ///   tgcalls:  [0]=Null(id), [1]=uid, [2]=date, [3]=out, [4]=duration, [5]=video
 pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<ExtractionResult> {
     let engine = ForensicEngine::new(db_bytes, Some(tz_offset_secs))
-        .map_err(|e| anyhow::anyhow!("failed to open Telegram cache.db: {e}"))?;
+        .context("failed to open Telegram cache.db")?;
 
     let records = engine
         .recover_layer1()
-        .map_err(|e| anyhow::anyhow!("Layer 1 recovery failed: {e}"))?;
+        .context("Layer 1 recovery failed")?;
 
     let by_table = partition_by_table(&records);
 
@@ -209,14 +210,6 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         extraction_finished_at: None,
         wal_snapshots: vec![],
     })
-}
-
-fn partition_by_table(records: &[RecoveredRecord]) -> HashMap<String, Vec<&RecoveredRecord>> {
-    let mut map: HashMap<String, Vec<&RecoveredRecord>> = HashMap::new();
-    for r in records {
-        map.entry(r.table.clone()).or_default().push(r);
-    }
-    map
 }
 
 /// users table: [0]=Null(uid), [1]=name

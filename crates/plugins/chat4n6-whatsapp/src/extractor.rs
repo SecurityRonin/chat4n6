@@ -8,6 +8,7 @@ use chat4n6_plugin_api::{
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
+    partition_by_table,
     record::{RecoveredRecord, SqlValue},
 };
 use rayon::prelude::*;
@@ -314,21 +315,6 @@ pub fn extract_from_msgstore(
 
     let chats_vec: Vec<_> = chats.into_values().collect();
 
-    // Build a temporary ExtractionResult for rowid reuse detection.
-    let tmp_result = ExtractionResult {
-        chats: chats_vec.clone(),
-        contacts: Vec::new(),
-        calls: calls.clone(),
-        wal_deltas: wal_deltas.clone(),
-        timezone_offset_seconds: Some(tz_offset_secs),
-        schema_version,
-        forensic_warnings: Vec::new(),
-        group_participant_events: group_participant_events.clone(),
-        extraction_started_at: None,
-        extraction_finished_at: None,
-        wal_snapshots: vec![],
-    };
-
     let mut forensic_warnings = Vec::new();
     forensic_warnings.extend(detect_duplicate_stanza_ids(&key_id_map));
     forensic_warnings.extend(detect_thumbnail_orphans(
@@ -336,7 +322,7 @@ pub fn extract_from_msgstore(
         &live_message_ids,
         total_messages,
     ));
-    forensic_warnings.extend(detect_rowid_reuse(&tmp_result));
+    forensic_warnings.extend(detect_rowid_reuse(&chats_vec));
 
     Ok(ExtractionResult {
         chats: chats_vec,
@@ -481,14 +467,6 @@ fn default_mime_for_type(msg_type: i32) -> &'static str {
         64 => "text/vcard",
         _ => "application/octet-stream",
     }
-}
-
-fn partition_by_table(records: &[RecoveredRecord]) -> HashMap<String, Vec<&RecoveredRecord>> {
-    let mut map: HashMap<String, Vec<&RecoveredRecord>> = HashMap::new();
-    for r in records {
-        map.entry(r.table.clone()).or_default().push(r);
-    }
-    map
 }
 
 /// jid table: row_id=_id, values[0]=Null(_id alias), values[1]=raw_string

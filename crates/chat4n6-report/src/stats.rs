@@ -1,6 +1,7 @@
 //! §2.2 Stats/Analytics computations for the report.
 
 use chat4n6_plugin_api::{ExtractionResult, MessageContent};
+use chrono::Timelike;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -43,7 +44,7 @@ pub fn compute(result: &ExtractionResult) -> StatsBundle {
             total_messages += 1;
 
             // Hourly heatmap: bucket by UTC hour.
-            let hour = msg.timestamp.utc.format("%H").to_string().parse::<usize>().unwrap_or(0);
+            let hour = msg.timestamp.utc.hour() as usize;
             if hour < 24 {
                 hourly_counts[hour] += 1;
             }

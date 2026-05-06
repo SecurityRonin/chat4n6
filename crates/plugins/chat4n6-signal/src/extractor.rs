@@ -26,6 +26,7 @@ use chat4n6_plugin_api::{
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
+    read_schema_version,
     record::{RecoveredRecord, SqlValue},
 };
 use std::collections::HashMap;
@@ -65,14 +66,7 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
         if let Some(msg) = record_to_message(rec, &parts, &reactions, tz_offset_secs) {
             chats
                 .entry(msg.chat_id)
-                .or_insert_with(|| Chat {
-                    id: msg.chat_id,
-                    jid: String::new(),
-                    name: None,
-                    is_group: false,
-                    messages: Vec::new(),
-                    archived: false,
-                })
+                .or_insert_with(|| Chat::stub(msg.chat_id))
                 .messages
                 .push(msg);
         }
@@ -116,7 +110,7 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
         calls,
         wal_deltas: Vec::new(),
         timezone_offset_seconds: Some(tz_offset_secs),
-        schema_version: 185,
+        schema_version: read_schema_version(db_bytes),
         forensic_warnings,
         group_participant_events: Vec::new(),
         extraction_started_at: None,
@@ -156,11 +150,11 @@ fn build_recipient_map(records: &[RecoveredRecord]) -> HashMap<i64, RecipientInf
             Some(id) => id,
             None => continue,
         };
-        let e164 = text_val(r, 1);
-        let aci = text_val(r, 2);
-        let _group_id = text_val(r, 3);
-        let system_name = text_val(r, 4);
-        let joined_name = text_val(r, 5);
+        let e164 = r.text_val(1);
+        let aci = r.text_val(2);
+        let _group_id = r.text_val(3);
+        let system_name = r.text_val(4);
+        let joined_name = r.text_val(5);
 
         // JID: prefer e164, fall back to aci
         let jid = if let Some(ref phone) = e164 {
@@ -234,8 +228,8 @@ fn build_part_map(records: &[RecoveredRecord]) -> HashMap<i64, MediaRef> {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let mime_type = text_val(r, 2).unwrap_or_else(|| "application/octet-stream".to_string());
-        let file_name = text_val(r, 3);
+        let mime_type = r.text_val(2).unwrap_or_else(|| "application/octet-stream".to_string());
+        let file_name = r.text_val(3);
         let file_size = match r.values.get(4) {
             Some(SqlValue::Int(n)) => *n as u64,
             _ => 0,
@@ -279,7 +273,7 @@ fn build_reaction_map(
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let emoji = match text_val(r, 4) {
+        let emoji = match r.text_val(4) {
             Some(e) => e,
             None => continue,
         };
@@ -329,7 +323,7 @@ fn record_to_message(
         Some(SqlValue::Int(n)) => *n,
         _ => 0,
     };
-    let body = text_val(r, 5);
+    let body = r.text_val(5);
     let remote_deleted = match r.values.get(8) {
         Some(SqlValue::Int(n)) => *n != 0,
         _ => false,
@@ -397,7 +391,7 @@ fn extract_calls(records: &[RecoveredRecord], tz_offset_secs: i32) -> Vec<CallRe
 
 fn record_to_call(r: &RecoveredRecord, tz_offset_secs: i32) -> Option<CallRecord> {
     let id = r.row_id?;
-    let peer = text_val(r, 3).unwrap_or_default();
+    let peer = r.text_val(3).unwrap_or_default();
     let call_type = match r.values.get(4) {
         Some(SqlValue::Int(n)) => *n,
         _ => 0,
@@ -562,12 +556,3 @@ fn detect_sealed_sender_unresolved(
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Extract a TEXT value at `values[idx]`, returning None if absent/null/non-text.
-fn text_val(r: &RecoveredRecord, idx: usize) -> Option<String> {
-    match r.values.get(idx) {
-        Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-        _ => None,
-    }
-}

@@ -3,8 +3,6 @@
 //! Copies referenced media from the forensic image into
 //! `output/media/by-chat/<slug>/`, hashes each file (SHA-256),
 //! and generates `EXHIBIT-INDEX.csv`.
-//!
-//! Note: thumbnail generation deferred — requires image crate.
 
 use anyhow::Result;
 use chat4n6_plugin_api::{ExtractionResult, ForensicFs, MessageContent};
@@ -35,6 +33,15 @@ fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", Sha256::digest(data))
 }
 
+/// Quote a CSV field value, escaping commas, double-quotes, and newlines.
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 /// Export all media files referenced in `result` from `fs` into
 /// `output_dir/media/by-chat/<slug>/`.
 ///
@@ -58,29 +65,25 @@ pub fn export_media(
 
         for msg in chat.messages.iter_mut() {
             if let MessageContent::Media(ref mut media_ref) = msg.content {
-                // Attempt to read the file; skip on error.
                 let bytes = match fs.read(&media_ref.file_path) {
                     Ok(b) => b,
-                    Err(_) => continue,
+                    Err(e) => {
+                        log::warn!("media export: cannot read {}: {e:#}", media_ref.file_path);
+                        continue;
+                    }
                 };
 
-                // Compute SHA-256.
                 let hash = sha256_hex(&bytes);
-
-                // Set encrypted_hash on the media ref.
                 media_ref.encrypted_hash = Some(hash.clone());
 
-                // Determine filename (last path component).
                 let filename = media_ref.file_path
                     .rsplit('/')
                     .next()
                     .unwrap_or("unknown")
                     .to_string();
 
-                // Create destination directory and write file.
                 std::fs::create_dir_all(&dest_dir)?;
-                let dest_path = dest_dir.join(&filename);
-                std::fs::write(&dest_path, &bytes)?;
+                std::fs::write(dest_dir.join(&filename), &bytes)?;
 
                 let rel_path = format!("media/by-chat/{}/{}", slug, filename);
                 rows.push(ExhibitRow {
@@ -94,13 +97,17 @@ pub fn export_media(
         }
     }
 
-    // Write EXHIBIT-INDEX.csv
+    // Write EXHIBIT-INDEX.csv with proper field quoting.
     let csv_path = output_dir.join("EXHIBIT-INDEX.csv");
     let mut csv = String::from("path,sha256,source_chat,source_msg_id,evidence_layer\n");
     for row in &rows {
         csv.push_str(&format!(
             "{},{},{},{},{}\n",
-            row.path, row.sha256, row.source_chat, row.source_msg_id, row.evidence_layer
+            csv_field(&row.path),
+            csv_field(&row.sha256),
+            csv_field(&row.source_chat),
+            row.source_msg_id,
+            csv_field(&row.evidence_layer),
         ));
     }
     std::fs::write(&csv_path, csv)?;

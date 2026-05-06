@@ -13,6 +13,8 @@ pub mod page;
 pub mod page_map;
 pub mod pragma;
 pub mod record;
+pub use record::{partition_by_table, read_schema_version};
+
 pub mod rowid_gap;
 pub mod schema_sig;
 pub mod unalloc;

@@ -152,7 +152,7 @@ fn open_fs(input: &Path) -> Result<Box<dyn chat4n6_plugin_api::ForensicFs>> {
 pub fn resolve_tz_arg(tz: Option<&str>) -> Result<Option<i32>> {
     match tz {
         None => Ok(None),
-        Some(s) => chat4n6_whatsapp::timezone::resolve_timezone_offset(s)
+        Some(s) => chat4n6_plugin_api::resolve_timezone_offset(s)
             .map(Some)
             .ok_or_else(|| anyhow::anyhow!("unrecognised timezone: '{s}'")),
     }
@@ -166,11 +166,21 @@ fn merge_results(
     dst.contacts.extend(src.contacts);
     dst.calls.extend(src.calls);
     dst.wal_deltas.extend(src.wal_deltas);
+    dst.wal_snapshots.extend(src.wal_snapshots);
     dst.forensic_warnings.extend(src.forensic_warnings);
     dst.group_participant_events.extend(src.group_participant_events);
     if dst.timezone_offset_seconds.is_none() {
         dst.timezone_offset_seconds = src.timezone_offset_seconds;
     }
+    // Keep the earliest start and latest finish across all plugins.
+    dst.extraction_started_at = match (dst.extraction_started_at, src.extraction_started_at) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    dst.extraction_finished_at = match (dst.extraction_finished_at, src.extraction_finished_at) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
 }
 
 #[cfg(test)]

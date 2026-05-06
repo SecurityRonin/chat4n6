@@ -3,7 +3,7 @@
 //! Detects evidence of tampering, selective deletion, timestamp anomalies,
 //! and SQLite VACUUM operations that destroy deleted record remnants.
 
-use chat4n6_plugin_api::{ExtractionResult, ForensicWarning};
+use chat4n6_plugin_api::{Chat, ExtractionResult, ForensicWarning};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
@@ -171,14 +171,14 @@ pub fn detect_thumbnail_orphans(
 
 /// Detect ROWID reuse across evidence source layers.
 ///
-/// Walks `result.chats` collecting (message.id, message.timestamp.utc).
+/// Walks `chats` collecting (message.id, message.timestamp.utc).
 /// If the same message id appears with two different timestamps (one from a WAL
 /// historic source and one from the live layer), it indicates ROWID reuse.
-pub fn detect_rowid_reuse(result: &ExtractionResult) -> Vec<ForensicWarning> {
+pub fn detect_rowid_reuse(chats: &[Chat]) -> Vec<ForensicWarning> {
     use std::collections::HashMap as StdMap;
     let mut id_timestamps: StdMap<i64, Vec<DateTime<Utc>>> = StdMap::new();
 
-    for chat in &result.chats {
+    for chat in chats {
         for msg in &chat.messages {
             id_timestamps
                 .entry(msg.id)
@@ -561,7 +561,7 @@ mod new_detector_tests {
             wal_snapshots: vec![],
         };
 
-        let warnings = detect_rowid_reuse(&result);
+        let warnings = detect_rowid_reuse(&result.chats);
         assert!(
             warnings.iter().any(|w| matches!(
                 w,
