@@ -2,11 +2,11 @@
   {
     "description": "Signal disappearing-message timer produces DisappearingTimerActive warning",
     "steps": ["cargo test -p chat4n6-signal -- t20_disappearing_timer_active_warning passes"],
-    "passes": false
+    "passes": true
   },
   {
     "description": "Signal sealed-sender unresolved envelopes are counted and warned",
     "steps": ["cargo test -p chat4n6-signal -- t21_sealed_sender_unresolved_warning passes"],
-    "passes": false
+    "passes": true
   }
 ]

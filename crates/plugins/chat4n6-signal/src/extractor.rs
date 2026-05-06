@@ -22,7 +22,7 @@
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
     CallRecord, CallResult, Chat, Contact, EvidenceSource, ExtractionResult, ForensicTimestamp,
-    MediaRef, Message, MessageContent, Reaction,
+    ForensicWarning, MediaRef, Message, MessageContent, Reaction,
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
@@ -95,6 +95,19 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
         })
         .collect();
 
+    // Detect forensic warnings
+    let mut forensic_warnings: Vec<ForensicWarning> = Vec::new();
+    detect_disappearing_timers(
+        by_table.get("thread").map(|v| v.as_slice()).unwrap_or(&empty),
+        by_table.get("sms").map(|v| v.as_slice()).unwrap_or(&empty),
+        &mut forensic_warnings,
+    );
+    detect_sealed_sender_unresolved(
+        by_table.get("sms").map(|v| v.as_slice()).unwrap_or(&empty),
+        &recipients,
+        &mut forensic_warnings,
+    );
+
     let chats_vec: Vec<Chat> = chats.into_values().collect();
 
     Ok(ExtractionResult {
@@ -104,7 +117,7 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
         wal_deltas: Vec::new(),
         timezone_offset_seconds: Some(tz_offset_secs),
         schema_version: 185,
-        forensic_warnings: Vec::new(),
+        forensic_warnings,
         group_participant_events: Vec::new(),
         extraction_started_at: None,
         extraction_finished_at: None,
@@ -430,6 +443,123 @@ fn record_to_call(r: &RecoveredRecord, tz_offset_secs: i32) -> Option<CallRecord
         source: r.source.clone(),
         call_creator_device_jid: None,
     })
+}
+
+// ── ForensicWarning detectors ─────────────────────────────────────────────────
+
+/// Detect disappearing message timers.
+///
+/// For each thread row with `expires_in > 0`, count sms rows in that thread
+/// where body is absent/empty AND `expires_started > 0` (message has vanished).
+/// Emits `ForensicWarning::DisappearingTimerActive` for every such thread.
+///
+/// Thread schema (values[]): [0]=Null, [1]=recipient_id, [2]=archived,
+///   [3]=message_count, [4]=expires_in  (column may be absent in older schemas)
+///
+/// SMS schema (values[]): [0]=Null, [1]=thread_id, [2]=date, [3]=date_received,
+///   [4]=type, [5]=body, [6]=from_recipient_id, [7]=read, [8]=remote_deleted,
+///   [9]=expires_started  (column may be absent in older schemas)
+fn detect_disappearing_timers(
+    thread_records: &[RecoveredRecord],
+    sms_records: &[RecoveredRecord],
+    warnings: &mut Vec<ForensicWarning>,
+) {
+    for thread_rec in thread_records {
+        let thread_id = match thread_rec.row_id {
+            Some(id) => id,
+            None => continue,
+        };
+        let expires_in = match thread_rec.values.get(4) {
+            Some(SqlValue::Int(n)) if *n > 0 => *n as u32,
+            _ => continue,
+        };
+
+        // Count sms rows in this thread that have vanished:
+        // body absent/empty AND expires_started > 0
+        let vanished_count = sms_records
+            .iter()
+            .filter(|sms| {
+                // Check thread_id matches
+                let tid = match sms.values.get(1) {
+                    Some(SqlValue::Int(n)) => *n,
+                    _ => return false,
+                };
+                if tid != thread_id {
+                    return false;
+                }
+                // Body absent or empty
+                let body_empty = match sms.values.get(5) {
+                    None | Some(SqlValue::Null) => true,
+                    Some(SqlValue::Text(s)) => s.is_empty(),
+                    _ => false,
+                };
+                if !body_empty {
+                    return false;
+                }
+                // expires_started > 0
+                match sms.values.get(9) {
+                    Some(SqlValue::Int(n)) => *n > 0,
+                    _ => false,
+                }
+            })
+            .count() as u32;
+
+        if vanished_count > 0 {
+            warnings.push(ForensicWarning::DisappearingTimerActive {
+                chat_id: thread_id,
+                timer_seconds: expires_in,
+                vanished_count,
+            });
+        }
+    }
+}
+
+/// Detect sealed-sender messages whose sender cannot be resolved.
+///
+/// Iterates sms rows looking for `envelope_type & 0x10 != 0` (sealed sender bit).
+/// If the `from_recipient_id` for such a row is absent from the recipient map,
+/// the sender is unresolvable.  Emits one `ForensicWarning::SealedSenderUnresolved`
+/// per thread_id where at least one unresolved sealed-sender message was found.
+///
+/// SMS schema (values[]): [0]=Null, [1]=thread_id, [2]=date, [3]=date_received,
+///   [4]=type, [5]=body, [6]=from_recipient_id, [7]=read, [8]=remote_deleted,
+///   [9]=expires_started, [10]=envelope_type  (may be absent in older schemas)
+fn detect_sealed_sender_unresolved(
+    sms_records: &[RecoveredRecord],
+    recipients: &HashMap<i64, RecipientInfo>,
+    warnings: &mut Vec<ForensicWarning>,
+) {
+    let mut unresolved_per_thread: HashMap<i64, u32> = HashMap::new();
+
+    for sms in sms_records {
+        // envelope_type at index 10 — silently skip if column absent
+        let envelope_type = match sms.values.get(10) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        // Sealed-sender bit: 0x10
+        if envelope_type & 0x10 == 0 {
+            continue;
+        }
+
+        let thread_id = match sms.values.get(1) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        let from_recipient_id = match sms.values.get(6) {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+
+        // Unresolved = sender not in recipient map
+        if !recipients.contains_key(&from_recipient_id) {
+            *unresolved_per_thread.entry(thread_id).or_insert(0) += 1;
+        }
+    }
+
+    for (thread_id, count) in unresolved_per_thread {
+        warnings.push(ForensicWarning::SealedSenderUnresolved { thread_id, count });
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
