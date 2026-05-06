@@ -1,0 +1,36 @@
+[
+  {
+    "description": "IosWhatsAppPlugin is registered in the CLI",
+    "steps": [
+      "Given a directory containing AppDomainGroup-group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite",
+      "When the user runs `chat4n6 run --input <dir> --output <out>`",
+      "Then the tool detects and extracts the iOS WhatsApp database",
+      "And produces index.html in the output directory"
+    ],
+    "passes": true
+  },
+  {
+    "description": "ZWAPROFILEPUSHNAME push-names override raw JIDs",
+    "steps": [
+      "Given a ChatStorage.sqlite with ZWAPROFILEPUSHNAME table",
+      "And ZWAPROFILEPUSHNAME has JID '4155550100@s.whatsapp.net' mapped to pushname 'Alice Smith'",
+      "When extract_from_chatstorage is called",
+      "Then the contact with JID '4155550100@s.whatsapp.net' has display_name = Some('Alice Smith')",
+      "And the chat with that JID and null ZPARTNERNAME has name = Some('Alice Smith')"
+    ],
+    "passes": true
+  },
+  {
+    "description": "ZWACALLEVENT records are extracted into calls",
+    "steps": [
+      "Given a ChatStorage.sqlite with ZWACALLEVENT table",
+      "And a row with ZDATE=600000000.0, ZDURATION=120, ZOUTGOING=1, ZMISSED=0, ZVIDEO=0",
+      "When extract_from_chatstorage is called",
+      "Then result.calls contains at least 1 entry",
+      "And calls[0].timestamp.utc.timestamp() == 1578307200",
+      "And calls[0].from_me == true",
+      "And calls[0].duration_secs == 120"
+    ],
+    "passes": true
+  }
+]

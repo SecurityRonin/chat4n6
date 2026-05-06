@@ -253,6 +253,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "chat4n6-fs",
+ "chat4n6-ios-whatsapp",
  "chat4n6-plugin-api",
  "chat4n6-report",
  "chat4n6-signal",

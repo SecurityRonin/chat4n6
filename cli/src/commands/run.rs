@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chat4n6_fs::{DarFs, IosBackupFs, PlaintextDirFs};
 use chat4n6_plugin_api::ForensicPlugin;
 use chat4n6_report::ReportGenerator;
+use chat4n6_ios_whatsapp::IosWhatsAppPlugin;
 use chat4n6_signal::SignalPlugin;
 use chat4n6_telegram::TelegramPlugin;
 use chat4n6_whatsapp::WhatsAppPlugin;
@@ -42,6 +43,7 @@ pub fn registered_plugins(key_bytes: Option<Vec<u8>>) -> Vec<Box<dyn ForensicPlu
     };
     vec![
         whatsapp,
+        Box::new(IosWhatsAppPlugin),
         Box::new(SignalPlugin),
         Box::new(TelegramPlugin),
     ]
