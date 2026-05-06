@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chat4n6_plugin_api::{
-    CallRecord, CallResult, Chat, ExtractionResult, ForensicTimestamp, MediaRef, Message,
-    MessageContent,
+    CallRecord, CallResult, Chat, ExtractionResult, ForensicTimestamp, ForensicWarning,
+    ForwardOrigin, ForwardOriginKind, MediaRef, Message, MessageContent,
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
@@ -345,6 +345,89 @@ mod tests {
         assert!(
             msg1.unwrap().from_me,
             "mid=1 should be outgoing (from_me=true)"
+        );
+    }
+
+    #[test]
+    fn forwarded_from_populates_origin_metadata() {
+        // Build a DB with a forwarded message: fwd_from_id=99999 which IS in users table
+        let db = make_telegram_db(
+            "ALTER TABLE messages ADD COLUMN fwd_from_id INTEGER;
+             ALTER TABLE messages ADD COLUMN fwd_from_name TEXT;
+             ALTER TABLE messages ADD COLUMN fwd_date INTEGER;
+             INSERT INTO users VALUES (99999, 'Channel X');
+             INSERT INTO messages (mid, uid, date, out, data, send_state, read_state, fwd_from_id, fwd_from_name, fwd_date)
+               VALUES (10, 100, 1710513127, 0, x'00', 0, 0, 99999, 'Channel X', 1700000000);",
+        );
+        let result = extract_from_telegram_db(&db, 0).unwrap();
+        let msg = result
+            .chats
+            .iter()
+            .flat_map(|c| c.messages.iter())
+            .find(|m| m.id == 10)
+            .expect("message mid=10 must exist");
+        assert!(msg.is_forwarded, "mid=10 must be is_forwarded=true");
+        let fwd = msg
+            .forwarded_from
+            .as_ref()
+            .expect("forwarded_from must be Some");
+        assert_eq!(fwd.origin_id, "99999", "origin_id must be fwd_from_id");
+        assert_eq!(
+            fwd.origin_name.as_deref(),
+            Some("Channel X"),
+            "origin_name must come from users table"
+        );
+        assert!(
+            matches!(fwd.origin_kind, chat4n6_plugin_api::ForwardOriginKind::User),
+            "fwd_from_id > 0 and in users → ForwardOriginKind::User"
+        );
+        let orig_ts = fwd
+            .original_timestamp
+            .as_ref()
+            .expect("original_timestamp must be Some");
+        assert_eq!(
+            orig_ts.utc.timestamp(),
+            1700000000,
+            "original_timestamp must equal fwd_date"
+        );
+    }
+
+    #[test]
+    fn unresolved_forward_source_emitted_when_user_missing() {
+        // fwd_from_id=12345 is NOT in users table → UnresolvedForwardSource warning
+        let db = make_telegram_db(
+            "ALTER TABLE messages ADD COLUMN fwd_from_id INTEGER;
+             ALTER TABLE messages ADD COLUMN fwd_from_name TEXT;
+             ALTER TABLE messages ADD COLUMN fwd_date INTEGER;
+             INSERT INTO messages (mid, uid, date, out, data, send_state, read_state, fwd_from_id, fwd_from_name, fwd_date)
+               VALUES (20, 100, 1710513127, 0, x'00', 0, 0, 12345, NULL, NULL);",
+        );
+        let result = extract_from_telegram_db(&db, 0).unwrap();
+        let has_warning = result.forensic_warnings.iter().any(|w| {
+            matches!(
+                w,
+                chat4n6_plugin_api::ForensicWarning::UnresolvedForwardSource {
+                    message_id: 20,
+                    forward_from_id: 12345
+                }
+            )
+        });
+        assert!(
+            has_warning,
+            "UnresolvedForwardSource {{ message_id: 20, forward_from_id: 12345 }} must be in forensic_warnings"
+        );
+        // The message should still have forwarded_from set with Unknown kind
+        let msg = result
+            .chats
+            .iter()
+            .flat_map(|c| c.messages.iter())
+            .find(|m| m.id == 20)
+            .expect("message mid=20 must exist");
+        assert!(msg.is_forwarded, "mid=20 must be is_forwarded=true");
+        let fwd = msg.forwarded_from.as_ref().expect("forwarded_from must be Some");
+        assert!(
+            matches!(fwd.origin_kind, chat4n6_plugin_api::ForwardOriginKind::Unknown),
+            "unknown user → ForwardOriginKind::Unknown"
         );
     }
 
