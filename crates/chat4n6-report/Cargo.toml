@@ -27,3 +27,4 @@ zip = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 zip = { workspace = true }
+chat4n6-fs = { path = "../chat4n6-fs", version = "0.1" }
