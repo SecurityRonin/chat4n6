@@ -5,6 +5,7 @@
 
 use chat4n6_plugin_api::{ExtractionResult, ForensicWarning};
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct AntiForensicsReport {
@@ -116,6 +117,88 @@ pub fn detect_timestamp_anomalies(result: &ExtractionResult) -> Vec<ForensicWarn
                 });
             }
             prev_ts = msg.timestamp.utc;
+        }
+    }
+    warnings
+}
+
+// ── New detectors (§2.6) ─────────────────────────────────────────────────────
+
+/// Detect duplicate XMPP stanza IDs (key_id column) in the message table.
+///
+/// Takes a map of key_id → list of message row_ids built from raw SQLite records.
+/// Any key_id appearing more than once emits `DuplicateStanzaId`.
+pub fn detect_duplicate_stanza_ids(
+    key_id_map: &HashMap<String, Vec<i64>>,
+) -> Vec<ForensicWarning> {
+    key_id_map
+        .iter()
+        .filter(|(_, rows)| rows.len() > 1)
+        .map(|(stanza_id, rows)| ForensicWarning::DuplicateStanzaId {
+            stanza_id: stanza_id.clone(),
+            occurrences: rows.len() as u32,
+        })
+        .collect()
+}
+
+/// Detect orphaned thumbnail rows (rows in message_thumbnails whose
+/// message_row_id does not exist in the live message table).
+///
+/// Emits `ThumbnailOrphanHigh` when orphan_count * 100 / total_messages >= 30.
+pub fn detect_thumbnail_orphans(
+    thumbnail_row_ids: &[i64],
+    live_message_ids: &std::collections::HashSet<i64>,
+    total_messages: u32,
+) -> Vec<ForensicWarning> {
+    if total_messages == 0 {
+        return vec![];
+    }
+    let orphan_count = thumbnail_row_ids
+        .iter()
+        .filter(|rid| !live_message_ids.contains(rid))
+        .count() as u32;
+    let ratio_pct = (orphan_count * 100 / total_messages).min(100) as u8;
+    if ratio_pct >= 30 {
+        vec![ForensicWarning::ThumbnailOrphanHigh {
+            orphan_thumbnails: orphan_count,
+            total_messages,
+            ratio_pct,
+        }]
+    } else {
+        vec![]
+    }
+}
+
+/// Detect ROWID reuse across evidence source layers.
+///
+/// Walks `result.chats` collecting (message.id, message.timestamp.utc).
+/// If the same message id appears with two different timestamps (one from a WAL
+/// historic source and one from the live layer), it indicates ROWID reuse.
+pub fn detect_rowid_reuse(result: &ExtractionResult) -> Vec<ForensicWarning> {
+    use std::collections::HashMap as StdMap;
+    let mut id_timestamps: StdMap<i64, Vec<DateTime<Utc>>> = StdMap::new();
+
+    for chat in &result.chats {
+        for msg in &chat.messages {
+            id_timestamps
+                .entry(msg.id)
+                .or_default()
+                .push(msg.timestamp.utc);
+        }
+    }
+
+    let mut warnings = Vec::new();
+    for (row_id, timestamps) in &id_timestamps {
+        // Deduplicate timestamps; if two distinct values exist → reuse detected
+        let mut unique_ts = timestamps.clone();
+        unique_ts.sort();
+        unique_ts.dedup();
+        if unique_ts.len() > 1 {
+            warnings.push(ForensicWarning::RowIdReuseDetected {
+                table: "messages".to_string(),
+                rowid: *row_id,
+                conflicting_timestamps: unique_ts,
+            });
         }
     }
     warnings
@@ -301,6 +384,191 @@ mod header_tamper_tests {
         assert!(
             warnings.iter().any(|w| matches!(w, ForensicWarning::TimestampAnomaly { .. })),
             "reversed timestamps should emit TimestampAnomaly, got: {warnings:?}"
+        );
+    }
+}
+
+// ── §2.6 new-detector tests ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod new_detector_tests {
+    use super::*;
+
+    // ── Detector 1: DuplicateStanzaId ─────────────────────────────────────────
+
+    /// Build an in-memory msgstore.db with two messages sharing the same key_id
+    /// and extract from it, asserting DuplicateStanzaId warning is emitted.
+    #[test]
+    fn duplicate_stanza_id_warning_from_extraction() {
+        use crate::extractor::extract_from_msgstore;
+        use crate::schema::SchemaVersion;
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 200;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL);
+            CREATE TABLE message (
+                _id INTEGER PRIMARY KEY,
+                chat_row_id INTEGER NOT NULL,
+                sender_jid_row_id INTEGER,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                text_data TEXT,
+                message_type INTEGER NOT NULL DEFAULT 0,
+                key_id TEXT
+            );
+            INSERT INTO jid VALUES (1, 'test@s.whatsapp.net');
+            INSERT INTO chat VALUES (1, 1);
+            INSERT INTO message VALUES (1, 1, NULL, 0, 1710513127000, 'hello', 0, 'ABC123');
+            INSERT INTO message VALUES (2, 1, NULL, 1, 1710513128000, 'world', 0, 'ABC123');
+            INSERT INTO message VALUES (3, 1, NULL, 0, 1710513129000, 'foo',   0, 'XYZ999');
+        "#).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+
+        assert!(
+            result.forensic_warnings.iter().any(|w| matches!(
+                w,
+                ForensicWarning::DuplicateStanzaId { stanza_id, occurrences: 2 }
+                    if stanza_id == "ABC123"
+            )),
+            "expected DuplicateStanzaId {{ stanza_id: \"ABC123\", occurrences: 2 }}, got: {:?}",
+            result.forensic_warnings
+        );
+    }
+
+    // ── Detector 2: ThumbnailOrphanHigh ──────────────────────────────────────
+
+    /// Build an in-memory msgstore.db with 10 messages and 5 orphan thumbnail
+    /// rows, expect ThumbnailOrphanHigh warning (50% > 30% threshold).
+    #[test]
+    fn thumbnail_orphan_high_warning_from_extraction() {
+        use crate::extractor::extract_from_msgstore;
+        use crate::schema::SchemaVersion;
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 200;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL);
+            CREATE TABLE message (
+                _id INTEGER PRIMARY KEY,
+                chat_row_id INTEGER NOT NULL,
+                sender_jid_row_id INTEGER,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                text_data TEXT,
+                message_type INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE message_thumbnails (
+                message_row_id INTEGER PRIMARY KEY,
+                thumbnail BLOB
+            );
+            INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+            INSERT INTO chat VALUES (1, 1);
+            INSERT INTO message VALUES (1,  1, NULL, 0, 1710513100000, 'msg1',  0);
+            INSERT INTO message VALUES (2,  1, NULL, 0, 1710513101000, 'msg2',  0);
+            INSERT INTO message VALUES (3,  1, NULL, 0, 1710513102000, 'msg3',  0);
+            INSERT INTO message VALUES (4,  1, NULL, 0, 1710513103000, 'msg4',  0);
+            INSERT INTO message VALUES (5,  1, NULL, 0, 1710513104000, 'msg5',  0);
+            INSERT INTO message VALUES (6,  1, NULL, 0, 1710513105000, 'msg6',  0);
+            INSERT INTO message VALUES (7,  1, NULL, 0, 1710513106000, 'msg7',  0);
+            INSERT INTO message VALUES (8,  1, NULL, 0, 1710513107000, 'msg8',  0);
+            INSERT INTO message VALUES (9,  1, NULL, 0, 1710513108000, 'msg9',  0);
+            INSERT INTO message VALUES (10, 1, NULL, 0, 1710513109000, 'msg10', 0);
+            -- thumbnail for live message 1 (not an orphan)
+            INSERT INTO message_thumbnails VALUES (1,  x'ff');
+            -- orphan thumbnails pointing to deleted messages 11-15
+            INSERT INTO message_thumbnails VALUES (11, x'ff');
+            INSERT INTO message_thumbnails VALUES (12, x'ff');
+            INSERT INTO message_thumbnails VALUES (13, x'ff');
+            INSERT INTO message_thumbnails VALUES (14, x'ff');
+            INSERT INTO message_thumbnails VALUES (15, x'ff');
+        "#).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+
+        assert!(
+            result.forensic_warnings.iter().any(|w| matches!(
+                w,
+                ForensicWarning::ThumbnailOrphanHigh { orphan_thumbnails: 5, total_messages: 10, ratio_pct: 50 }
+            )),
+            "expected ThumbnailOrphanHigh with 5 orphans / 10 messages = 50%, got: {:?}",
+            result.forensic_warnings
+        );
+    }
+
+    // ── Detector 3: RowIdReuseDetected ────────────────────────────────────────
+
+    /// Build an ExtractionResult with two messages having the same id but
+    /// different timestamps (simulating ROWID reuse across source layers).
+    #[test]
+    fn rowid_reuse_detected_from_extraction_result() {
+        use chat4n6_plugin_api::{
+            Chat, EvidenceSource, ExtractionResult, ForensicTimestamp, Message, MessageContent,
+        };
+
+        let make_msg = |id: i64, ts_ms: i64, source: EvidenceSource| Message {
+            id,
+            chat_id: 1,
+            sender_jid: None,
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(ts_ms, 0),
+            content: MessageContent::Text("hello".into()),
+            reactions: vec![],
+            quoted_message: None,
+            source,
+            row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
+            forwarded_from: None,
+        };
+
+        // Same row_id=42, two different timestamps from different source layers
+        let chat = Chat {
+            id: 1,
+            jid: "suspect@s.whatsapp.net".into(),
+            name: None,
+            is_group: false,
+            messages: vec![
+                make_msg(42, 1_710_000_000_000, EvidenceSource::Live),
+                make_msg(42, 1_700_000_000_000, EvidenceSource::WalHistoric),
+            ],
+            archived: false,
+        };
+
+        let result = ExtractionResult {
+            chats: vec![chat],
+            contacts: vec![],
+            calls: vec![],
+            wal_deltas: vec![],
+            timezone_offset_seconds: Some(0),
+            schema_version: 200,
+            forensic_warnings: vec![],
+            group_participant_events: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
+        };
+
+        let warnings = detect_rowid_reuse(&result);
+        assert!(
+            warnings.iter().any(|w| matches!(
+                w,
+                ForensicWarning::RowIdReuseDetected { table, rowid: 42, .. }
+                    if table == "messages"
+            )),
+            "expected RowIdReuseDetected for rowid=42, got: {warnings:?}"
         );
     }
 }

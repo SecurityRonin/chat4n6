@@ -1,0 +1,6 @@
+{
+  "id": "sqlite-engine/new-warnings",
+  "title": "New ForensicWarning detectors: DuplicateStanzaId, ThumbnailOrphanHigh, RowIdReuseDetected",
+  "description": "Detect duplicate XMPP stanza IDs in the message table, orphaned thumbnail rows exceeding 30% ratio, and ROWID reuse across evidence source layers.",
+  "passes": true
+}

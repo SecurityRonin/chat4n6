@@ -1,3 +1,4 @@
+use crate::anti_forensics::{detect_duplicate_stanza_ids, detect_rowid_reuse, detect_thumbnail_orphans};
 use crate::schema::SchemaVersion;
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
@@ -10,7 +11,7 @@ use chat4n6_sqlite_forensics::{
     record::{RecoveredRecord, SqlValue},
 };
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Extract all forensic artifacts from a msgstore.db byte slice.
 ///
@@ -33,6 +34,9 @@ pub fn extract_from_msgstore(
 ) -> Result<ExtractionResult> {
     let engine = ForensicEngine::new(db_bytes, Some(tz_offset_secs))
         .context("failed to open msgstore.db")?;
+
+    // Read DDL map for schema-aware column index resolution (e.g. key_id position).
+    let ddl_map = engine.table_ddl();
 
     let records = engine.recover_layer1().context("Layer 1 recovery failed")?;
 
@@ -67,6 +71,10 @@ pub fn extract_from_msgstore(
                 .push(msg);
         }
     }
+
+    // Build key_id → Vec<row_id> map for DuplicateStanzaId detection.
+    // Uses DDL-parsed column index to be robust to varying schema column order.
+    let key_id_map = build_key_id_map(msg_records, &ddl_map);
 
     // ── Quoted messages ──────────────────────────────────────────────────
     // Build a map of message_row_id → (text, sender_jid, from_me, timestamp)
@@ -286,14 +294,58 @@ pub fn extract_from_msgstore(
         0
     };
 
+    // ── §2.6 Anti-forensics detectors ────────────────────────────────────────
+
+    // Collect live message IDs for thumbnail orphan detection.
+    let live_message_ids: HashSet<i64> = chats.values()
+        .flat_map(|c| c.messages.iter().map(|m| m.id))
+        .collect();
+    let total_messages = live_message_ids.len() as u32;
+
+    // Collect message_thumbnails row IDs.
+    let thumbnail_records = by_table
+        .get("message_thumbnails")
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    let thumbnail_row_ids: Vec<i64> = thumbnail_records
+        .iter()
+        .filter_map(|r| r.row_id)
+        .collect();
+
+    let chats_vec: Vec<_> = chats.into_values().collect();
+
+    // Build a temporary ExtractionResult for rowid reuse detection.
+    let tmp_result = ExtractionResult {
+        chats: chats_vec.clone(),
+        contacts: Vec::new(),
+        calls: calls.clone(),
+        wal_deltas: wal_deltas.clone(),
+        timezone_offset_seconds: Some(tz_offset_secs),
+        schema_version,
+        forensic_warnings: Vec::new(),
+        group_participant_events: group_participant_events.clone(),
+        extraction_started_at: None,
+        extraction_finished_at: None,
+        wal_snapshots: vec![],
+    };
+
+    let mut forensic_warnings = Vec::new();
+    forensic_warnings.extend(detect_duplicate_stanza_ids(&key_id_map));
+    forensic_warnings.extend(detect_thumbnail_orphans(
+        &thumbnail_row_ids,
+        &live_message_ids,
+        total_messages,
+    ));
+    forensic_warnings.extend(detect_rowid_reuse(&tmp_result));
+
     Ok(ExtractionResult {
-        chats: chats.into_values().collect(),
+        chats: chats_vec,
         contacts: Vec::new(),
         calls,
         wal_deltas,
         timezone_offset_seconds: Some(tz_offset_secs),
         schema_version,
-        forensic_warnings: Vec::new(),
+        forensic_warnings,
         group_participant_events,
         extraction_started_at: None,
         extraction_finished_at: None,
@@ -342,6 +394,74 @@ pub fn extract_parallel(
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/// Build a map of key_id (XMPP stanza ID) → list of message row_ids.
+///
+/// Parses the CREATE TABLE DDL for the `message` table to determine the
+/// zero-based values[] index of the `key_id` column (accounting for the
+/// leading Null at index 0 for the INTEGER PRIMARY KEY). Returns an empty
+/// map if the column doesn't exist in this schema.
+fn build_key_id_map(
+    msg_records: &[&RecoveredRecord],
+    ddl_map: &HashMap<String, String>,
+) -> HashMap<String, Vec<i64>> {
+    // Find the values[] index for key_id by parsing the DDL column list.
+    // The btree walker puts INTEGER PRIMARY KEY at values[0] as Null,
+    // so real column n (1-based in DDL order after _id) → values[n].
+    let key_id_idx = match ddl_map.get("message") {
+        Some(ddl) => key_id_column_index(ddl),
+        None => return HashMap::new(),
+    };
+    let Some(idx) = key_id_idx else {
+        return HashMap::new();
+    };
+
+    let mut map: HashMap<String, Vec<i64>> = HashMap::new();
+    for rec in msg_records {
+        let row_id = match rec.row_id {
+            Some(id) => id,
+            None => continue,
+        };
+        if let Some(SqlValue::Text(kid)) = rec.values.get(idx) {
+            if !kid.is_empty() {
+                map.entry(kid.clone()).or_default().push(row_id);
+            }
+        }
+    }
+    map
+}
+
+/// Parse a CREATE TABLE DDL string and return the 1-based values[] index
+/// for the `key_id` column (i.e. column position counting from 1, since
+/// index 0 is the INTEGER PRIMARY KEY alias Null).
+///
+/// Returns `None` if the column is not found.
+fn key_id_column_index(ddl: &str) -> Option<usize> {
+    // Strip everything up to the first '(' and after the last ')'.
+    let start = ddl.find('(')?;
+    let end = ddl.rfind(')')?;
+    let cols_str = &ddl[start + 1..end];
+
+    // Split on commas (naive but sufficient for well-formed SQLite DDL).
+    // Column 0 in values[] is the INTEGER PRIMARY KEY (always first column).
+    // Real columns start at index 1 in values[].
+    let mut idx = 0usize;
+    for col_def in cols_str.split(',') {
+        let col_def = col_def.trim();
+        // Extract first token as column name (may be quoted with `backticks` or plain).
+        let col_name = col_def
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_matches('`')
+            .trim_matches('"');
+        if col_name.eq_ignore_ascii_case("key_id") {
+            return Some(idx);
+        }
+        idx += 1;
+    }
+    None
+}
 
 /// WhatsApp message types that represent media content.
 fn is_media_type(msg_type: i32) -> bool {
