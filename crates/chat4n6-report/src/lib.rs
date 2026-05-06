@@ -91,6 +91,9 @@ impl ReportGenerator {
         // --- timeline.html ---
         self.render_timeline(&base_ctx, result, output_dir)?;
 
+        // --- snapshots.html (only if wal_snapshots present) ---
+        self.render_snapshots(&base_ctx, result, output_dir)?;
+
         // --- thread-view.html ---
         let thread_html = crate::thread_view::render_thread_view(result, case_name);
         std::fs::write(output_dir.join("thread-view.html"), thread_html)?;
@@ -407,6 +410,54 @@ impl ReportGenerator {
             .render("timeline.html", &ctx)
             .context("render timeline.html")?;
         std::fs::write(out.join("timeline.html"), html)?;
+        Ok(())
+    }
+
+    fn render_snapshots(&self, base: &BaseCtx, result: &ExtractionResult, out: &Path) -> Result<()> {
+        if result.wal_snapshots.is_empty() {
+            return Ok(());
+        }
+
+        // Build ROWID → chat-slug lookup from all messages.
+        let mut rowid_to_chat: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        for chat in &result.chats {
+            let slug = chat_dir_name(chat.id, chat.name.as_deref().unwrap_or(&chat.jid));
+            for msg in &chat.messages {
+                rowid_to_chat.insert(msg.id, slug.clone());
+            }
+        }
+
+        // Helper: convert a slice of ROWIDs into [{rowid, chat_slug}] entries.
+        let resolve = |ids: &[i64]| -> Vec<Value> {
+            ids.iter().map(|&id| {
+                let slug = rowid_to_chat.get(&id).cloned().unwrap_or_default();
+                serde_json::json!({ "rowid": id, "chat_slug": if slug.is_empty() { Value::Null } else { Value::String(slug) } })
+            }).collect()
+        };
+
+        let snapshot_rows: Vec<Value> = result.wal_snapshots.iter().map(|snap| {
+            serde_json::json!({
+                "frame_number": snap.frame_number,
+                "commit_marker": snap.commit_marker,
+                "frame_offset": snap.frame_offset,
+                "added": resolve(&snap.messages_added),
+                "removed": resolve(&snap.messages_removed),
+                "mutated": resolve(&snap.messages_mutated),
+            })
+        }).collect();
+
+        let mut ctx = TeraCtx::new();
+        ctx.insert("case_name", &base.case_name);
+        ctx.insert("generated_at_utc", &base.generated_at_utc);
+        ctx.insert("timezone_label", &base.timezone_label);
+        ctx.insert("root_href", &"");
+        ctx.insert("snapshots", &snapshot_rows);
+
+        let html = self
+            .tera
+            .render("snapshots.html", &ctx)
+            .context("render snapshots.html")?;
+        std::fs::write(out.join("snapshots.html"), html)?;
         Ok(())
     }
 }

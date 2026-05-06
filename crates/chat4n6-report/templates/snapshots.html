@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}WAL Snapshot Timeline — chat4n6{% endblock %}
+{% block content %}
+<h2>WAL Snapshot Timeline</h2>
+<p>Per-frame WAL changes: messages added (green), removed (red), mutated (amber).</p>
+<style>
+.frame-card{background:#fff;border:1px solid #ddd;border-radius:4px;margin-bottom:1rem;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.frame-header{display:flex;align-items:center;gap:1rem;padding:.5rem .8rem;border-radius:4px 4px 0 0;font-weight:bold;font-size:.9rem}
+.frame-committed .frame-header{background:#e8f5e9;border-left:4px solid #2e7d32}
+.frame-uncommitted .frame-header{background:#fff3e0;border-left:4px solid #f57c00}
+.frame-body{padding:.5rem .8rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:.5rem}
+.col-added{color:#2e7d32;font-weight:bold}
+.col-removed{color:#c62828;font-weight:bold}
+.col-mutated{color:#e65100;font-weight:bold}
+.rowid-list{margin:.3rem 0;list-style:none;padding:0}
+.rowid-list li{display:inline-block;margin:.1rem;padding:.1rem .4rem;border-radius:3px;font-size:.8rem;font-family:monospace}
+.rowid-list.added li{background:#e8f5e9}
+.rowid-list.removed li{background:#ffebee}
+.rowid-list.mutated li{background:#fff3e0}
+.badge-commit{display:inline-block;padding:.1rem .4rem;border-radius:3px;font-size:.75rem;color:#fff}
+.badge-committed{background:#2e7d32}
+.badge-uncommitted{background:#f57c00}
+</style>
+{% for frame in snapshots %}
+<div class="frame-card {% if frame.commit_marker %}frame-committed{% else %}frame-uncommitted{% endif %}">
+  <div class="frame-header">
+    Frame {{ frame.frame_number }}
+    {% if frame.commit_marker %}
+      <span class="badge-commit badge-committed">COMMITTED</span>
+    {% else %}
+      <span class="badge-commit badge-uncommitted">UNCOMMITTED</span>
+    {% endif %}
+    <span style="font-size:.8rem;color:#555;font-weight:normal">offset: {{ frame.frame_offset }}</span>
+  </div>
+  <div class="frame-body">
+    <div>
+      <div class="col-added">Added ({{ frame.added | length }})</div>
+      <ul class="rowid-list added">
+        {% for entry in frame.added %}
+        <li>
+          {% if entry.chat_slug %}
+            <a href="../../chats/{{ entry.chat_slug }}/page_001.html#msg-{{ entry.rowid }}">{{ entry.rowid }}</a>
+          {% else %}
+            {{ entry.rowid }}
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div>
+      <div class="col-removed">Removed ({{ frame.removed | length }})</div>
+      <ul class="rowid-list removed">
+        {% for entry in frame.removed %}
+        <li>
+          {% if entry.chat_slug %}
+            <a href="../../chats/{{ entry.chat_slug }}/page_001.html#msg-{{ entry.rowid }}">{{ entry.rowid }}</a>
+          {% else %}
+            {{ entry.rowid }}
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div>
+      <div class="col-mutated">Mutated ({{ frame.mutated | length }})</div>
+      <ul class="rowid-list mutated">
+        {% for entry in frame.mutated %}
+        <li>
+          {% if entry.chat_slug %}
+            <a href="../../chats/{{ entry.chat_slug }}/page_001.html#msg-{{ entry.rowid }}">{{ entry.rowid }}</a>
+          {% else %}
+            {{ entry.rowid }}
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}
