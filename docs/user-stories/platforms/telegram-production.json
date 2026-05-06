@@ -2,11 +2,11 @@
   {
     "description": "Telegram forwarded message populates Message.forwarded_from with origin metadata",
     "steps": ["cargo test -p chat4n6-telegram -- forwarded_from passes"],
-    "passes": false
+    "passes": true
   },
   {
     "description": "UnresolvedForwardSource is emitted when fwd_from_id is not in users table",
     "steps": ["cargo test -p chat4n6-telegram -- unresolved_forward_source passes"],
-    "passes": false
+    "passes": true
   }
 ]

@@ -16,7 +16,9 @@ use std::collections::{HashMap, HashSet};
 ///   users:    [0]=Null(uid), [1]=name
 ///   dialogs:  [0]=Null(did), [1]=date, [2]=last_mid
 ///   messages: [0]=Null(mid), [1]=uid, [2]=date, [3]=out, [4]=data,
-///             [5]=send_state, [6]=read_state
+///             [5]=send_state, [6]=read_state,
+///             [7]=fwd_from_id (optional), [8]=fwd_from_name (optional),
+///             [9]=fwd_date (optional)
 ///   media_v4: [0]=mid, [1]=uid, [2]=date, [3]=type, [4]=data  (no INTEGER PRIMARY KEY)
 ///   tgcalls:  [0]=Null(id), [1]=uid, [2]=date, [3]=out, [4]=duration, [5]=video
 pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<ExtractionResult> {
@@ -42,6 +44,7 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
 
     // Process messages → grouped by uid (dialog ID)
     let mut chats: HashMap<i64, Chat> = HashMap::new();
+    let mut forensic_warnings: Vec<ForensicWarning> = Vec::new();
     let msg_records = by_table
         .get("messages")
         .map(|v| v.as_slice())
@@ -95,6 +98,60 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
             MessageContent::Text(String::new())
         };
 
+        // Forward detection: columns [7]=fwd_from_id, [8]=fwd_from_name, [9]=fwd_date.
+        // These are optional — only present when the DB was created/ALTERed with them.
+        // Gracefully skip if absent (production DBs without these columns are fine).
+        let fwd_from_id: Option<i64> = match r.values.get(7) {
+            Some(SqlValue::Int(n)) if *n != 0 => Some(*n),
+            _ => None,
+        };
+        let fwd_from_name: Option<String> = match r.values.get(8) {
+            Some(SqlValue::Text(s)) => Some(s.clone()),
+            _ => None,
+        };
+        let fwd_date: Option<i64> = match r.values.get(9) {
+            Some(SqlValue::Int(n)) => Some(*n),
+            _ => None,
+        };
+
+        let (is_forwarded, forwarded_from) = if let Some(fwd_id) = fwd_from_id {
+            let original_timestamp =
+                fwd_date.map(|ts| ForensicTimestamp::from_millis(ts * 1000, tz_offset_secs));
+
+            let origin = if fwd_id < 0 {
+                // Negative ID → Telegram channel
+                ForwardOrigin {
+                    origin_kind: ForwardOriginKind::Channel,
+                    origin_id: format!("tg-channel://{}", fwd_id.unsigned_abs()),
+                    origin_name: fwd_from_name,
+                    original_timestamp,
+                }
+            } else if let Some(name) = users_map.get(&fwd_id).cloned() {
+                // Positive ID found in users table → User
+                ForwardOrigin {
+                    origin_kind: ForwardOriginKind::User,
+                    origin_id: fwd_id.to_string(),
+                    origin_name: Some(name),
+                    original_timestamp,
+                }
+            } else {
+                // Positive ID not found → emit warning, Unknown
+                forensic_warnings.push(ForensicWarning::UnresolvedForwardSource {
+                    message_id: mid,
+                    forward_from_id: fwd_id,
+                });
+                ForwardOrigin {
+                    origin_kind: ForwardOriginKind::Unknown,
+                    origin_id: fwd_id.to_string(),
+                    origin_name: fwd_from_name,
+                    original_timestamp,
+                }
+            };
+            (true, Some(origin))
+        } else {
+            (false, None)
+        };
+
         let msg = Message {
             id: mid,
             chat_id: uid,
@@ -108,10 +165,10 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
             row_offset: r.offset,
             starred: false,
             forward_score: None,
-            is_forwarded: false,
+            is_forwarded,
             edit_history: Vec::new(),
             receipts: Vec::new(),
-            forwarded_from: None,
+            forwarded_from,
         };
 
         let chat = chats.entry(uid).or_insert_with(|| {
@@ -146,7 +203,7 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         wal_deltas: Vec::new(),
         timezone_offset_seconds: Some(tz_offset_secs),
         schema_version: 0,
-        forensic_warnings: Vec::new(),
+        forensic_warnings,
         group_participant_events: Vec::new(),
         extraction_started_at: None,
         extraction_finished_at: None,
