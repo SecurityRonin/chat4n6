@@ -1,10 +1,10 @@
 # chat4n6
 
-> Multi-platform chat forensics from Android and iOS images — recovers what commercial tools miss.
+> Forensic extraction for WhatsApp, Signal, and Telegram — recovers what commercial tools miss.
 
 When a suspect deletes a message, the data rarely disappears. It lingers in SQLite freelists, write-ahead logs, rollback journals, the in-app search index, intra-page gaps, and unallocated disk space — often intact and recoverable, if you know where to look.
 
-`chat4n6` is a free, open-source forensic tool that systematically recovers this evidence from Android filesystem images, iOS backups, and DAR archives. It goes **eight layers deep** into each database, tags every recovered record with its evidence source and confidence score, detects anti-forensic tampering, and produces court-ready HTML reports — all from a single command.
+`chat4n6` is a free, open-source forensic tool that systematically recovers this evidence from Android filesystem images, iOS backups, and DAR archives. It supports WhatsApp (Android and iOS), Signal (Android), and Telegram (Android). It goes **eight layers deep** into each database, tags every recovered record with its evidence source and confidence score, detects anti-forensic tampering, and produces court-ready HTML reports — all from a single command.
 
 **No SQLite C library. No Python. No runtime dependencies. One binary.**
 
