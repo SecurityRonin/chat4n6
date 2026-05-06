@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Analytics — chat4n6{% endblock %}
+{% block content %}
+<h2>Forensic Analytics</h2>
+
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1.5rem">
+  <div style="background:#fff;border-radius:4px;padding:1rem;box-shadow:0 1px 3px rgba(0,0,0,.1);text-align:center">
+    <div style="font-size:2rem;font-weight:bold;color:#1a1a2e">{{ total_messages }}</div>
+    <div style="color:#555;font-size:.85rem">Total Messages</div>
+  </div>
+  <div style="background:#fff;border-radius:4px;padding:1rem;box-shadow:0 1px 3px rgba(0,0,0,.1);text-align:center">
+    <div style="font-size:2rem;font-weight:bold;color:#1a1a2e">{{ total_chats }}</div>
+    <div style="color:#555;font-size:.85rem">Total Chats</div>
+  </div>
+  <div style="background:#fff;border-radius:4px;padding:1rem;box-shadow:0 1px 3px rgba(0,0,0,.1);text-align:center">
+    <div style="font-size:2rem;font-weight:bold;color:#1a1a2e">{{ total_calls }}</div>
+    <div style="color:#555;font-size:.85rem">Total Calls</div>
+  </div>
+</div>
+
+{% if impossible_timestamp_count > 0 %}
+<div style="background:#fff3e0;border-left:4px solid #f57c00;padding:.7rem 1rem;margin-bottom:1rem;border-radius:0 4px 4px 0">
+  <strong>Warning:</strong> {{ impossible_timestamp_count }} message(s) have timestamps after extraction completion.
+</div>
+{% endif %}
+
+<h3>Message Activity by Hour (UTC)</h3>
+<div style="background:#fff;padding:1rem;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,.1);margin-bottom:1.5rem">
+  <div style="display:flex;align-items:flex-end;gap:2px;height:80px">
+    {% for bar in hourly_bars %}
+    <div title="Hour {{ bar.hour }}: {{ bar.count }} messages"
+         style="flex:1;background:#1a1a2e;min-height:2px;height:{{ bar.pct }}%;position:relative">
+    </div>
+    {% endfor %}
+  </div>
+  <div style="display:flex;justify-content:space-between;font-size:.7rem;color:#888;margin-top:.3rem">
+    <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:00</span>
+  </div>
+</div>
+
+<h3>Source Distribution</h3>
+<table>
+<tr><th>Evidence Source</th><th>Message Count</th></tr>
+{% for item in source_distribution %}
+<tr>
+  <td><span class="badge badge-{{ item.source_class }}">{{ item.source }}</span></td>
+  <td>{{ item.count }}</td>
+</tr>
+{% endfor %}
+</table>
+
+{% if per_chat_deletion_rate %}
+<h3>Deletion Rate per Chat</h3>
+<table>
+<tr><th>Chat JID</th><th>Deletion Rate</th></tr>
+{% for item in per_chat_deletion_rate %}
+<tr>
+  <td>{{ item.jid }}</td>
+  <td>{{ item.rate }}%</td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
+{% endblock %}

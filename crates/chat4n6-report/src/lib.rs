@@ -95,6 +95,9 @@ impl ReportGenerator {
         // --- snapshots.html (only if wal_snapshots present) ---
         self.render_snapshots(&base_ctx, result, output_dir)?;
 
+        // --- stats.html + stats.json ---
+        self.render_stats(&base_ctx, result, output_dir)?;
+
         // --- thread-view.html ---
         let thread_html = crate::thread_view::render_thread_view(result, case_name);
         std::fs::write(output_dir.join("thread-view.html"), thread_html)?;
@@ -459,6 +462,62 @@ impl ReportGenerator {
             .render("snapshots.html", &ctx)
             .context("render snapshots.html")?;
         std::fs::write(out.join("snapshots.html"), html)?;
+        Ok(())
+    }
+
+    fn render_stats(&self, base: &BaseCtx, result: &ExtractionResult, out: &Path) -> Result<()> {
+        let bundle = stats::compute(result);
+
+        // Write stats.json
+        let json = serde_json::to_string_pretty(&bundle)?;
+        std::fs::write(out.join("stats.json"), json)?;
+
+        // Build hourly bar chart data (normalize to 0-100% height).
+        let max_hour = *bundle.hourly_counts.iter().max().unwrap_or(&1);
+        let max_hour = max_hour.max(1);
+        let hourly_bars: Vec<Value> = bundle.hourly_counts.iter().enumerate().map(|(h, &count)| {
+            serde_json::json!({
+                "hour": h,
+                "count": count,
+                "pct": count * 100 / max_hour,
+            })
+        }).collect();
+
+        // Build source distribution for template.
+        let source_distribution: Vec<Value> = bundle.source_distribution.iter().map(|(src, cnt)| {
+            serde_json::json!({
+                "source": src,
+                "source_class": src.to_lowercase().replace(' ', "-"),
+                "count": cnt,
+            })
+        }).collect();
+
+        // Build deletion rate for template.
+        let per_chat_deletion_rate: Vec<Value> = bundle.per_chat_deletion_rate.iter().map(|(jid, rate)| {
+            serde_json::json!({
+                "jid": jid,
+                "rate": format!("{:.1}", rate),
+            })
+        }).collect();
+
+        let mut ctx = TeraCtx::new();
+        ctx.insert("case_name", &base.case_name);
+        ctx.insert("generated_at_utc", &base.generated_at_utc);
+        ctx.insert("timezone_label", &base.timezone_label);
+        ctx.insert("root_href", &"");
+        ctx.insert("total_messages", &bundle.total_messages);
+        ctx.insert("total_chats", &bundle.total_chats);
+        ctx.insert("total_calls", &bundle.total_calls);
+        ctx.insert("impossible_timestamp_count", &bundle.impossible_timestamp_count);
+        ctx.insert("hourly_bars", &hourly_bars);
+        ctx.insert("source_distribution", &source_distribution);
+        ctx.insert("per_chat_deletion_rate", &per_chat_deletion_rate);
+
+        let html = self
+            .tera
+            .render("stats.html", &ctx)
+            .context("render stats.html")?;
+        std::fs::write(out.join("stats.html"), html)?;
         Ok(())
     }
 }
