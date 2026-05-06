@@ -1,5 +1,6 @@
 pub mod case_uco;
 pub mod manifest;
+pub mod media_export;
 pub mod paginator;
 pub mod signed_pdf;
 pub mod stats;
@@ -1569,5 +1570,133 @@ mod tests {
         let bundle = crate::stats::compute(&result);
         assert_eq!(bundle.impossible_timestamp_count, 1,
             "should count 1 message with timestamp after extraction_finished_at");
+    }
+
+    // ── §2.4 Media Export Pipeline tests ────────────────────────────────────
+
+    #[cfg(test)]
+    mod media_export_tests {
+        use super::*;
+        use crate::media_export;
+        use chat4n6_fs::PlaintextDirFs;
+        use std::fs;
+
+        fn make_media_result(file_path: &str) -> ExtractionResult {
+            let msg = Message {
+                id: 1,
+                chat_id: 1,
+                sender_jid: Some("other@s.whatsapp.net".to_string()),
+                from_me: false,
+                timestamp: ForensicTimestamp::from_millis(1710513127000, 0),
+                content: MessageContent::Media(MediaRef {
+                    file_path: file_path.to_string(),
+                    mime_type: "image/jpeg".to_string(),
+                    file_size: 9,
+                    extracted_name: None,
+                    thumbnail_b64: None,
+                    duration_secs: None,
+                    file_hash: None,
+                    encrypted_hash: None,
+                    cdn_url: None,
+                    media_key_b64: None,
+                }),
+                reactions: vec![],
+                quoted_message: None,
+                source: EvidenceSource::Live,
+                row_offset: 0,
+                starred: false,
+                forward_score: None,
+                is_forwarded: false,
+                edit_history: vec![],
+                receipts: vec![],
+                forwarded_from: None,
+            };
+            let chat = Chat {
+                id: 1,
+                jid: "test@s.whatsapp.net".to_string(),
+                name: None,
+                is_group: false,
+                messages: vec![msg],
+                archived: false,
+            };
+            ExtractionResult {
+                chats: vec![chat],
+                contacts: vec![],
+                calls: vec![],
+                wal_deltas: vec![],
+                timezone_offset_seconds: Some(0),
+                schema_version: 200,
+                forensic_warnings: vec![],
+                group_participant_events: vec![],
+                extraction_started_at: None,
+                extraction_finished_at: None,
+                wal_snapshots: vec![],
+            }
+        }
+
+        #[test]
+        fn media_export_copies_file_and_sets_hash() {
+            let input_dir = TempDir::new().unwrap();
+            // Create the media file in the input dir
+            let media_subdir = input_dir.path().join("data/media");
+            fs::create_dir_all(&media_subdir).unwrap();
+            fs::write(media_subdir.join("test.jpg"), b"fake-jpeg").unwrap();
+
+            let mut result = make_media_result("data/media/test.jpg");
+            let output_dir = TempDir::new().unwrap();
+
+            let fs = PlaintextDirFs::new(input_dir.path()).unwrap();
+            media_export::export_media(&mut result, &fs, output_dir.path()).unwrap();
+
+            // File must be copied to output_dir/media/by-chat/<slug>/test.jpg
+            let slug = "chat_1_test_s_whatsapp_net";
+            let dest = output_dir.path().join(format!("media/by-chat/{slug}/test.jpg"));
+            assert!(dest.exists(), "exported file must exist at {}", dest.display());
+
+            let bytes = fs::read(&dest).unwrap();
+            assert_eq!(bytes, b"fake-jpeg", "file contents must be preserved");
+
+            // encrypted_hash must be set on the media ref
+            if let MessageContent::Media(ref mr) = result.chats[0].messages[0].content {
+                assert!(mr.encrypted_hash.is_some(), "encrypted_hash must be set after export");
+                // SHA-256 of b"fake-jpeg" = known value
+                let expected = {
+                    use sha2::{Sha256, Digest};
+                    format!("{:x}", Sha256::digest(b"fake-jpeg"))
+                };
+                assert_eq!(mr.encrypted_hash.as_deref().unwrap(), expected,
+                    "encrypted_hash must equal SHA-256 of file bytes");
+            } else {
+                panic!("message content should still be Media");
+            }
+        }
+
+        #[test]
+        fn exhibit_index_csv_has_header_and_one_row() {
+            let input_dir = TempDir::new().unwrap();
+            let media_subdir = input_dir.path().join("data/media");
+            fs::create_dir_all(&media_subdir).unwrap();
+            fs::write(media_subdir.join("test.jpg"), b"fake-jpeg").unwrap();
+
+            let mut result = make_media_result("data/media/test.jpg");
+            let output_dir = TempDir::new().unwrap();
+
+            let fs = PlaintextDirFs::new(input_dir.path()).unwrap();
+            media_export::export_media(&mut result, &fs, output_dir.path()).unwrap();
+
+            let csv_path = output_dir.path().join("EXHIBIT-INDEX.csv");
+            assert!(csv_path.exists(), "EXHIBIT-INDEX.csv must be generated");
+
+            let csv = std::fs::read_to_string(&csv_path).unwrap();
+            let lines: Vec<&str> = csv.lines().collect();
+            assert_eq!(lines.len(), 2, "CSV must have header + 1 data row, got: {:?}", lines);
+
+            // Header must have expected columns
+            assert!(lines[0].contains("sha256") || lines[0].contains("SHA256"),
+                "CSV header must contain sha256 column");
+
+            // Data row must have non-empty sha256
+            assert!(!lines[1].is_empty(), "data row must not be empty");
+        }
     }
 }
