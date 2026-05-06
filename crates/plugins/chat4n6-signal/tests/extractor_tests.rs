@@ -4,7 +4,7 @@
 /// `tests/fixtures/signal_schema.sql`.  The fixture is compiled into a
 /// plaintext SQLite blob at test-time using rusqlite; no file I/O at runtime.
 use chat4n6_signal::extractor::extract_from_signal_db;
-use chat4n6_plugin_api::MessageContent;
+use chat4n6_plugin_api::{ForensicWarning, MessageContent};
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -293,5 +293,114 @@ fn t19_timezone_offset_preserved() {
         result.timezone_offset_seconds,
         Some(8 * 3600),
         "timezone_offset_seconds should reflect the passed tz_offset"
+    );
+}
+
+// ── T20: DisappearingTimerActive warning ─────────────────────────────────────
+
+/// Build a DB where thread 1 has expires_in=86400 and 3 vanished sms rows.
+fn make_disappearing_timer_db() -> Vec<u8> {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE recipient (_id INTEGER PRIMARY KEY, e164 TEXT, aci TEXT,
+             group_id TEXT, system_display_name TEXT, profile_joined_name TEXT, type INTEGER DEFAULT 0);
+         CREATE TABLE thread (_id INTEGER PRIMARY KEY, recipient_id INTEGER NOT NULL,
+             archived INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0,
+             expires_in INTEGER DEFAULT 0);
+         CREATE TABLE sms (_id INTEGER PRIMARY KEY, thread_id INTEGER, date INTEGER,
+             date_received INTEGER, type INTEGER DEFAULT 0, body TEXT,
+             from_recipient_id INTEGER, read INTEGER DEFAULT 0, remote_deleted INTEGER DEFAULT 0,
+             expires_started INTEGER DEFAULT 0);
+         CREATE TABLE part (_id INTEGER PRIMARY KEY, mid INTEGER NOT NULL,
+             content_type TEXT, name TEXT, file_size INTEGER DEFAULT 0);
+         CREATE TABLE reaction (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
+             is_mms INTEGER NOT NULL DEFAULT 0, author_id INTEGER NOT NULL,
+             emoji TEXT NOT NULL, date_sent INTEGER NOT NULL, date_received INTEGER NOT NULL);
+         CREATE TABLE call (_id INTEGER PRIMARY KEY, call_id INTEGER NOT NULL,
+             message_id INTEGER NOT NULL, peer TEXT NOT NULL, type INTEGER NOT NULL,
+             direction INTEGER NOT NULL, event INTEGER NOT NULL, timestamp INTEGER NOT NULL);
+         INSERT INTO recipient VALUES (1, '+14155551234', 'uuid-a', NULL, 'Tester', 'Tester A', 0);
+         INSERT INTO thread VALUES (1, 1, 0, 4, 86400);
+         -- 3 vanished: body empty, expires_started non-zero
+         INSERT INTO sms VALUES (1, 1, 1710513127000, 1710513127001, 10485, '', 1, 1, 0, 1234567);
+         INSERT INTO sms VALUES (2, 1, 1710513200000, 1710513200001, 10485, '', 1, 1, 0, 1234568);
+         INSERT INTO sms VALUES (3, 1, 1710513300000, 1710513300001, 10485, '', 1, 1, 0, 1234569);
+         -- 1 normal message: body present, expires_started=0
+         INSERT INTO sms VALUES (4, 1, 1710513400000, 1710513400001, 10485, 'normal message', 1, 1, 0, 0);",
+    )
+    .unwrap();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+        .unwrap();
+    std::fs::read(tmp.path()).unwrap()
+}
+
+#[test]
+fn t20_disappearing_timer_active_warning() {
+    let db = make_disappearing_timer_db();
+    let result = extract_from_signal_db(&db, 0).unwrap();
+    let warning = result.forensic_warnings.iter().find(|w| {
+        matches!(
+            w,
+            ForensicWarning::DisappearingTimerActive { chat_id: 1, timer_seconds: 86400, vanished_count: 3 }
+        )
+    });
+    assert!(
+        warning.is_some(),
+        "expected DisappearingTimerActive {{ chat_id: 1, timer_seconds: 86400, vanished_count: 3 }}, got: {:?}",
+        result.forensic_warnings
+    );
+}
+
+// ── T21: SealedSenderUnresolved warning ──────────────────────────────────────
+
+/// Build a DB where sms has an envelope_type column and a row with bit 0x10 set
+/// from a from_recipient_id not in the recipient table.
+fn make_sealed_sender_db() -> Vec<u8> {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE recipient (_id INTEGER PRIMARY KEY, e164 TEXT, aci TEXT,
+             group_id TEXT, system_display_name TEXT, profile_joined_name TEXT, type INTEGER DEFAULT 0);
+         CREATE TABLE thread (_id INTEGER PRIMARY KEY, recipient_id INTEGER NOT NULL,
+             archived INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0,
+             expires_in INTEGER DEFAULT 0);
+         CREATE TABLE sms (_id INTEGER PRIMARY KEY, thread_id INTEGER, date INTEGER,
+             date_received INTEGER, type INTEGER DEFAULT 0, body TEXT,
+             from_recipient_id INTEGER, read INTEGER DEFAULT 0, remote_deleted INTEGER DEFAULT 0,
+             expires_started INTEGER DEFAULT 0, envelope_type INTEGER DEFAULT 0);
+         CREATE TABLE part (_id INTEGER PRIMARY KEY, mid INTEGER NOT NULL,
+             content_type TEXT, name TEXT, file_size INTEGER DEFAULT 0);
+         CREATE TABLE reaction (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
+             is_mms INTEGER NOT NULL DEFAULT 0, author_id INTEGER NOT NULL,
+             emoji TEXT NOT NULL, date_sent INTEGER NOT NULL, date_received INTEGER NOT NULL);
+         CREATE TABLE call (_id INTEGER PRIMARY KEY, call_id INTEGER NOT NULL,
+             message_id INTEGER NOT NULL, peer TEXT NOT NULL, type INTEGER NOT NULL,
+             direction INTEGER NOT NULL, event INTEGER NOT NULL, timestamp INTEGER NOT NULL);
+         INSERT INTO recipient VALUES (1, '+14155551234', 'uuid-alice', NULL, 'Alice', 'Alice A', 0);
+         INSERT INTO thread VALUES (5, 1, 0, 1, 0);
+         -- from_recipient_id=99 NOT in recipient table, envelope_type=16 (0x10 = sealed sender)
+         INSERT INTO sms VALUES (100, 5, 1710513127000, 1710513127001, 10485, 'sealed msg', 99, 1, 0, 0, 16);",
+    )
+    .unwrap();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+        .unwrap();
+    std::fs::read(tmp.path()).unwrap()
+}
+
+#[test]
+fn t21_sealed_sender_unresolved_warning() {
+    let db = make_sealed_sender_db();
+    let result = extract_from_signal_db(&db, 0).unwrap();
+    let warning = result.forensic_warnings.iter().find(|w| {
+        matches!(
+            w,
+            ForensicWarning::SealedSenderUnresolved { thread_id: 5, count: 1 }
+        )
+    });
+    assert!(
+        warning.is_some(),
+        "expected SealedSenderUnresolved {{ thread_id: 5, count: 1 }}, got: {:?}",
+        result.forensic_warnings
     );
 }
