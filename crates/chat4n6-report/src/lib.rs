@@ -2,6 +2,7 @@ pub mod case_uco;
 pub mod manifest;
 pub mod paginator;
 pub mod signed_pdf;
+pub mod stats;
 pub mod thread_view;
 pub mod ufdr;
 
@@ -1369,5 +1370,145 @@ mod tests {
             !out.path().join("snapshots.html").exists(),
             "snapshots.html must NOT be generated when wal_snapshots is empty"
         );
+    }
+
+    // ── §2.2 Stats/Analytics page tests ─────────────────────────────────────
+
+    fn make_stats_result() -> ExtractionResult {
+        use chrono::TimeZone;
+        // Three messages at UTC hours 0, 6, 12
+        let make_msg = |id: i64, hour: u32, content: MessageContent| -> Message {
+            let ts_ms = chrono::Utc.with_ymd_and_hms(2024, 3, 15, hour, 0, 0).unwrap().timestamp_millis();
+            Message {
+                id,
+                chat_id: 1,
+                sender_jid: Some("other@s.whatsapp.net".to_string()),
+                from_me: false,
+                timestamp: ForensicTimestamp::from_millis(ts_ms, 0),
+                content,
+                reactions: vec![],
+                quoted_message: None,
+                source: EvidenceSource::Live,
+                row_offset: 0,
+                starred: false,
+                forward_score: None,
+                is_forwarded: false,
+                edit_history: vec![],
+                receipts: vec![],
+                forwarded_from: None,
+            }
+        };
+        let chat = Chat {
+            id: 1,
+            jid: "test@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages: vec![
+                make_msg(1, 0, MessageContent::Text("midnight".to_string())),
+                make_msg(2, 6, MessageContent::Text("dawn".to_string())),
+                make_msg(3, 12, MessageContent::Text("noon".to_string())),
+            ],
+            archived: false,
+        };
+        ExtractionResult {
+            chats: vec![chat],
+            contacts: vec![],
+            calls: vec![],
+            wal_deltas: vec![],
+            timezone_offset_seconds: Some(0),
+            schema_version: 200,
+            forensic_warnings: vec![],
+            group_participant_events: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
+        }
+    }
+
+    #[test]
+    fn stats_heatmap_counts_messages_by_hour() {
+        let result = make_stats_result();
+        let bundle = crate::stats::compute(&result);
+        assert_eq!(bundle.hourly_counts[0], 1, "hour 0 should have 1 message");
+        assert_eq!(bundle.hourly_counts[6], 1, "hour 6 should have 1 message");
+        assert_eq!(bundle.hourly_counts[12], 1, "hour 12 should have 1 message");
+        assert_eq!(bundle.total_messages, 3, "total messages should be 3");
+    }
+
+    #[test]
+    fn stats_html_and_json_generated() {
+        let result = make_stats_result();
+        let out = TempDir::new().unwrap();
+        let gen = ReportGenerator::new().unwrap();
+        gen.render("StatsTest", &result, out.path()).unwrap();
+
+        assert!(out.path().join("stats.html").exists(), "stats.html must be generated");
+        assert!(out.path().join("stats.json").exists(), "stats.json must be generated");
+
+        let json_str = std::fs::read_to_string(out.path().join("stats.json")).unwrap();
+        let bundle: crate::stats::StatsBundle = serde_json::from_str(&json_str)
+            .expect("stats.json must deserialize back to StatsBundle");
+        assert_eq!(bundle.total_messages, 3);
+    }
+
+    #[test]
+    fn stats_impossible_timestamp_count() {
+        use chrono::{TimeZone, Duration};
+        let finished_at = chrono::Utc.with_ymd_and_hms(2024, 3, 15, 12, 0, 0).unwrap();
+        let future_ts_ms = (finished_at + Duration::days(1)).timestamp_millis();
+        let past_ts_ms = finished_at.timestamp_millis() - 1000;
+
+        let chat = Chat {
+            id: 1,
+            jid: "test@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages: vec![
+                Message {
+                    id: 1,
+                    chat_id: 1,
+                    sender_jid: None,
+                    from_me: true,
+                    timestamp: ForensicTimestamp::from_millis(future_ts_ms, 0),
+                    content: MessageContent::Text("future".to_string()),
+                    reactions: vec![],
+                    quoted_message: None,
+                    source: EvidenceSource::Live,
+                    row_offset: 0,
+                    starred: false,
+                    forward_score: None,
+                    is_forwarded: false,
+                    edit_history: vec![],
+                    receipts: vec![],
+                    forwarded_from: None,
+                },
+                Message {
+                    id: 2,
+                    chat_id: 1,
+                    sender_jid: None,
+                    from_me: true,
+                    timestamp: ForensicTimestamp::from_millis(past_ts_ms, 0),
+                    content: MessageContent::Text("past ok".to_string()),
+                    reactions: vec![],
+                    quoted_message: None,
+                    source: EvidenceSource::Live,
+                    row_offset: 0,
+                    starred: false,
+                    forward_score: None,
+                    is_forwarded: false,
+                    edit_history: vec![],
+                    receipts: vec![],
+                    forwarded_from: None,
+                },
+            ],
+            archived: false,
+        };
+        let mut result = ExtractionResult::default();
+        result.chats = vec![chat];
+        result.extraction_finished_at = Some(finished_at);
+
+        let bundle = crate::stats::compute(&result);
+        assert_eq!(bundle.impossible_timestamp_count, 1,
+            "should count 1 message with timestamp after extraction_finished_at");
     }
 }
