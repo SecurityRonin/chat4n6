@@ -82,16 +82,49 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         chat.messages.sort_by_key(|m| m.timestamp.utc);
     }
 
-    let contacts = extract_contacts(
-        by_table.get("ZWACONTACT").map(|v| v.as_slice()).unwrap_or(&[]),
+    // Build push-name map from ZWAPROFILEPUSHNAME.
+    let pushname_map = build_pushname_map(
+        by_table.get("ZWAPROFILEPUSHNAME").map(|v| v.as_slice()).unwrap_or(&[]),
     );
 
-    let calls = extract_calls(
+    // Apply push names as chat names where chat name is null.
+    for chat in chats.values_mut() {
+        if chat.name.is_none() {
+            if let Some(pn) = pushname_map.get(&chat.jid) {
+                chat.name = Some(pn.clone());
+            }
+        }
+    }
+
+    let contacts = extract_contacts(
+        by_table.get("ZWACONTACT").map(|v| v.as_slice()).unwrap_or(&[]),
+        &pushname_map,
+    );
+
+    // Collect calls from ZWACALLINFO (legacy) and ZWACALLEVENT (modern).
+    let mut calls = extract_calls(
         by_table.get("ZWACALLINFO").map(|v| v.as_slice()).unwrap_or(&[]),
         tz_offset_secs,
     );
+    calls.extend(extract_calls_event(
+        by_table.get("ZWACALLEVENT").map(|v| v.as_slice()).unwrap_or(&[]),
+        tz_offset_secs,
+    ));
 
-    let forensic_warnings = detect_zsort_gaps(&zsort_by_chat, &chats);
+    let mut forensic_warnings = detect_zsort_gaps(&zsort_by_chat, &chats);
+
+    // CoreData PK gap detection.
+    let zpk_records = by_table.get("Z_PRIMARYKEY").map(|v| v.as_slice()).unwrap_or(&[]);
+    // Count non-live records as "recovered" (freelist, carved, WAL-deleted, etc.)
+    let recovered_count = msg_records
+        .iter()
+        .filter(|r| r.source != EvidenceSource::Live)
+        .count();
+    forensic_warnings.extend(detect_coredata_pk_gaps(
+        zpk_records,
+        msg_records,
+        recovered_count,
+    ));
 
     Ok(ExtractionResult {
         chats: chats.into_values().collect(),
@@ -359,8 +392,8 @@ fn record_to_message(
     })
 }
 
-/// ZWACONTACT → Contact
-fn extract_contacts(records: &[&RecoveredRecord]) -> Vec<Contact> {
+/// ZWACONTACT → Contact, with push-name override.
+fn extract_contacts(records: &[&RecoveredRecord], pushname_map: &HashMap<String, String>) -> Vec<Contact> {
     records
         .iter()
         .filter_map(|r| {
@@ -372,15 +405,284 @@ fn extract_contacts(records: &[&RecoveredRecord]) -> Vec<Contact> {
                 Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
                 _ => None,
             };
-            let display_name = match r.values.get(3) {
-                Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-                _ => None,
-            };
+            let display_name = pushname_map.get(&jid).cloned().or_else(|| {
+                match r.values.get(3) {
+                    Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                }
+            });
             Some(Contact {
                 jid,
                 display_name,
                 phone_number,
                 source: r.source.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Compare Z_PRIMARYKEY.Z_MAX for ZWAMESSAGE against live + recovered rows.
+/// Emits CoreDataPkGap when rows vanished without freelist traces.
+fn detect_coredata_pk_gaps(
+    zpk_records: &[&RecoveredRecord],
+    msg_records: &[&RecoveredRecord],
+    recovered_count: usize,
+) -> Vec<ForensicWarning> {
+    // Z_PRIMARYKEY columns: Z_PK=0, Z_ENT=1, Z_NAME=2, Z_MAX=3
+    let expected_max = zpk_records.iter().find_map(|r| {
+        let name = match r.values.get(2) {
+            Some(SqlValue::Text(s)) => s.as_str(),
+            _ => return None,
+        };
+        if name != "ZWAMESSAGE" {
+            return None;
+        }
+        match r.values.get(3) {
+            Some(SqlValue::Int(n)) => Some(*n as u32),
+            _ => None,
+        }
+    });
+
+    let Some(expected_max) = expected_max else {
+        return Vec::new();
+    };
+
+    let observed_max = msg_records
+        .iter()
+        .filter_map(|r| r.row_id)
+        .map(|id| id as u32)
+        .max()
+        .unwrap_or(0);
+
+    let rc = recovered_count as u32;
+    if expected_max > observed_max + rc {
+        vec![ForensicWarning::CoreDataPkGap {
+            entity_name: "ZWAMESSAGE".to_string(),
+            expected_max,
+            observed_max,
+            recovered_count: rc,
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal ChatStorage with ZWAPROFILEPUSHNAME to test push-name resolution.
+    fn make_pushname_db() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            PRAGMA user_version = 32;
+            CREATE TABLE ZWACHATSESSION (
+                Z_PK INTEGER PRIMARY KEY,
+                ZARCHIVED INTEGER DEFAULT 0,
+                ZCONTACTIDENTIFIER TEXT,
+                ZPARTNERNAME TEXT,
+                ZLASTMESSAGEDATE REAL,
+                ZSESSIONTYPE INTEGER DEFAULT 0
+            );
+            CREATE TABLE ZWAMESSAGE (
+                Z_PK INTEGER PRIMARY KEY,
+                ZCHATSESSION INTEGER,
+                ZMESSAGEDATE REAL NOT NULL,
+                ZTEXT TEXT,
+                ZMESSAGETYPE INTEGER DEFAULT 0,
+                ZMEDIAITEM INTEGER,
+                ZISFROMME INTEGER DEFAULT 0,
+                ZFROMJID TEXT,
+                ZSTARRED INTEGER DEFAULT 0,
+                ZISFORWARDED INTEGER DEFAULT 0,
+                ZDELETED INTEGER DEFAULT 0,
+                ZSORT REAL
+            );
+            CREATE TABLE ZWAMEDIAITEM (Z_PK INTEGER PRIMARY KEY, ZMESSAGE INTEGER, ZMIMETYPE TEXT, ZFILESIZE INTEGER DEFAULT 0, ZLOCALPATH TEXT, ZMEDIAURL TEXT);
+            CREATE TABLE ZWACONTACT (Z_PK INTEGER PRIMARY KEY, ZABUSEIDENTIFIER TEXT, ZPHONENUMBER TEXT, ZFULLNAME TEXT);
+            CREATE TABLE ZWACALLINFO (Z_PK INTEGER PRIMARY KEY, ZCALLDATE REAL NOT NULL, ZDURATION INTEGER DEFAULT 0, ZISVIDEOCALL INTEGER DEFAULT 0, ZPARTNERCONTACT INTEGER, ZCALLTYPE INTEGER DEFAULT 0);
+            CREATE TABLE ZWAPROFILEPUSHNAME (
+                Z_PK INTEGER PRIMARY KEY,
+                ZJID TEXT,
+                ZPUSHNAME TEXT
+            );
+            INSERT INTO ZWACHATSESSION VALUES (1, 0, '4155550100@s.whatsapp.net', NULL, 732205927.0, 0);
+            INSERT INTO ZWAMESSAGE VALUES (1, 1, 732205927.0, 'hello', 0, NULL, 1, NULL, 0, 0, 0, 1.0);
+            INSERT INTO ZWACONTACT VALUES (1, '4155550100@s.whatsapp.net', '+14155550100', NULL);
+            INSERT INTO ZWAPROFILEPUSHNAME VALUES (1, '4155550100@s.whatsapp.net', 'Alice Smith');
+        ").unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    /// Build a minimal ChatStorage with ZWACALLEVENT for call extraction test.
+    fn make_callevent_db() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            PRAGMA user_version = 32;
+            CREATE TABLE ZWACHATSESSION (
+                Z_PK INTEGER PRIMARY KEY,
+                ZARCHIVED INTEGER DEFAULT 0,
+                ZCONTACTIDENTIFIER TEXT,
+                ZPARTNERNAME TEXT,
+                ZLASTMESSAGEDATE REAL,
+                ZSESSIONTYPE INTEGER DEFAULT 0
+            );
+            CREATE TABLE ZWAMESSAGE (
+                Z_PK INTEGER PRIMARY KEY,
+                ZCHATSESSION INTEGER,
+                ZMESSAGEDATE REAL NOT NULL,
+                ZTEXT TEXT,
+                ZMESSAGETYPE INTEGER DEFAULT 0,
+                ZMEDIAITEM INTEGER,
+                ZISFROMME INTEGER DEFAULT 0,
+                ZFROMJID TEXT,
+                ZSTARRED INTEGER DEFAULT 0,
+                ZISFORWARDED INTEGER DEFAULT 0,
+                ZDELETED INTEGER DEFAULT 0,
+                ZSORT REAL
+            );
+            CREATE TABLE ZWAMEDIAITEM (Z_PK INTEGER PRIMARY KEY, ZMESSAGE INTEGER, ZMIMETYPE TEXT, ZFILESIZE INTEGER DEFAULT 0, ZLOCALPATH TEXT, ZMEDIAURL TEXT);
+            CREATE TABLE ZWACONTACT (Z_PK INTEGER PRIMARY KEY, ZABUSEIDENTIFIER TEXT, ZPHONENUMBER TEXT, ZFULLNAME TEXT);
+            CREATE TABLE ZWACALLEVENT (
+                Z_PK INTEGER PRIMARY KEY,
+                ZDATE REAL NOT NULL,
+                ZDURATION INTEGER DEFAULT 0,
+                ZINCOMING INTEGER DEFAULT 0,
+                ZOUTGOING INTEGER DEFAULT 0,
+                ZMISSED INTEGER DEFAULT 0,
+                ZVIDEO INTEGER DEFAULT 0,
+                ZGROUPCALLEVENT INTEGER DEFAULT 0
+            );
+            INSERT INTO ZWACHATSESSION VALUES (1, 0, 'test@s.whatsapp.net', 'Test', 600000000.0, 0);
+            INSERT INTO ZWAMESSAGE VALUES (1, 1, 600000000.0, 'hello', 0, NULL, 1, NULL, 0, 0, 0, 1.0);
+            -- ZDATE=600000000.0 → unix_ms = (600000000 + 978307200) * 1000 = 1578307200000
+            INSERT INTO ZWACALLEVENT VALUES (1, 600000000.0, 120, 0, 1, 0, 0, 0);
+        ").unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn pushname_resolution_sets_display_name() {
+        let db = make_pushname_db();
+        let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
+
+        // Contact from ZWACONTACT with push-name override from ZWAPROFILEPUSHNAME
+        let contact = result
+            .contacts
+            .iter()
+            .find(|c| c.jid == "4155550100@s.whatsapp.net")
+            .expect("contact with JID 4155550100@s.whatsapp.net must exist");
+        assert_eq!(
+            contact.display_name.as_deref(),
+            Some("Alice Smith"),
+            "ZWAPROFILEPUSHNAME.ZPUSHNAME must override display_name"
+        );
+    }
+
+    #[test]
+    fn pushname_used_as_chat_name_when_null() {
+        let db = make_pushname_db();
+        let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
+
+        // ZWACHATSESSION.ZPARTNERNAME is NULL — should fall back to pushname
+        let chat = result
+            .chats
+            .iter()
+            .find(|c| c.jid == "4155550100@s.whatsapp.net")
+            .expect("chat must exist");
+        assert_eq!(
+            chat.name.as_deref(),
+            Some("Alice Smith"),
+            "chat name should be filled from ZWAPROFILEPUSHNAME when ZPARTNERNAME is NULL"
+        );
+    }
+
+    #[test]
+    fn call_extraction_from_zwacallevent() {
+        let db = make_callevent_db();
+        let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
+
+        assert!(result.calls.len() >= 1, "must have at least 1 call from ZWACALLEVENT");
+
+        let call = result.calls.iter().find(|c| c.call_id == 1).expect("call with id=1 must exist");
+        // ZDATE=600000000.0 → unix epoch seconds = 600000000 + 978307200 = 1578307200
+        assert_eq!(
+            call.timestamp.utc.timestamp(),
+            1578307200,
+            "timestamp must match Apple epoch conversion of 600000000.0"
+        );
+        assert!(call.from_me, "ZOUTGOING=1 must set from_me=true");
+        assert_eq!(call.duration_secs, 120, "ZDURATION=120 must be preserved");
+        assert!(!call.video, "ZVIDEO=0 must set video=false");
+    }
+}
+
+/// ZWAPROFILEPUSHNAME → pushname map (JID → display name).
+fn build_pushname_map(records: &[&RecoveredRecord]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for r in records {
+        let jid = match r.values.get(1) {
+            Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
+            _ => continue,
+        };
+        let pushname = match r.values.get(2) {
+            Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
+            _ => continue,
+        };
+        map.insert(jid, pushname);
+    }
+    map
+}
+
+/// ZWACALLEVENT → CallRecord (modern iOS WA schema).
+fn extract_calls_event(records: &[&RecoveredRecord], tz_offset_secs: i32) -> Vec<CallRecord> {
+    records
+        .iter()
+        .filter_map(|r| {
+            let call_id = r.row_id?;
+            // ZDATE=1, ZDURATION=2, ZINCOMING=3, ZOUTGOING=4, ZMISSED=5, ZVIDEO=6, ZGROUPCALLEVENT=7
+            let ts_ms = match r.values.get(1)? {
+                SqlValue::Real(f) => apple_epoch_to_utc_ms(*f),
+                SqlValue::Int(n) => apple_epoch_to_utc_ms(*n as f64),
+                _ => return None,
+            };
+            let duration_secs = match r.values.get(2) {
+                Some(SqlValue::Int(n)) => *n as u32,
+                _ => 0,
+            };
+            let from_me = match r.values.get(4) {
+                Some(SqlValue::Int(n)) => *n != 0,
+                _ => false,
+            };
+            let missed = match r.values.get(5) {
+                Some(SqlValue::Int(n)) => *n != 0,
+                _ => false,
+            };
+            let video = match r.values.get(6) {
+                Some(SqlValue::Int(n)) => *n != 0,
+                _ => false,
+            };
+            let group_call = match r.values.get(7) {
+                Some(SqlValue::Int(n)) => *n != 0,
+                _ => false,
+            };
+            Some(CallRecord {
+                call_id,
+                participants: Vec::new(),
+                from_me,
+                video,
+                group_call,
+                duration_secs,
+                call_result: if missed { CallResult::Missed } else { CallResult::Unknown },
+                timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
+                source: r.source.clone(),
+                call_creator_device_jid: None,
             })
         })
         .collect()

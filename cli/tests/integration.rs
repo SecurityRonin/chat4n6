@@ -1,6 +1,51 @@
 use assert_cmd::cmd::Command;
 use tempfile::TempDir;
 
+/// Build a minimal iOS ChatStorage.sqlite for the WhatsApp iOS integration test.
+fn setup_ios_whatsapp_fixture() -> TempDir {
+    let root = TempDir::new().unwrap();
+    // Use PlaintextDirFs-compatible path (no Manifest.db needed).
+    let db_dir = root.path().join(
+        "AppDomainGroup-group.net.whatsapp.WhatsApp.shared",
+    );
+    std::fs::create_dir_all(&db_dir).unwrap();
+    let conn = rusqlite::Connection::open(db_dir.join("ChatStorage.sqlite")).unwrap();
+    conn.execute_batch(
+        "
+        PRAGMA user_version = 32;
+        CREATE TABLE ZWACHATSESSION (
+            Z_PK INTEGER PRIMARY KEY,
+            ZARCHIVED INTEGER DEFAULT 0,
+            ZCONTACTIDENTIFIER TEXT,
+            ZPARTNERNAME TEXT,
+            ZLASTMESSAGEDATE REAL,
+            ZSESSIONTYPE INTEGER DEFAULT 0
+        );
+        CREATE TABLE ZWAMESSAGE (
+            Z_PK INTEGER PRIMARY KEY,
+            ZCHATSESSION INTEGER,
+            ZMESSAGEDATE REAL NOT NULL,
+            ZTEXT TEXT,
+            ZMESSAGETYPE INTEGER DEFAULT 0,
+            ZMEDIAITEM INTEGER,
+            ZISFROMME INTEGER DEFAULT 0,
+            ZFROMJID TEXT,
+            ZSTARRED INTEGER DEFAULT 0,
+            ZISFORWARDED INTEGER DEFAULT 0,
+            ZDELETED INTEGER DEFAULT 0,
+            ZSORT REAL
+        );
+        CREATE TABLE ZWAMEDIAITEM (Z_PK INTEGER PRIMARY KEY, ZMESSAGE INTEGER, ZMIMETYPE TEXT, ZFILESIZE INTEGER DEFAULT 0, ZLOCALPATH TEXT, ZMEDIAURL TEXT);
+        CREATE TABLE ZWACONTACT (Z_PK INTEGER PRIMARY KEY, ZABUSEIDENTIFIER TEXT, ZPHONENUMBER TEXT, ZFULLNAME TEXT);
+        CREATE TABLE ZWACALLINFO (Z_PK INTEGER PRIMARY KEY, ZCALLDATE REAL NOT NULL, ZDURATION INTEGER DEFAULT 0, ZISVIDEOCALL INTEGER DEFAULT 0, ZPARTNERCONTACT INTEGER, ZCALLTYPE INTEGER DEFAULT 0);
+        INSERT INTO ZWACHATSESSION VALUES (1, 0, 'test@s.whatsapp.net', 'Test', 600000000.0, 0);
+        INSERT INTO ZWAMESSAGE VALUES (1, 1, 600000000.0, 'hello', 0, NULL, 1, NULL, 0, 0, 0, 1.0);
+        ",
+    )
+    .unwrap();
+    root
+}
+
 fn setup_whatsapp_fixture() -> TempDir {
     setup_whatsapp_fixture_with_messages(1)
 }
@@ -228,5 +273,26 @@ fn chat_page_has_breadcrumb_to_index() {
     assert!(
         page.contains("../../index.html"),
         "chat page_001.html nav link must use ../../index.html (nested two levels deep)"
+    );
+}
+
+#[test]
+fn ios_whatsapp_plugin_registered_and_produces_report() {
+    let fixture = setup_ios_whatsapp_fixture();
+    let output = TempDir::new().unwrap();
+    Command::cargo_bin("chat4n6")
+        .unwrap()
+        .args([
+            "run",
+            "--input", fixture.path().to_str().unwrap(),
+            "--output", output.path().to_str().unwrap(),
+            "--case-name", "iOSTest",
+            "--no-unalloc",
+        ])
+        .assert()
+        .success();
+    assert!(
+        output.path().join("index.html").exists(),
+        "index.html missing — iOS WhatsApp plugin must be registered and produce a report"
     );
 }
