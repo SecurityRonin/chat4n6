@@ -582,6 +582,55 @@ mod tests {
         assert_eq!(decode_tl_message_text(&data), None);
     }
 
+    // Change 1: build_id_to_name_map unit tests
+    #[test]
+    fn build_id_to_name_map_returns_correct_name() {
+        use chat4n6_plugin_api::EvidenceSource;
+        let r = RecoveredRecord {
+            table: "users".to_string(),
+            row_id: Some(42),
+            values: vec![SqlValue::Null, SqlValue::Text("Alice".to_string())],
+            source: EvidenceSource::Live,
+            offset: 0,
+            confidence: 1.0,
+        };
+        let refs: Vec<&RecoveredRecord> = vec![&r];
+        let map = build_id_to_name_map(&refs, 1);
+        assert_eq!(map.get(&42).map(|s| s.as_str()), Some("Alice"));
+    }
+
+    #[test]
+    fn build_id_to_name_map_skips_missing_rowid() {
+        use chat4n6_plugin_api::EvidenceSource;
+        let r = RecoveredRecord {
+            table: "users".to_string(),
+            row_id: None,
+            values: vec![SqlValue::Null, SqlValue::Text("Bob".to_string())],
+            source: EvidenceSource::Live,
+            offset: 0,
+            confidence: 1.0,
+        };
+        let refs: Vec<&RecoveredRecord> = vec![&r];
+        let map = build_id_to_name_map(&refs, 1);
+        assert!(map.is_empty(), "record without rowid must be skipped");
+    }
+
+    #[test]
+    fn build_id_to_name_map_skips_non_text_value() {
+        use chat4n6_plugin_api::EvidenceSource;
+        let r = RecoveredRecord {
+            table: "users".to_string(),
+            row_id: Some(7),
+            values: vec![SqlValue::Null, SqlValue::Int(99)],
+            source: EvidenceSource::Live,
+            offset: 0,
+            confidence: 1.0,
+        };
+        let refs: Vec<&RecoveredRecord> = vec![&r];
+        let map = build_id_to_name_map(&refs, 1);
+        assert!(map.is_empty(), "non-text value at name_col must be skipped");
+    }
+
     // Task 4: chats table → group names
     #[test]
     fn group_chat_name_populated_from_chats_table() {
