@@ -34,24 +34,20 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
 
     let by_table = partition_by_table(&records);
 
-    let media_map = build_media_map(
-        by_table.get("ZWAMEDIAITEM").map(|v| v.as_slice()).unwrap_or(&[]),
-    );
+    let media_map = build_media_map(tbl(&by_table, "ZWAMEDIAITEM"));
 
     // Task 3: pre-build ZWAGROUPMEMBER map: Z_PK → ZMEMBERJID
-    let member_map = build_member_map(
-        by_table.get("ZWAGROUPMEMBER").map(|v| v.as_slice()).unwrap_or(&[]),
-    );
+    let member_map = build_member_map(tbl(&by_table, "ZWAGROUPMEMBER"));
 
     let mut chats: HashMap<i64, Chat> = HashMap::new();
-    let session_records = by_table.get("ZWACHATSESSION").map(|v| v.as_slice()).unwrap_or(&[]);
+    let session_records = tbl(&by_table, "ZWACHATSESSION");
     for r in session_records {
         if let Some(chat) = record_to_chat(r) {
             chats.insert(chat.id, chat);
         }
     }
 
-    let msg_records = by_table.get("ZWAMESSAGE").map(|v| v.as_slice()).unwrap_or(&[]);
+    let msg_records = tbl(&by_table, "ZWAMESSAGE");
 
     // Collect ZSORT values per chat for gap-based selective deletion detection.
     let zsort_idx = msg_col_map.get("ZSORT").copied().unwrap_or(11);
@@ -92,9 +88,7 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
     }
 
     // Build push-name map from ZWAPROFILEPUSHNAME.
-    let pushname_map = build_pushname_map(
-        by_table.get("ZWAPROFILEPUSHNAME").map(|v| v.as_slice()).unwrap_or(&[]),
-    );
+    let pushname_map = build_pushname_map(tbl(&by_table, "ZWAPROFILEPUSHNAME"));
 
     // Apply push names as chat names where chat name is null.
     for chat in chats.values_mut() {
@@ -105,25 +99,16 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         }
     }
 
-    let contacts = extract_contacts(
-        by_table.get("ZWACONTACT").map(|v| v.as_slice()).unwrap_or(&[]),
-        &pushname_map,
-    );
+    let contacts = extract_contacts(tbl(&by_table, "ZWACONTACT"), &pushname_map);
 
     // Collect calls from ZWACALLINFO (legacy) and ZWACALLEVENT (modern).
-    let mut calls = extract_calls(
-        by_table.get("ZWACALLINFO").map(|v| v.as_slice()).unwrap_or(&[]),
-        tz_offset_secs,
-    );
-    calls.extend(extract_calls_event(
-        by_table.get("ZWACALLEVENT").map(|v| v.as_slice()).unwrap_or(&[]),
-        tz_offset_secs,
-    ));
+    let mut calls = extract_calls(tbl(&by_table, "ZWACALLINFO"), tz_offset_secs);
+    calls.extend(extract_calls_event(tbl(&by_table, "ZWACALLEVENT"), tz_offset_secs));
 
     let mut forensic_warnings = detect_zsort_gaps(&zsort_by_chat, &chats);
 
     // CoreData PK gap detection.
-    let zpk_records = by_table.get("Z_PRIMARYKEY").map(|v| v.as_slice()).unwrap_or(&[]);
+    let zpk_records = tbl(&by_table, "Z_PRIMARYKEY");
     // Count non-live records as "recovered" (freelist, carved, WAL-deleted, etc.)
     let recovered_count = msg_records
         .iter()
@@ -148,6 +133,14 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         extraction_finished_at: None,
         wal_snapshots: vec![],
     })
+}
+
+// ── Table-slice helper ────────────────────────────────────────────────────────
+
+/// Look up a table name in a `partition_by_table` map and return its records as a slice.
+/// Returns an empty slice when the table is absent.
+fn tbl<'a>(by: &'a HashMap<String, Vec<&'a RecoveredRecord>>, name: &str) -> &'a [&'a RecoveredRecord] {
+    by.get(name).map(|v| v.as_slice()).unwrap_or_default()
 }
 
 // ── Column map ────────────────────────────────────────────────────────────────
