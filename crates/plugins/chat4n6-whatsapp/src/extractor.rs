@@ -24,8 +24,10 @@ use std::collections::{HashMap, HashSet};
 ///
 ///   jid:      [0]=Null(_id), [1]=raw_string
 ///   chat:     [0]=Null(_id), [1]=jid_row_id, [2]=subject
-///   message:  [0]=Null(_id), [1]=chat_row_id, [2]=sender_jid_row_id,
-///             [3]=from_me,   [4]=timestamp,   [5]=text_data, [6]=message_type
+///   message:  [0]=Null(_id), [1]=chat_row_id,  [2]=sender_jid_row_id,
+///             [3]=from_me,   [4]=timestamp,    [5]=text_data, [6]=message_type,
+///             [7]=media_mime_type, [8]=media_name, [9]=starred,
+///             [10]=edit_version (newer schemas; 5=deleted-for-me, 7=deleted-for-all)
 ///   call_log: [0]=Null(_id), [1]=jid_row_id,  [2]=from_me,
 ///             [3]=video_call,[4]=duration,     [5]=timestamp
 pub fn extract_from_msgstore(
@@ -449,6 +451,38 @@ fn key_id_column_index(ddl: &str) -> Option<usize> {
     None
 }
 
+/// Returns a human-readable label for a WhatsApp Android `message_type` integer.
+///
+/// Values sourced from community reverse-engineering of the WhatsApp APK and the
+/// Signal-Android analogue.  The corrected entries are:
+///   8  = VoiceNote  (long-form audio attachment; NOT "AudioCall" — that was wrong)
+///   9  = Document   (arbitrary file attachment; NOT "Application")
+///   13 = Gif        (animated GIF, distinct from video type 3)
+///   15 = Deleted    (deleted-for-all tombstone placeholder; NOT "ProductSingle")
+pub fn msg_type_label(n: i32) -> &'static str {
+    match n {
+        0  => "Text",
+        1  => "Image",
+        2  => "Audio",
+        3  => "Video",
+        4  => "Contact",
+        5  => "Location",
+        6  => "MediaOmitted",
+        7  => "StatusUpdate",
+        8  => "VoiceNote",
+        9  => "Document",
+        10 => "MissedVoiceCall",
+        11 => "MissedVideoCall",
+        12 => "MediaCiphertextUnknown",
+        13 => "Gif",
+        14 => "Deleted",
+        15 => "Deleted",
+        16 => "LiveLocation",
+        20 => "Sticker",
+        _  => "Unknown",
+    }
+}
+
 /// WhatsApp message types that represent media content.
 fn is_media_type(msg_type: i32) -> bool {
     matches!(msg_type, 1 | 2 | 3 | 5 | 8 | 13 | 20 | 42 | 64)
@@ -520,7 +554,8 @@ fn build_chats(records: &[&RecoveredRecord], jid_map: &HashMap<i64, String>) -> 
 }
 
 /// message table: row_id=_id, values[0]=Null, [1]=chat_row_id,
-/// [2]=sender_jid_row_id, [3]=from_me, [4]=timestamp, [5]=text_data, [6]=message_type
+/// [2]=sender_jid_row_id, [3]=from_me, [4]=timestamp, [5]=text_data, [6]=message_type,
+/// [7]=media_mime_type, [8]=media_name, [9]=starred, [10]=edit_version (newer schemas)
 fn record_to_message(
     r: &RecoveredRecord,
     jid_map: &HashMap<i64, String>,
@@ -556,11 +591,23 @@ fn record_to_message(
         _ => None,
     };
     let starred = matches!(r.values.get(9), Some(SqlValue::Int(n)) if *n != 0);
+    // edit_version column (index 10) added in newer schema versions.
+    //   5 = deleted-for-me  (local deletion only)
+    //   7 = deleted-for-all (sender deleted from everyone's view)
+    // Both cases override the content to Deleted regardless of msg_type or text_data.
+    let edit_version = match r.values.get(10) {
+        Some(SqlValue::Int(n)) => *n,
+        _ => 0,
+    };
     let text_data = match r.values.get(5) {
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
-    let content = if msg_type == 53 || msg_type == 54 {
+    let content = if edit_version == 5 || edit_version == 7 {
+        // Message deleted: override any msg_type or text content.
+        // edit_version=5 → deleted-for-me; edit_version=7 → deleted-for-all.
+        MessageContent::Deleted
+    } else if msg_type == 53 || msg_type == 54 {
         // View-once image (53) or video (54) — media key/CDN URL may survive device deletion
         let mime = media_mime.unwrap_or_else(|| {
             if msg_type == 54 { "video/mp4" } else { "image/jpeg" }.to_string()
