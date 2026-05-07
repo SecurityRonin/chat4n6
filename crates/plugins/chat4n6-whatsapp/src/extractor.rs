@@ -1,5 +1,6 @@
 use crate::anti_forensics::{detect_duplicate_stanza_ids, detect_rowid_reuse, detect_thumbnail_orphans};
-use crate::schema::SchemaVersion;
+use crate::schema::{cols, SchemaVersion};
+pub use crate::schema::{default_mime_for_type, is_media_type, msg_type_label};
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
     CallRecord, CallResult, Chat, Contact, EditHistoryEntry, ExtractionResult, ForensicTimestamp,
@@ -433,58 +434,6 @@ fn key_id_column_index(ddl: &str) -> Option<usize> {
     None
 }
 
-/// Returns a human-readable label for a WhatsApp Android `message_type` integer.
-///
-/// Values sourced from community reverse-engineering of the WhatsApp APK and the
-/// Signal-Android analogue.  The corrected entries are:
-///   8  = VoiceNote  (long-form audio attachment; NOT "AudioCall" — that was wrong)
-///   9  = Document   (arbitrary file attachment; NOT "Application")
-///   13 = Gif        (animated GIF, distinct from video type 3)
-///   15 = Deleted    (deleted-for-all tombstone placeholder; NOT "ProductSingle")
-pub fn msg_type_label(n: i32) -> &'static str {
-    match n {
-        0  => "Text",
-        1  => "Image",
-        2  => "Audio",
-        3  => "Video",
-        4  => "Contact",
-        5  => "Location",
-        6  => "MediaOmitted",
-        7  => "StatusUpdate",
-        8  => "VoiceNote",
-        9  => "Document",
-        10 => "MissedVoiceCall",
-        11 => "MissedVideoCall",
-        12 => "MediaCiphertextUnknown",
-        13 => "Gif",
-        14 => "Deleted",
-        15 => "Deleted",
-        16 => "LiveLocation",
-        20 => "Sticker",
-        _  => "Unknown",
-    }
-}
-
-/// WhatsApp message types that represent media content.
-fn is_media_type(msg_type: i32) -> bool {
-    matches!(msg_type, 1 | 2 | 3 | 5 | 8 | 13 | 20 | 42 | 64)
-}
-
-/// Fallback MIME type when the DB doesn't store one.
-fn default_mime_for_type(msg_type: i32) -> &'static str {
-    match msg_type {
-        1 => "image/jpeg",
-        2 => "audio/ogg",
-        3 => "video/mp4",
-        5 | 42 => "application/vnd.geo+json", // location, live location
-        8 => "application/octet-stream",
-        13 => "image/gif",
-        20 => "image/webp",
-        64 => "text/vcard",
-        _ => "application/octet-stream",
-    }
-}
-
 /// jid table: row_id=_id, values[0]=Null(_id alias), values[1]=raw_string
 fn build_jid_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
     let mut map = HashMap::new();
@@ -543,45 +492,46 @@ fn record_to_message(
     jid_map: &HashMap<i64, String>,
     tz_offset_secs: i32,
 ) -> Option<Message> {
+    use cols::message as col;
     let id = r.row_id?;
-    let chat_id = match r.values.get(1)? {
+    let chat_id = match r.values.get(col::CHAT_ROW_ID)? {
         SqlValue::Int(n) => *n,
         _ => return None,
     };
-    let sender_jid = match r.values.get(2) {
+    let sender_jid = match r.values.get(col::SENDER_JID_ROW_ID) {
         Some(SqlValue::Int(n)) => jid_map.get(n).cloned(),
         _ => None,
     };
-    let from_me = match r.values.get(3) {
+    let from_me = match r.values.get(col::FROM_ME) {
         Some(SqlValue::Int(n)) => *n != 0,
         _ => false,
     };
-    let ts_ms = match r.values.get(4)? {
+    let ts_ms = match r.values.get(col::TIMESTAMP)? {
         SqlValue::Int(n) => *n,
         _ => return None,
     };
-    let msg_type = match r.values.get(6) {
+    let msg_type = match r.values.get(col::MESSAGE_TYPE) {
         Some(SqlValue::Int(n)) => *n as i32,
         _ => 0,
     };
-    let media_mime = match r.values.get(7) {
+    let media_mime = match r.values.get(col::MEDIA_MIME_TYPE) {
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
-    let media_name = match r.values.get(8) {
+    let media_name = match r.values.get(col::MEDIA_NAME) {
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
-    let starred = matches!(r.values.get(9), Some(SqlValue::Int(n)) if *n != 0);
-    // edit_version column (index 10) added in newer schema versions.
+    let starred = matches!(r.values.get(col::STARRED), Some(SqlValue::Int(n)) if *n != 0);
+    // edit_version column added in newer schema versions.
     //   5 = deleted-for-me  (local deletion only)
     //   7 = deleted-for-all (sender deleted from everyone's view)
     // Both cases override the content to Deleted regardless of msg_type or text_data.
-    let edit_version = match r.values.get(10) {
+    let edit_version = match r.values.get(col::EDIT_VERSION) {
         Some(SqlValue::Int(n)) => *n,
         _ => 0,
     };
-    let text_data = match r.values.get(5) {
+    let text_data = match r.values.get(col::TEXT_DATA) {
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
