@@ -5,19 +5,16 @@
 //!
 //! # Signal `sms.type` direction heuristic
 //!
-//! Signal's `sms.type` is a bitmask carrying the "message box" in bits 0-4.
-//! Documented base types: 1 = inbox (received), 2 = sent.  In practice the
-//! field accumulates flags so the raw value is rarely exactly 1 or 2.
+//! Signal's `sms.type` is a bitmask.  Bits 0-4 encode the "message box" base type.
+//! The authoritative source is `Types.java` in the Signal-Android repository.
 //!
-//! Reliable approach: `(type & 0x20) != 0` identifies the outgoing flag that
-//! Signal consistently sets for sent/outbox states (values 87, 23, 20 all have
-//! bit 5 set; received value 10485 does not).
+//! Correct approach: `BASE_TYPE_MASK = 0x1F`; message is outgoing if the masked
+//! base type is in `OUTGOING_BASE_TYPES = {2, 11, 21, 22, 23, 24, 25, 26, 28}`.
+//! Examples: type=87 → base=23 (SECURE_SENT, outgoing); type=20 → base=20 (incoming).
 //!
-//! Alternative cross-check: `from_recipient_id` is the sender's `_id`.  For
-//! outgoing messages Signal sets this to the local user's own recipient row
-//! (typically 1 for accounts that have sent at least one message).  We use the
-//! `type` bitmask as the primary signal because it is more reliable than
-//! assuming the local user's `_id`.
+//! `from_recipient_id` identifies the sender row but is unreliable as a direction
+//! proxy because Signal sets it to the local user's `_id` for outgoing messages —
+//! and we do not know the local user's `_id` without additional context.
 
 use anyhow::{Context, Result};
 pub use helpers::{is_outgoing_base_type, attachment_table_name};
@@ -46,20 +43,30 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
     let by_table = partition_by_table(&records);
     let empty: Vec<RecoveredRecord> = Vec::new();
 
+    // Determine schema version early — used for schema-aware table/column selection.
+    let schema_version: u32 = read_schema_version(db_bytes);
+
     // Build recipient lookup: _id → (jid_string, display_name, phone)
     let recipients = build_recipient_map(by_table.get("recipient").map(|v| v.as_slice()).unwrap_or(&empty));
 
     // Build thread map: thread._id → Chat (filled with messages below)
     let mut chats = build_thread_map(by_table.get("thread").map(|v| v.as_slice()).unwrap_or(&empty), &recipients);
 
-    // Build attachment lookup: sms._id (= part.mid) → MediaRef
-    let parts = build_part_map(by_table.get("part").map(|v| v.as_slice()).unwrap_or(&empty));
+    // Build attachment lookup: message_id → MediaRef.
+    // Schema v168+: table is `attachment` (columns: message_id, file_name, data_size)
+    // pre-v168:     table is `part`       (columns: mid, name, file_size)
+    let attach_table = helpers::attachment_table_name(Some(schema_version));
+    let parts = build_part_map(
+        by_table.get(attach_table).map(|v| v.as_slice()).unwrap_or(&empty),
+        Some(schema_version),
+    );
 
     // Build reaction lookup: sms._id → Vec<Reaction>
     let reactions = build_reaction_map(
         by_table.get("reaction").map(|v| v.as_slice()).unwrap_or(&empty),
         &recipients,
         tz_offset_secs,
+        Some(schema_version),
     );
 
     // Map sms rows into chats
@@ -111,7 +118,7 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
         calls,
         wal_deltas: Vec::new(),
         timezone_offset_seconds: Some(tz_offset_secs),
-        schema_version: read_schema_version(db_bytes),
+        schema_version,
         forensic_warnings,
         group_participant_events: Vec::new(),
         extraction_started_at: None,
@@ -220,9 +227,12 @@ fn build_thread_map(
 
 // ── Part (attachment) map ────────────────────────────────────────────────────
 
-/// Schema: _id, mid, content_type, name, file_size
-/// values[]: [0]=Null, [1]=mid, [2]=content_type, [3]=name, [4]=file_size
-fn build_part_map(records: &[RecoveredRecord]) -> HashMap<i64, MediaRef> {
+/// Handles both pre-v168 `part` table and post-v168 `attachment` table.
+/// Column positions are the same in both layouts (column names differ):
+///   pre-v168 `part`:       _id, mid,        content_type, name,      file_size
+///   post-v168 `attachment`: _id, message_id, content_type, file_name, data_size
+/// values[]: [0]=Null, [1]=message_id, [2]=content_type, [3]=file_name, [4]=file_size
+fn build_part_map(records: &[RecoveredRecord], _schema_version: Option<u32>) -> HashMap<i64, MediaRef> {
     let mut map = HashMap::new();
     for r in records {
         let mid = match r.values.get(1) {
@@ -256,29 +266,45 @@ fn build_part_map(records: &[RecoveredRecord]) -> HashMap<i64, MediaRef> {
 
 // ── Reaction map ─────────────────────────────────────────────────────────────
 
-/// Schema: _id, message_id, is_mms, author_id, emoji, date_sent, date_received
-/// values[]: [0]=Null, [1]=message_id, [2]=is_mms, [3]=author_id, [4]=emoji,
-///           [5]=date_sent, [6]=date_received
+/// Reaction table layout changed at schema v168.
+///
+/// Pre-v168:  _id, message_id, is_mms, author_id, emoji, date_sent, date_received
+///   values[]: [0]=Null, [1]=message_id, [2]=is_mms, [3]=author_id, [4]=emoji,
+///             [5]=date_sent, [6]=date_received
+///
+/// Post-v168: _id, message_id, author_id, emoji, date_sent, date_received
+///   values[]: [0]=Null, [1]=message_id, [2]=author_id, [3]=emoji,
+///             [4]=date_sent, [5]=date_received
 fn build_reaction_map(
     records: &[RecoveredRecord],
     recipients: &HashMap<i64, RecipientInfo>,
     tz_offset_secs: i32,
+    schema_version: Option<u32>,
 ) -> HashMap<i64, Vec<Reaction>> {
+    // Determine column offsets based on schema version.
+    // pre-v168: author_id at 3, emoji at 4, date_sent at 5
+    // v168+:    author_id at 2, emoji at 3, date_sent at 4
+    let (author_col, emoji_col, date_sent_col) = if schema_version.map_or(false, |v| v >= 168) {
+        (2usize, 3usize, 4usize)
+    } else {
+        (3usize, 4usize, 5usize)
+    };
+
     let mut map: HashMap<i64, Vec<Reaction>> = HashMap::new();
     for r in records {
         let message_id = match r.values.get(1) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let author_id = match r.values.get(3) {
+        let author_id = match r.values.get(author_col) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let emoji = match r.text_val(4) {
+        let emoji = match r.text_val(emoji_col) {
             Some(e) => e,
             None => continue,
         };
-        let date_sent = match r.values.get(5) {
+        let date_sent = match r.values.get(date_sent_col) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
@@ -302,9 +328,13 @@ fn build_reaction_map(
 // ── SMS → Message ────────────────────────────────────────────────────────────
 
 /// Schema: _id, thread_id, date, date_received, type, body, from_recipient_id,
-///         read, remote_deleted
-/// values[]: [0]=Null, [1]=thread_id, [2]=date, [3]=date_received, [4]=type,
+///         read, remote_deleted[, expires_started[, envelope_type[, date_server]]]
+/// values[]: [0]=Null, [1]=thread_id, [2]=date (sent), [3]=date_received, [4]=type,
 ///           [5]=body, [6]=from_recipient_id, [7]=read, [8]=remote_deleted
+///           [9]=expires_started (optional), [10]=envelope_type (optional),
+///           [11]=date_server (optional, added ~v168)
+///
+/// Timestamp priority: date_server > date_received > date (sent)
 fn record_to_message(
     r: &RecoveredRecord,
     parts: &HashMap<i64, MediaRef>,
@@ -316,10 +346,26 @@ fn record_to_message(
         SqlValue::Int(n) => *n,
         _ => return None,
     };
-    let ts_ms = match r.values.get(2)? {
+    // date (sent) is mandatory — used as last-resort fallback.
+    let date_sent_ms = match r.values.get(2)? {
         SqlValue::Int(n) => *n,
         _ => return None,
     };
+    // date_received: prefer over date_sent when available and positive.
+    let date_received_ms = match r.values.get(3) {
+        Some(SqlValue::Int(n)) if *n > 0 => Some(*n),
+        _ => None,
+    };
+    // date_server: highest priority — index 11 (absent in older schemas → None).
+    let date_server_ms = match r.values.get(11) {
+        Some(SqlValue::Int(n)) if *n > 0 => Some(*n),
+        _ => None,
+    };
+    // Priority: date_server > date_received > date_sent
+    let ts_ms = date_server_ms
+        .or(date_received_ms)
+        .unwrap_or(date_sent_ms);
+
     let sms_type = match r.values.get(4) {
         Some(SqlValue::Int(n)) => *n,
         _ => 0,
@@ -330,15 +376,8 @@ fn record_to_message(
         _ => false,
     };
 
-    // Direction heuristic using the base type (bits 0-4).
-    // Signal's Types.java defines these base type constants:
-    //   SECURE_SENT_TYPE     = 23 (0x17) — outgoing
-    //   SECURE_RECEIVED_TYPE = 20..22    — incoming
-    //   Standard SMS: sent = 2, received = 1
-    // Fixture values: 87 → base 23 (sent), 10485 → base 21 (received).
-    // Treat base types 2, 3, 4, 5, 6, 23 as outgoing; all others as incoming.
-    let base_type = sms_type & 0x1F;
-    let from_me = matches!(base_type, 2 | 3 | 4 | 5 | 6 | 23 | 24 | 25);
+    // Direction: use Signal's canonical OUTGOING_BASE_TYPES set from Types.java.
+    let from_me = helpers::is_outgoing_base_type(sms_type);
 
     // Content resolution:
     // 1. remote_deleted → Deleted
@@ -514,16 +553,29 @@ fn detect_disappearing_timers(
 pub mod helpers {
     /// Return the attachment table name for a given schema version.
     ///
-    /// Stub: always returns "part" — will be corrected in Task 3 implementation.
-    pub fn attachment_table_name(_schema_version: Option<u32>) -> &'static str {
-        "part" // STUB: Task 3 will add branching on schema_version >= 168
+    /// Signal renamed the attachment table in schema v168:
+    /// - pre-v168:  `part`       (columns: mid, name, _data, …)
+    /// - v168+:     `attachment` (columns: message_id, file_name, data_size, …)
+    ///
+    /// Unknown schema version falls back to `part` (conservative).
+    pub fn attachment_table_name(schema_version: Option<u32>) -> &'static str {
+        match schema_version {
+            Some(v) if v >= 168 => "attachment",
+            _ => "part",
+        }
     }
 
     /// Determine whether a raw Signal `sms.type` value represents an outgoing message.
     ///
-    /// Stub: uses the old `(type_val & 0x20) != 0` heuristic — will be corrected in Task 1.
+    /// Signal's `Types.java` defines:
+    ///   `BASE_TYPE_MASK = 0x1F`
+    ///   Outgoing base types: {2, 11, 21, 22, 23, 24, 25, 26, 28}
+    ///
+    /// A message is outgoing if `(type_val & BASE_TYPE_MASK)` is in that set.
     pub fn is_outgoing_base_type(type_val: i64) -> bool {
-        (type_val & 0x20) != 0 // STUB: wrong — Task 1 will replace with OUTGOING_BASE_TYPES
+        const OUTGOING_BASE_TYPES: &[i64] = &[2, 11, 21, 22, 23, 24, 25, 26, 28];
+        let base = type_val & 0x1F;
+        OUTGOING_BASE_TYPES.contains(&base)
     }
 }
 

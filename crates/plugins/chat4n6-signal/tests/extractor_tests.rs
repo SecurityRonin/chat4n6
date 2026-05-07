@@ -117,7 +117,7 @@ fn t04_archived_thread_sets_flag() {
 
 #[test]
 fn t05_sent_message_from_me_true() {
-    // sms id=1: type=87, from_recipient_id=1 — outgoing (87 & 0x20 != 0)
+    // sms id=1: type=87 → base = 87 & 0x1F = 23 ∈ OUTGOING_BASE_TYPES → outgoing
     let db = make_signal_db();
     let result = extract_from_signal_db(&db, 0).unwrap();
     let all_msgs: Vec<_> = result.chats.iter().flat_map(|c| c.messages.iter()).collect();
@@ -127,12 +127,12 @@ fn t05_sent_message_from_me_true() {
 
 #[test]
 fn t06_received_message_from_me_false() {
-    // sms id=2: type=10485, from_recipient_id=2 — incoming
+    // sms id=2: type=20 → base=20 (BASE_INBOX_TYPE), from_recipient_id=2 — incoming
     let db = make_signal_db();
     let result = extract_from_signal_db(&db, 0).unwrap();
     let all_msgs: Vec<_> = result.chats.iter().flat_map(|c| c.messages.iter()).collect();
     let msg2 = all_msgs.iter().find(|m| m.id == 2).expect("message id=2 missing");
-    assert!(!msg2.from_me, "sms type=10485 should be from_me=false (incoming)");
+    assert!(!msg2.from_me, "sms type=20 (base=20, BASE_INBOX_TYPE) should be from_me=false (incoming)");
 }
 
 // ── T7: reaction attached to correct message ─────────────────────────────────
@@ -594,13 +594,14 @@ fn make_timestamp_priority_db() -> Vec<u8> {
              group_id TEXT, system_display_name TEXT, profile_joined_name TEXT, type INTEGER DEFAULT 0);
          CREATE TABLE thread (_id INTEGER PRIMARY KEY, recipient_id INTEGER NOT NULL UNIQUE,
              archived INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0);
-         -- sms with date_received and date_server columns
+         -- sms with expires_started (idx 9), envelope_type (idx 10), date_server (idx 11)
          CREATE TABLE sms (_id INTEGER PRIMARY KEY, thread_id INTEGER,
              date INTEGER, date_received INTEGER, type INTEGER DEFAULT 0, body TEXT,
              from_recipient_id INTEGER, read INTEGER DEFAULT 0, remote_deleted INTEGER DEFAULT 0,
+             expires_started INTEGER DEFAULT 0, envelope_type INTEGER DEFAULT 0,
              date_server INTEGER);
-         CREATE TABLE part (_id INTEGER PRIMARY KEY, mid INTEGER NOT NULL,
-             content_type TEXT, name TEXT, file_size INTEGER DEFAULT 0);
+         CREATE TABLE attachment (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
+             content_type TEXT, file_name TEXT, data_size INTEGER DEFAULT 0);
          CREATE TABLE reaction (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
              author_id INTEGER NOT NULL, emoji TEXT NOT NULL,
              date_sent INTEGER NOT NULL, date_received INTEGER NOT NULL);
@@ -609,8 +610,8 @@ fn make_timestamp_priority_db() -> Vec<u8> {
              direction INTEGER NOT NULL, event INTEGER NOT NULL, timestamp INTEGER NOT NULL);
          INSERT INTO recipient VALUES (1, '+19995550001', 'uuid-x', NULL, 'Tester', 'Tester X', 0);
          INSERT INTO thread VALUES (1, 1, 0, 1);
-         -- date=1000, date_received=2000, date_server=3000 — expect timestamp=3000
-         INSERT INTO sms VALUES (30, 1, 1000, 2000, 23, 'priority test', 1, 1, 0, 3000);",
+         -- date=1000, date_received=2000, expires_started=0, envelope_type=0, date_server=3000 → expect 3000
+         INSERT INTO sms VALUES (30, 1, 1000, 2000, 23, 'priority test', 1, 1, 0, 0, 0, 3000);",
     )
     .unwrap();
     let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -643,9 +644,10 @@ fn make_timestamp_fallback_db() -> Vec<u8> {
          CREATE TABLE sms (_id INTEGER PRIMARY KEY, thread_id INTEGER,
              date INTEGER, date_received INTEGER, type INTEGER DEFAULT 0, body TEXT,
              from_recipient_id INTEGER, read INTEGER DEFAULT 0, remote_deleted INTEGER DEFAULT 0,
+             expires_started INTEGER DEFAULT 0, envelope_type INTEGER DEFAULT 0,
              date_server INTEGER);
-         CREATE TABLE part (_id INTEGER PRIMARY KEY, mid INTEGER NOT NULL,
-             content_type TEXT, name TEXT, file_size INTEGER DEFAULT 0);
+         CREATE TABLE attachment (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
+             content_type TEXT, file_name TEXT, data_size INTEGER DEFAULT 0);
          CREATE TABLE reaction (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
              author_id INTEGER NOT NULL, emoji TEXT NOT NULL,
              date_sent INTEGER NOT NULL, date_received INTEGER NOT NULL);
@@ -655,7 +657,7 @@ fn make_timestamp_fallback_db() -> Vec<u8> {
          INSERT INTO recipient VALUES (1, '+19995550001', 'uuid-x', NULL, 'Tester', 'Tester X', 0);
          INSERT INTO thread VALUES (1, 1, 0, 1);
          -- date_server=NULL → fall back to date_received=2000
-         INSERT INTO sms VALUES (31, 1, 1000, 2000, 23, 'fallback test', 1, 1, 0, NULL);",
+         INSERT INTO sms VALUES (31, 1, 1000, 2000, 23, 'fallback test', 1, 1, 0, 0, 0, NULL);",
     )
     .unwrap();
     let tmp = tempfile::NamedTempFile::new().unwrap();
