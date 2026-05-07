@@ -35,14 +35,40 @@ pub mod msg_type {
     pub const VOICE_NOTE: i32 = 59;
     pub const MESSAGE_ASSOCIATION: i32 = 66;
 
-    // Legacy aliases kept for callers that used the old names
+    // Legacy alias: old callers used VCARD for contact cards (type 4)
     pub const VCARD: i32 = CONTACT;
-    pub const SYSTEM: i32 = STICKER; // old SYSTEM=15 mapped to Sticker slot; see message_type_label
 }
 
 /// Human-readable label for a ZMESSAGETYPE value.
-pub fn message_type_label(_t: i32) -> &'static str {
-    todo!("Task 1: implement message_type_label")
+pub fn message_type_label(t: i32) -> &'static str {
+    match t {
+        msg_type::TEXT => "Text",
+        msg_type::IMAGE => "Image",
+        msg_type::VIDEO => "Video",
+        msg_type::AUDIO => "Audio",
+        msg_type::CONTACT => "Contact",
+        msg_type::LOCATION => "Location",
+        msg_type::SYSTEM_MSG => "SystemMessage",
+        msg_type::VOIP_EVENT => "VoIPEvent",
+        msg_type::DELETED => "Deleted",
+        msg_type::DOCUMENT => "Document",
+        msg_type::CALL_EVENT => "CallEvent",
+        msg_type::GIF => "GIF",
+        msg_type::WAITING => "Waiting",
+        msg_type::ENCRYPTION_NOTIFICATION => "EncryptionNotification",
+        msg_type::DELETED_BY_SENDER => "DeletedBySender",
+        msg_type::STICKER => "Sticker",
+        msg_type::LIVE_LOCATION => "LiveLocation",
+        msg_type::PRODUCT_MESSAGE => "ProductMessage",
+        msg_type::VIEW_ONCE_IMAGE => "ViewOnceImage",
+        msg_type::VIEW_ONCE_VIDEO => "ViewOnceVideo",
+        msg_type::POLL => "Poll",
+        msg_type::VIEW_ONCE_AUDIO => "ViewOnceAudio",
+        msg_type::PTV => "PTV",
+        msg_type::VOICE_NOTE => "VoiceNote",
+        msg_type::MESSAGE_ASSOCIATION => "MessageAssociation",
+        _ => "Unknown",
+    }
 }
 
 /// Returns true if the message type carries media content.
@@ -64,7 +90,7 @@ pub fn default_mime_for_type(t: i32) -> &'static str {
 /// Values > 4_000_000_000 are treated as milliseconds.
 #[inline]
 pub fn normalise_coredata_secs(raw: f64) -> f64 {
-    todo!("Task 4: implement normalise_coredata_secs")
+    if raw > 4_000_000_000.0 { raw / 1000.0 } else { raw }
 }
 
 /// Convert a raw ZMESSAGEDATE value (may be seconds or milliseconds) to Unix ms.
@@ -77,7 +103,7 @@ pub fn zmessagedate_to_utc_ms(raw: f64) -> i64 {
 /// Both bit 7 (0x80) AND bit 8 (0x100) must be set.
 #[inline]
 pub fn zflags_is_forwarded(flags: i64) -> bool {
-    todo!("Task 2: implement zflags_is_forwarded")
+    (flags & 0x180) == 0x180
 }
 
 #[cfg(test)]

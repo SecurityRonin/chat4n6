@@ -1,4 +1,7 @@
-use crate::schema::{apple_epoch_to_utc_ms, default_mime_for_type, is_media_type, msg_type};
+use crate::schema::{
+    apple_epoch_to_utc_ms, default_mime_for_type, is_media_type, msg_type, zflags_is_forwarded,
+    zmessagedate_to_utc_ms,
+};
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
     CallRecord, CallResult, Chat, Contact, EvidenceSource, ExtractionResult, ForensicTimestamp,
@@ -35,6 +38,11 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         by_table.get("ZWAMEDIAITEM").map(|v| v.as_slice()).unwrap_or(&[]),
     );
 
+    // Task 3: pre-build ZWAGROUPMEMBER map: Z_PK → ZMEMBERJID
+    let member_map = build_member_map(
+        by_table.get("ZWAGROUPMEMBER").map(|v| v.as_slice()).unwrap_or(&[]),
+    );
+
     let mut chats: HashMap<i64, Chat> = HashMap::new();
     let session_records = by_table.get("ZWACHATSESSION").map(|v| v.as_slice()).unwrap_or(&[]);
     for r in session_records {
@@ -63,7 +71,7 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
     }
 
     for r in msg_records {
-        if let Some(msg) = record_to_message(r, &media_map, tz_offset_secs, &msg_col_map) {
+        if let Some(msg) = record_to_message(r, &media_map, &member_map, tz_offset_secs, &msg_col_map) {
             chats
                 .entry(msg.chat_id)
                 .or_insert_with(|| Chat {
@@ -194,6 +202,9 @@ fn default_msg_column_map() -> HashMap<String, usize> {
         ("ZISFORWARDED", 9),
         ("ZDELETED", 10),
         ("ZSORT", 11),
+        // Extended columns — present in modern WhatsApp iOS schemas
+        ("ZGROUPMEMBER", 12),
+        ("ZFLAGS", 13),
     ]
     .iter()
     .map(|(k, v)| (k.to_string(), *v))
@@ -248,6 +259,20 @@ struct MediaInfo {
     cdn_url: Option<String>,
 }
 
+/// ZWAGROUPMEMBER → map of Z_PK → ZMEMBERJID for group sender resolution.
+fn build_member_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
+    let mut map = HashMap::new();
+    for r in records {
+        let Some(pk) = r.row_id else { continue };
+        let jid = match r.values.get(1) {
+            Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
+            _ => continue,
+        };
+        map.insert(pk, jid);
+    }
+    map
+}
+
 fn build_media_map(records: &[&RecoveredRecord]) -> HashMap<i64, MediaInfo> {
     let mut map = HashMap::new();
     for r in records {
@@ -299,6 +324,7 @@ fn record_to_chat(r: &RecoveredRecord) -> Option<Chat> {
 fn record_to_message(
     r: &RecoveredRecord,
     media_map: &HashMap<i64, MediaInfo>,
+    member_map: &HashMap<i64, String>,
     tz_offset_secs: i32,
     col: &HashMap<String, usize>,
 ) -> Option<Message> {
@@ -325,19 +351,27 @@ fn record_to_message(
     };
 
     let chat_id = get_int("ZCHATSESSION")?;
-    let ts_ms = get_real("ZMESSAGEDATE").map(apple_epoch_to_utc_ms)?;
+    // Task 4: handle millisecond timestamps (value > 4_000_000_000)
+    let ts_ms = get_real("ZMESSAGEDATE").map(zmessagedate_to_utc_ms)?;
     let text = get_text("ZTEXT");
     let msg_type_val = get_int("ZMESSAGETYPE").unwrap_or(0) as i32;
     let media_item_pk = get_int("ZMEDIAITEM");
     let from_me = get_int("ZISFROMME").unwrap_or(0) != 0;
-    let sender_jid = get_text("ZFROMJID");
+    // Task 3: resolve group sender via ZGROUPMEMBER FK → ZWAGROUPMEMBER.ZMEMBERJID
+    let group_member_fk = get_int("ZGROUPMEMBER");
+    let sender_jid = group_member_fk
+        .and_then(|fk| member_map.get(&fk).cloned())
+        .or_else(|| get_text("ZFROMJID"));
     let starred = get_int("ZSTARRED").unwrap_or(0) != 0;
-    let is_forwarded = get_int("ZISFORWARDED").unwrap_or(0) != 0;
+    // Task 2: forwarded requires both bit 7 (0x80) and bit 8 (0x100) set in ZFLAGS
+    let is_forwarded = get_int("ZFLAGS")
+        .map(zflags_is_forwarded)
+        .unwrap_or_else(|| get_int("ZISFORWARDED").unwrap_or(0) != 0);
     let deleted = get_int("ZDELETED").unwrap_or(0) != 0;
 
     let content = if deleted || msg_type_val == msg_type::DELETED {
         MessageContent::Deleted
-    } else if msg_type_val == msg_type::SYSTEM {
+    } else if msg_type_val == msg_type::SYSTEM_MSG {
         MessageContent::System(text.unwrap_or_default())
     } else if is_media_type(msg_type_val) {
         let media_info = media_item_pk.and_then(|pk| media_map.get(&pk));
