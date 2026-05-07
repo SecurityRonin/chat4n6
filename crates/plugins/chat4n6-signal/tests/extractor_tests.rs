@@ -3,7 +3,7 @@
 /// All tests run against the in-memory fixture database built from
 /// `tests/fixtures/signal_schema.sql`.  The fixture is compiled into a
 /// plaintext SQLite blob at test-time using rusqlite; no file I/O at runtime.
-use chat4n6_signal::extractor::extract_from_signal_db;
+use chat4n6_signal::extractor::{extract_from_signal_db, is_outgoing_base_type, attachment_table_name};
 use chat4n6_plugin_api::{ForensicWarning, MessageContent};
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
@@ -402,5 +402,276 @@ fn t21_sealed_sender_unresolved_warning() {
         warning.is_some(),
         "expected SealedSenderUnresolved {{ thread_id: 5, count: 1 }}, got: {:?}",
         result.forensic_warnings
+    );
+}
+
+// ── T22: direction heuristic — OUTGOING_BASE_TYPES membership ────────────────
+
+/// Task 1: Signal's correct outgoing base types from Types.java.
+/// BASE_TYPE_MASK = 0x1F; OUTGOING_BASE_TYPES = {2, 11, 21, 22, 23, 24, 25, 26, 28}.
+#[test]
+fn t22_is_outgoing_base_type_outgoing_values() {
+    // All of these must be identified as outgoing.
+    for &type_val in &[21i64, 22, 2, 11, 23, 24, 25, 26, 28] {
+        assert!(
+            is_outgoing_base_type(type_val),
+            "base type {type_val} should be outgoing per Signal Types.java"
+        );
+    }
+}
+
+#[test]
+fn t23_is_outgoing_base_type_incoming_values() {
+    // All of these must be identified as incoming.
+    for &type_val in &[0i64, 1, 10, 20, 31] {
+        assert!(
+            !is_outgoing_base_type(type_val),
+            "base type {type_val} should be incoming, but is_outgoing_base_type returned true"
+        );
+    }
+}
+
+/// Fixture: sms id=1 has type=87 → base = 87 & 0x1F = 23 (outgoing).
+#[test]
+fn t24_is_outgoing_matches_fixture_type_87() {
+    assert!(is_outgoing_base_type(87), "type=87 (base=23) must be outgoing");
+}
+
+/// Fixture: sms id=2 has type=20 → base = 20 & 0x1F = 20 (NOT in outgoing set).
+/// (We update the fixture in the implementation phase so this base type is used.)
+#[test]
+fn t25_is_outgoing_matches_fixture_type_20() {
+    assert!(!is_outgoing_base_type(20), "type=20 (base=20) must be incoming");
+}
+
+// ── T26: reaction post-v168 layout — 6 columns, no is_mms ───────────────────
+
+/// Build a post-v168 DB: reaction table has NO is_mms column.
+/// Layout: [0]=_id, [1]=message_id, [2]=author_id, [3]=emoji, [4]=date_sent, [5]=date_received
+fn make_post_v168_reaction_db() -> Vec<u8> {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "PRAGMA user_version = 185;
+         CREATE TABLE recipient (_id INTEGER PRIMARY KEY, e164 TEXT, aci TEXT,
+             group_id TEXT, system_display_name TEXT, profile_joined_name TEXT, type INTEGER DEFAULT 0);
+         CREATE TABLE thread (_id INTEGER PRIMARY KEY, recipient_id INTEGER NOT NULL UNIQUE,
+             archived INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0);
+         CREATE TABLE sms (_id INTEGER PRIMARY KEY, thread_id INTEGER, date INTEGER,
+             date_received INTEGER, type INTEGER DEFAULT 0, body TEXT,
+             from_recipient_id INTEGER, read INTEGER DEFAULT 0, remote_deleted INTEGER DEFAULT 0);
+         -- post-v168: no is_mms column
+         CREATE TABLE reaction (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
+             author_id INTEGER NOT NULL, emoji TEXT NOT NULL,
+             date_sent INTEGER NOT NULL, date_received INTEGER NOT NULL);
+         CREATE TABLE part (_id INTEGER PRIMARY KEY, mid INTEGER NOT NULL,
+             content_type TEXT, name TEXT, file_size INTEGER DEFAULT 0);
+         CREATE TABLE call (_id INTEGER PRIMARY KEY, call_id INTEGER NOT NULL,
+             message_id INTEGER NOT NULL, peer TEXT NOT NULL, type INTEGER NOT NULL,
+             direction INTEGER NOT NULL, event INTEGER NOT NULL, timestamp INTEGER NOT NULL);
+         INSERT INTO recipient VALUES (1, '+19995550001', 'uuid-x', NULL, 'Tester', 'Tester X', 0);
+         INSERT INTO recipient VALUES (2, '+19995550002', 'uuid-y', NULL, 'Reactor', 'Reactor Y', 0);
+         INSERT INTO thread VALUES (1, 1, 0, 1);
+         INSERT INTO sms VALUES (10, 1, 1710513127000, 1710513127001, 23, 'hello', 1, 1, 0);
+         -- reaction: message_id=10, author_id=2, emoji=thumbsup
+         INSERT INTO reaction VALUES (1, 10, 2, '👍', 1710513200000, 1710513200001);",
+    )
+    .unwrap();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+    std::fs::read(tmp.path()).unwrap()
+}
+
+#[test]
+fn t26_reaction_post_v168_emoji_correct() {
+    let db = make_post_v168_reaction_db();
+    let result = extract_from_signal_db(&db, 0).unwrap();
+    let all_msgs: Vec<_> = result.chats.iter().flat_map(|c| c.messages.iter()).collect();
+    let msg = all_msgs.iter().find(|m| m.id == 10).expect("message id=10 missing");
+    assert_eq!(msg.reactions.len(), 1, "post-v168 reaction should be parsed (1 reaction)");
+    assert_eq!(msg.reactions[0].emoji, "👍", "post-v168 reaction emoji should be 👍 at column index 3");
+}
+
+#[test]
+fn t27_reaction_post_v168_reactor_jid() {
+    let db = make_post_v168_reaction_db();
+    let result = extract_from_signal_db(&db, 0).unwrap();
+    let all_msgs: Vec<_> = result.chats.iter().flat_map(|c| c.messages.iter()).collect();
+    let msg = all_msgs.iter().find(|m| m.id == 10).expect("message id=10 missing");
+    assert_eq!(msg.reactions.len(), 1);
+    // author_id=2 → Reactor Y: +19995550002@signal
+    assert!(
+        msg.reactions[0].reactor_jid.contains("19995550002"),
+        "reactor JID should identify recipient 2, got: {}",
+        msg.reactions[0].reactor_jid
+    );
+}
+
+// ── T28: attachment table selection — schema-version-aware ───────────────────
+
+#[test]
+fn t28_attachment_table_pre_v168_uses_part() {
+    assert_eq!(
+        attachment_table_name(Some(167)),
+        "part",
+        "schema < 168 should use 'part' table"
+    );
+}
+
+#[test]
+fn t29_attachment_table_post_v168_uses_attachment() {
+    assert_eq!(
+        attachment_table_name(Some(168)),
+        "attachment",
+        "schema >= 168 should use 'attachment' table"
+    );
+}
+
+#[test]
+fn t30_attachment_table_none_version_uses_part() {
+    assert_eq!(
+        attachment_table_name(None),
+        "part",
+        "unknown schema version should fall back to 'part' (conservative)"
+    );
+}
+
+/// Build a post-v168 DB that uses the `attachment` table with new column names.
+fn make_post_v168_attachment_db() -> Vec<u8> {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "PRAGMA user_version = 200;
+         CREATE TABLE recipient (_id INTEGER PRIMARY KEY, e164 TEXT, aci TEXT,
+             group_id TEXT, system_display_name TEXT, profile_joined_name TEXT, type INTEGER DEFAULT 0);
+         CREATE TABLE thread (_id INTEGER PRIMARY KEY, recipient_id INTEGER NOT NULL UNIQUE,
+             archived INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0);
+         CREATE TABLE sms (_id INTEGER PRIMARY KEY, thread_id INTEGER, date INTEGER,
+             date_received INTEGER, type INTEGER DEFAULT 0, body TEXT,
+             from_recipient_id INTEGER, read INTEGER DEFAULT 0, remote_deleted INTEGER DEFAULT 0);
+         CREATE TABLE reaction (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
+             author_id INTEGER NOT NULL, emoji TEXT NOT NULL,
+             date_sent INTEGER NOT NULL, date_received INTEGER NOT NULL);
+         -- post-v168: 'attachment' table with new column names
+         CREATE TABLE attachment (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
+             content_type TEXT, file_name TEXT, data_size INTEGER DEFAULT 0);
+         CREATE TABLE call (_id INTEGER PRIMARY KEY, call_id INTEGER NOT NULL,
+             message_id INTEGER NOT NULL, peer TEXT NOT NULL, type INTEGER NOT NULL,
+             direction INTEGER NOT NULL, event INTEGER NOT NULL, timestamp INTEGER NOT NULL);
+         INSERT INTO recipient VALUES (1, '+19995550001', 'uuid-x', NULL, 'Tester', 'Tester X', 0);
+         INSERT INTO thread VALUES (1, 1, 0, 1);
+         INSERT INTO sms VALUES (20, 1, 1710513127000, 1710513127001, 23, NULL, 1, 1, 0);
+         -- attachment row linking to sms id=20
+         INSERT INTO attachment VALUES (1, 20, 'video/mp4', 'video.mp4', 512000);",
+    )
+    .unwrap();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+    std::fs::read(tmp.path()).unwrap()
+}
+
+#[test]
+fn t31_attachment_post_v168_media_resolved() {
+    let db = make_post_v168_attachment_db();
+    let result = extract_from_signal_db(&db, 0).unwrap();
+    let all_msgs: Vec<_> = result.chats.iter().flat_map(|c| c.messages.iter()).collect();
+    let msg = all_msgs.iter().find(|m| m.id == 20).expect("message id=20 missing");
+    match &msg.content {
+        MessageContent::Media(m) => {
+            assert_eq!(m.mime_type, "video/mp4", "post-v168 attachment mime type should be video/mp4");
+        }
+        other => panic!("expected MessageContent::Media for post-v168 attachment, got {:?}", other),
+    }
+}
+
+// ── T32: timestamp priority — date_server > date_received > date_sent ────────
+
+/// Build a DB where sms has date_server (> date_received > date_sent).
+/// Expect the message timestamp to use date_server.
+fn make_timestamp_priority_db() -> Vec<u8> {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "PRAGMA user_version = 200;
+         CREATE TABLE recipient (_id INTEGER PRIMARY KEY, e164 TEXT, aci TEXT,
+             group_id TEXT, system_display_name TEXT, profile_joined_name TEXT, type INTEGER DEFAULT 0);
+         CREATE TABLE thread (_id INTEGER PRIMARY KEY, recipient_id INTEGER NOT NULL UNIQUE,
+             archived INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0);
+         -- sms with date_received and date_server columns
+         CREATE TABLE sms (_id INTEGER PRIMARY KEY, thread_id INTEGER,
+             date INTEGER, date_received INTEGER, type INTEGER DEFAULT 0, body TEXT,
+             from_recipient_id INTEGER, read INTEGER DEFAULT 0, remote_deleted INTEGER DEFAULT 0,
+             date_server INTEGER);
+         CREATE TABLE part (_id INTEGER PRIMARY KEY, mid INTEGER NOT NULL,
+             content_type TEXT, name TEXT, file_size INTEGER DEFAULT 0);
+         CREATE TABLE reaction (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
+             author_id INTEGER NOT NULL, emoji TEXT NOT NULL,
+             date_sent INTEGER NOT NULL, date_received INTEGER NOT NULL);
+         CREATE TABLE call (_id INTEGER PRIMARY KEY, call_id INTEGER NOT NULL,
+             message_id INTEGER NOT NULL, peer TEXT NOT NULL, type INTEGER NOT NULL,
+             direction INTEGER NOT NULL, event INTEGER NOT NULL, timestamp INTEGER NOT NULL);
+         INSERT INTO recipient VALUES (1, '+19995550001', 'uuid-x', NULL, 'Tester', 'Tester X', 0);
+         INSERT INTO thread VALUES (1, 1, 0, 1);
+         -- date=1000, date_received=2000, date_server=3000 — expect timestamp=3000
+         INSERT INTO sms VALUES (30, 1, 1000, 2000, 23, 'priority test', 1, 1, 0, 3000);",
+    )
+    .unwrap();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+    std::fs::read(tmp.path()).unwrap()
+}
+
+#[test]
+fn t32_timestamp_prefers_date_server() {
+    let db = make_timestamp_priority_db();
+    let result = extract_from_signal_db(&db, 0).unwrap();
+    let all_msgs: Vec<_> = result.chats.iter().flat_map(|c| c.messages.iter()).collect();
+    let msg = all_msgs.iter().find(|m| m.id == 30).expect("message id=30 missing");
+    // date_server=3000ms → timestamp epoch_ms should be 3000
+    assert_eq!(
+        msg.timestamp.utc.timestamp_millis(), 3000,
+        "timestamp should use date_server (3000), not date (1000) or date_received (2000)"
+    );
+}
+
+/// When date_server is absent/NULL, fall back to date_received.
+fn make_timestamp_fallback_db() -> Vec<u8> {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "PRAGMA user_version = 200;
+         CREATE TABLE recipient (_id INTEGER PRIMARY KEY, e164 TEXT, aci TEXT,
+             group_id TEXT, system_display_name TEXT, profile_joined_name TEXT, type INTEGER DEFAULT 0);
+         CREATE TABLE thread (_id INTEGER PRIMARY KEY, recipient_id INTEGER NOT NULL UNIQUE,
+             archived INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0);
+         CREATE TABLE sms (_id INTEGER PRIMARY KEY, thread_id INTEGER,
+             date INTEGER, date_received INTEGER, type INTEGER DEFAULT 0, body TEXT,
+             from_recipient_id INTEGER, read INTEGER DEFAULT 0, remote_deleted INTEGER DEFAULT 0,
+             date_server INTEGER);
+         CREATE TABLE part (_id INTEGER PRIMARY KEY, mid INTEGER NOT NULL,
+             content_type TEXT, name TEXT, file_size INTEGER DEFAULT 0);
+         CREATE TABLE reaction (_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL,
+             author_id INTEGER NOT NULL, emoji TEXT NOT NULL,
+             date_sent INTEGER NOT NULL, date_received INTEGER NOT NULL);
+         CREATE TABLE call (_id INTEGER PRIMARY KEY, call_id INTEGER NOT NULL,
+             message_id INTEGER NOT NULL, peer TEXT NOT NULL, type INTEGER NOT NULL,
+             direction INTEGER NOT NULL, event INTEGER NOT NULL, timestamp INTEGER NOT NULL);
+         INSERT INTO recipient VALUES (1, '+19995550001', 'uuid-x', NULL, 'Tester', 'Tester X', 0);
+         INSERT INTO thread VALUES (1, 1, 0, 1);
+         -- date_server=NULL → fall back to date_received=2000
+         INSERT INTO sms VALUES (31, 1, 1000, 2000, 23, 'fallback test', 1, 1, 0, NULL);",
+    )
+    .unwrap();
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+    std::fs::read(tmp.path()).unwrap()
+}
+
+#[test]
+fn t33_timestamp_fallback_date_received_when_no_server() {
+    let db = make_timestamp_fallback_db();
+    let result = extract_from_signal_db(&db, 0).unwrap();
+    let all_msgs: Vec<_> = result.chats.iter().flat_map(|c| c.messages.iter()).collect();
+    let msg = all_msgs.iter().find(|m| m.id == 31).expect("message id=31 missing");
+    // date_server=NULL, date_received=2000 → expect 2000
+    assert_eq!(
+        msg.timestamp.utc.timestamp_millis(), 2000,
+        "timestamp should fall back to date_received (2000) when date_server is absent"
     );
 }

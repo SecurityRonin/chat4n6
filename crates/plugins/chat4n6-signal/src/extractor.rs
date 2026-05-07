@@ -20,6 +20,7 @@
 //! assuming the local user's `_id`.
 
 use anyhow::{Context, Result};
+pub use helpers::{is_outgoing_base_type, attachment_table_name};
 use chat4n6_plugin_api::{
     CallRecord, CallResult, Chat, Contact, EvidenceSource, ExtractionResult, ForensicTimestamp,
     ForensicWarning, MediaRef, Message, MessageContent, Reaction,
@@ -505,6 +506,24 @@ fn detect_disappearing_timers(
                 vanished_count,
             });
         }
+    }
+}
+
+// ── Public helpers (also used by tests) ──────────────────────────────────────
+
+pub mod helpers {
+    /// Return the attachment table name for a given schema version.
+    ///
+    /// Stub: always returns "part" — will be corrected in Task 3 implementation.
+    pub fn attachment_table_name(_schema_version: Option<u32>) -> &'static str {
+        "part" // STUB: Task 3 will add branching on schema_version >= 168
+    }
+
+    /// Determine whether a raw Signal `sms.type` value represents an outgoing message.
+    ///
+    /// Stub: uses the old `(type_val & 0x20) != 0` heuristic — will be corrected in Task 1.
+    pub fn is_outgoing_base_type(type_val: i64) -> bool {
+        (type_val & 0x20) != 0 // STUB: wrong — Task 1 will replace with OUTGOING_BASE_TYPES
     }
 }
 
