@@ -12,6 +12,24 @@ use std::collections::{HashMap, HashSet};
 
 pub use crate::tl::decode_tl_message_text;
 
+mod cols {
+    pub mod messages {
+        pub const UID: usize = 1;
+        pub const DATE: usize = 2;
+        pub const OUT: usize = 3;
+        pub const DATA: usize = 4;
+        pub const FWD_FROM_ID: usize = 7;
+        pub const FWD_FROM_NAME: usize = 8;
+        pub const FWD_DATE: usize = 9;
+    }
+    pub mod users {
+        pub const NAME: usize = 1;
+    }
+    pub mod chats {
+        pub const NAME: usize = 1;
+    }
+}
+
 /// Extract all forensic artifacts from a Telegram cache4.db byte slice.
 ///
 /// Column layout (values[0] is always Null — INTEGER PRIMARY KEY alias):
@@ -39,31 +57,19 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
     let by_table = partition_by_table(&records);
 
     // Build uid → name from users table
-    let users_map = build_users_map(by_table.get("users").map(|v| v.as_slice()).unwrap_or(&[]));
+    let users_map = build_id_to_name_map(tbl(&by_table, "users"), cols::users::NAME);
 
     // Build uid → name from chats table (group/channel names; Task 4)
-    let chats_name_map =
-        build_chats_name_map(by_table.get("chats").map(|v| v.as_slice()).unwrap_or(&[]));
+    let chats_name_map = build_id_to_name_map(tbl(&by_table, "chats"), cols::chats::NAME);
 
     // Build media set: set of mid values that have a media_v4 row
-    let media_mids = build_media_set(
-        by_table
-            .get("media_v4")
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]),
-    );
+    let media_mids = build_media_set(tbl(&by_table, "media_v4"));
 
     // Task 1: prefer messages_v2; fall back to messages if absent.
     let msg_records = if by_table.contains_key("messages_v2") {
-        by_table
-            .get("messages_v2")
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+        tbl(&by_table, "messages_v2")
     } else {
-        by_table
-            .get("messages")
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+        tbl(&by_table, "messages")
     };
 
     // Process messages → grouped by uid (dialog ID)
@@ -75,15 +81,15 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
             Some(id) => id,
             None => continue,
         };
-        let uid = match r.values.get(1) {
+        let uid = match r.values.get(cols::messages::UID) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let date_secs = match r.values.get(2) {
+        let date_secs = match r.values.get(cols::messages::DATE) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let out = match r.values.get(3) {
+        let out = match r.values.get(cols::messages::OUT) {
             Some(SqlValue::Int(n)) => *n != 0,
             _ => false,
         };
@@ -121,15 +127,15 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         // Forward detection: columns [7]=fwd_from_id, [8]=fwd_from_name, [9]=fwd_date.
         // These are optional — only present when the DB was created/ALTERed with them.
         // Gracefully skip if absent (production DBs without these columns are fine).
-        let fwd_from_id: Option<i64> = match r.values.get(7) {
+        let fwd_from_id: Option<i64> = match r.values.get(cols::messages::FWD_FROM_ID) {
             Some(SqlValue::Int(n)) if *n != 0 => Some(*n),
             _ => None,
         };
-        let fwd_from_name: Option<String> = match r.values.get(8) {
+        let fwd_from_name: Option<String> = match r.values.get(cols::messages::FWD_FROM_NAME) {
             Some(SqlValue::Text(s)) => Some(s.clone()),
             _ => None,
         };
-        let fwd_date: Option<i64> = match r.values.get(9) {
+        let fwd_date: Option<i64> = match r.values.get(cols::messages::FWD_DATE) {
             Some(SqlValue::Int(n)) => Some(*n),
             _ => None,
         };
@@ -229,21 +235,29 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
     })
 }
 
-/// users table: [0]=Null(uid), [1]=name
-fn build_users_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
+/// Build a rowid → text-value map from any table where the name is at `name_col`.
+fn build_id_to_name_map(records: &[&RecoveredRecord], name_col: usize) -> HashMap<i64, String> {
     let mut map = HashMap::new();
     for r in records {
-        let uid = match r.row_id {
+        let id = match r.row_id {
             Some(id) => id,
             None => continue,
         };
-        let name = match r.values.get(1) {
+        let name = match r.values.get(name_col) {
             Some(SqlValue::Text(s)) => s.clone(),
             _ => continue,
         };
-        map.insert(uid, name);
+        map.insert(id, name);
     }
     map
+}
+
+/// Return the slice of records for a given table name, or an empty slice.
+fn tbl<'a>(
+    by: &'a HashMap<String, Vec<&'a RecoveredRecord>>,
+    name: &str,
+) -> &'a [&'a RecoveredRecord] {
+    by.get(name).map(|v| v.as_slice()).unwrap_or_default()
 }
 
 /// Returns the set of `mid` values that have a corresponding media_v4 row.
@@ -263,23 +277,6 @@ fn build_media_set(records: &[&RecoveredRecord]) -> HashSet<i64> {
     set
 }
 
-/// chats: [0]=Null(uid), [1]=name, [2]=data
-/// Builds uid → name map for group chats and channels.
-fn build_chats_name_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
-    let mut map = HashMap::new();
-    for r in records {
-        let uid = match r.row_id {
-            Some(id) => id,
-            None => continue,
-        };
-        let name = match r.values.get(1) {
-            Some(SqlValue::Text(s)) => s.clone(),
-            _ => continue,
-        };
-        map.insert(uid, name);
-    }
-    map
-}
 
 #[cfg(test)]
 mod tests {
