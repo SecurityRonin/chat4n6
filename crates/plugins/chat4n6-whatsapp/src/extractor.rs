@@ -47,17 +47,17 @@ pub fn extract_from_msgstore(
     let by_table = partition_by_table(&records);
 
     // Build JID lookup: id → raw_string
-    let jid_map = build_jid_map(by_table.get("jid").map(|v| v.as_slice()).unwrap_or(&[]));
+    let jid_map = build_jid_map(tbl(&by_table, "jid"));
 
     // Build chat map: chat_id → Chat (populated with messages below)
     let mut chats = build_chats(
-        by_table.get("chat").map(|v| v.as_slice()).unwrap_or(&[]),
+        tbl(&by_table, "chat"),
         &jid_map,
     );
 
     // Map messages into chats.  If the chat record was deleted/unrecovered,
     // create a stub so forensically-recovered messages are never silently dropped.
-    let msg_records = by_table.get("message").map(|v| v.as_slice()).unwrap_or(&[]);
+    let msg_records = tbl(&by_table, "message");
     for rec in msg_records {
         if let Some(msg) = record_to_message(rec, &jid_map, tz_offset_secs) {
             chats
@@ -82,10 +82,7 @@ pub fn extract_from_msgstore(
     // ── Quoted messages ──────────────────────────────────────────────────
     // Build a map of message_row_id → (text, sender_jid, from_me, timestamp)
     // from the message_quoted table, then attach to parent messages.
-    let quoted_records = by_table
-        .get("message_quoted")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
+    let quoted_records = tbl(&by_table, "message_quoted");
     let quoted_map = build_quoted_map(quoted_records, &jid_map, tz_offset_secs);
 
     // Build ghost map: message_row_id → text_data for ghost recovery.
@@ -113,10 +110,7 @@ pub fn extract_from_msgstore(
     // ── Reactions (message_add_on type=56) ──────────────────────────────────
     // Build map: message_row_id → Vec<Reaction>
     let mut reactions_map: HashMap<i64, Vec<Reaction>> = HashMap::new();
-    let add_on_records = by_table
-        .get("message_add_on")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
+    let add_on_records = tbl(&by_table, "message_add_on");
     for r in add_on_records {
         let msg_row_id = match r.values.get(1) {
             Some(SqlValue::Int(n)) => *n,
@@ -155,10 +149,7 @@ pub fn extract_from_msgstore(
     // ── Edit history (message_edit_info) ────────────────────────────────────
     // Build map: message_row_id → Vec<EditHistoryEntry>
     let mut edits_map: HashMap<i64, Vec<EditHistoryEntry>> = HashMap::new();
-    let edit_records = by_table
-        .get("message_edit_info")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
+    let edit_records = tbl(&by_table, "message_edit_info");
     for r in edit_records {
         let msg_row_id = match r.values.get(1) {
             Some(SqlValue::Int(n)) => *n,
@@ -185,10 +176,7 @@ pub fn extract_from_msgstore(
     // ── Receipts (receipt_user) ─────────────────────────────────────────────
     // Build map: message_row_id → Vec<MessageReceipt>
     let mut receipts_map: HashMap<i64, Vec<MessageReceipt>> = HashMap::new();
-    let receipt_records = by_table
-        .get("receipt_user")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
+    let receipt_records = tbl(&by_table, "receipt_user");
     for r in receipt_records {
         let msg_row_id = match r.values.get(1) {
             Some(SqlValue::Int(n)) => *n,
@@ -227,10 +215,7 @@ pub fn extract_from_msgstore(
     // ── Forwarded messages (message_forwarded) ───────────────────────────────
     // Build map: message_row_id → forward_score
     let mut forwarded_map: HashMap<i64, u32> = HashMap::new();
-    let fwd_records = by_table
-        .get("message_forwarded")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
+    let fwd_records = tbl(&by_table, "message_forwarded");
     for r in fwd_records {
         let msg_row_id = match r.values.get(1) {
             Some(SqlValue::Int(n)) => *n,
@@ -268,10 +253,7 @@ pub fn extract_from_msgstore(
     }
 
     // Map call records, then merge group calls by shared call_row_id
-    let call_records = by_table
-        .get("call_log")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
+    let call_records = tbl(&by_table, "call_log");
     let raw_calls: Vec<(CallRecord, Option<i64>)> = call_records
         .iter()
         .filter_map(|r| record_to_call(r, &jid_map, tz_offset_secs))
@@ -279,10 +261,7 @@ pub fn extract_from_msgstore(
     let calls = merge_group_calls(raw_calls);
 
     // ── Group participant events (group_participant_user) ───────────────────
-    let gpe_records = by_table
-        .get("group_participant_user")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
+    let gpe_records = tbl(&by_table, "group_participant_user");
     let group_participant_events =
         build_group_participant_events(gpe_records, &jid_map, tz_offset_secs);
 
@@ -306,10 +285,7 @@ pub fn extract_from_msgstore(
     let total_messages = live_message_ids.len() as u32;
 
     // Collect message_thumbnails row IDs.
-    let thumbnail_records = by_table
-        .get("message_thumbnails")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
+    let thumbnail_records = tbl(&by_table, "message_thumbnails");
     let thumbnail_row_ids: Vec<i64> = thumbnail_records
         .iter()
         .filter_map(|r| r.row_id)
@@ -919,10 +895,7 @@ pub fn extract_contacts(wa_db_bytes: &[u8]) -> Result<Vec<Contact>> {
         .context("failed to open wa.db")?;
     let records = engine.recover_layer1().context("wa.db layer 1 recovery")?;
     let by_table = partition_by_table(&records);
-    let contact_records = by_table
-        .get("wa_contacts")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
+    let contact_records = tbl(&by_table, "wa_contacts");
 
     let mut contacts = Vec::new();
     for r in contact_records {
