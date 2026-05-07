@@ -146,6 +146,12 @@ fn partition_by_table(records: &[RecoveredRecord]) -> HashMap<String, Vec<Recove
     map
 }
 
+/// Look up a table name in a `partition_by_table` map and return its records as a slice.
+/// Returns an empty slice when the table is absent.
+fn tbl<'a>(by: &'a HashMap<String, Vec<RecoveredRecord>>, name: &str) -> &'a [RecoveredRecord] {
+    by.get(name).map(|v| v.as_slice()).unwrap_or_default()
+}
+
 // ── Recipient map ────────────────────────────────────────────────────────────
 
 /// Schema: _id, e164, aci, group_id, system_display_name, profile_joined_name, type
@@ -576,6 +582,42 @@ pub mod helpers {
         const OUTGOING_BASE_TYPES: &[i64] = &[2, 11, 21, 22, 23, 24, 25, 26, 28];
         let base = type_val & 0x1F;
         OUTGOING_BASE_TYPES.contains(&base)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chat4n6_sqlite_forensics::record::{RecoveredRecord, SqlValue};
+    use chat4n6_plugin_api::EvidenceSource;
+
+    fn make_record(table: &str) -> RecoveredRecord {
+        RecoveredRecord {
+            table: table.to_string(),
+            row_id: Some(1),
+            values: vec![SqlValue::Null],
+            source: EvidenceSource::Live,
+            offset: 0,
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn tbl_empty_map_returns_empty_slice() {
+        let by: HashMap<String, Vec<RecoveredRecord>> = HashMap::new();
+        assert!(tbl(&by, "thread").is_empty());
+    }
+
+    #[test]
+    fn tbl_populated_map_returns_correct_slice() {
+        let mut by: HashMap<String, Vec<RecoveredRecord>> = HashMap::new();
+        by.insert("thread".to_string(), vec![make_record("thread"), make_record("thread")]);
+        by.insert("sms".to_string(), vec![make_record("sms")]);
+        assert_eq!(tbl(&by, "thread").len(), 2);
+        assert_eq!(tbl(&by, "sms").len(), 1);
+        assert!(tbl(&by, "missing").is_empty());
     }
 }
 

@@ -383,6 +383,12 @@ pub fn extract_parallel(
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/// Look up a table name in a `partition_by_table` map and return its records as a slice.
+/// Returns an empty slice when the table is absent.
+fn tbl<'a>(by: &'a HashMap<String, Vec<&'a RecoveredRecord>>, name: &str) -> &'a [&'a RecoveredRecord] {
+    by.get(name).map(|v| v.as_slice()).unwrap_or_default()
+}
+
 /// Build a map of key_id (XMPP stanza ID) → list of message row_ids.
 ///
 /// Parses the CREATE TABLE DDL for the `message` table to determine the
@@ -2076,6 +2082,45 @@ mod edit_version_tests {
             "edit_version=0 must not override content, got: {:?}",
             msg.content
         );
+    }
+}
+
+// ── tbl helper tests ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tbl_helper_tests {
+    use super::*;
+    use chat4n6_plugin_api::EvidenceSource;
+    use chat4n6_sqlite_forensics::record::RecoveredRecord;
+
+    fn make_record() -> RecoveredRecord {
+        RecoveredRecord {
+            table: "message".to_string(),
+            row_id: Some(1),
+            values: vec![],
+            source: EvidenceSource::Live,
+            offset: 0,
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn tbl_returns_empty_slice_for_unknown_key() {
+        let record = make_record();
+        let mut map: HashMap<String, Vec<&RecoveredRecord>> = HashMap::new();
+        map.insert("message".to_string(), vec![&record]);
+        // "jid" is not in the map
+        let result = tbl(&map, "jid");
+        assert!(result.is_empty(), "unknown key must return empty slice");
+    }
+
+    #[test]
+    fn tbl_returns_records_for_known_key() {
+        let record = make_record();
+        let mut map: HashMap<String, Vec<&RecoveredRecord>> = HashMap::new();
+        map.insert("message".to_string(), vec![&record]);
+        let result = tbl(&map, "message");
+        assert_eq!(result.len(), 1, "known key must return the inserted records");
     }
 }
 
