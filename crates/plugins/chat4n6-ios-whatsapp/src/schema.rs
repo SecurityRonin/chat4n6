@@ -1,3 +1,22 @@
+/// Column name constants for ZWAMESSAGE and related tables.
+/// Use these instead of bare string literals when indexing the dynamic column map.
+pub mod col_names {
+    pub const Z_PK: &str = "Z_PK";
+    pub const MESSAGE_TYPE: &str = "ZMESSAGETYPE";
+    pub const TEXT: &str = "ZTEXT";
+    pub const MESSAGE_DATE: &str = "ZMESSAGEDATE";
+    pub const GROUP_MEMBER: &str = "ZGROUPMEMBER";
+    pub const FLAGS: &str = "ZFLAGS";
+    pub const CHAT_SESSION: &str = "ZCHATSESSION";
+    pub const FROM_JID: &str = "ZFROMJID";
+    pub const IS_FROM_ME: &str = "ZISFROMME";
+    pub const MEDIA_ITEM: &str = "ZMEDIAITEM";
+    pub const STARRED: &str = "ZSTARRED";
+    pub const SORT: &str = "ZSORT";
+    pub const IS_FORWARDED: &str = "ZISFORWARDED";
+    pub const DELETED: &str = "ZDELETED";
+}
+
 /// Apple CoreData epoch offset: seconds between 2001-01-01T00:00:00Z and Unix epoch.
 pub const APPLE_EPOCH_OFFSET: f64 = 978_307_200.0;
 

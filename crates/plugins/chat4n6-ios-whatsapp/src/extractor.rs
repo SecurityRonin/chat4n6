@@ -1,6 +1,6 @@
 use crate::schema::{
-    apple_epoch_to_utc_ms, default_mime_for_type, is_media_type, msg_type, zflags_is_forwarded,
-    zmessagedate_to_utc_ms,
+    self as schema, apple_epoch_to_utc_ms, default_mime_for_type, is_media_type, msg_type,
+    zflags_is_forwarded, zmessagedate_to_utc_ms,
 };
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
@@ -50,8 +50,8 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
     let msg_records = tbl(&by_table, "ZWAMESSAGE");
 
     // Collect ZSORT values per chat for gap-based selective deletion detection.
-    let zsort_idx = msg_col_map.get("ZSORT").copied().unwrap_or(11);
-    let chat_id_idx = msg_col_map.get("ZCHATSESSION").copied().unwrap_or(1);
+    let zsort_idx = msg_col_map.get(schema::col_names::SORT).copied().unwrap_or(11);
+    let chat_id_idx = msg_col_map.get(schema::col_names::CHAT_SESSION).copied().unwrap_or(1);
     let mut zsort_by_chat: HashMap<i64, Vec<f64>> = HashMap::new();
     for r in msg_records {
         let chat_id = match r.values.get(chat_id_idx) {
@@ -182,22 +182,23 @@ fn parse_column_positions(ddl: &str) -> HashMap<String, usize> {
 
 /// Hardcoded fallback for the standard ZWAMESSAGE schema.
 fn default_msg_column_map() -> HashMap<String, usize> {
+    use schema::col_names as c;
     [
-        ("Z_PK", 0),
-        ("ZCHATSESSION", 1),
-        ("ZMESSAGEDATE", 2),
-        ("ZTEXT", 3),
-        ("ZMESSAGETYPE", 4),
-        ("ZMEDIAITEM", 5),
-        ("ZISFROMME", 6),
-        ("ZFROMJID", 7),
-        ("ZSTARRED", 8),
-        ("ZISFORWARDED", 9),
-        ("ZDELETED", 10),
-        ("ZSORT", 11),
+        (c::Z_PK, 0),
+        (c::CHAT_SESSION, 1),
+        (c::MESSAGE_DATE, 2),
+        (c::TEXT, 3),
+        (c::MESSAGE_TYPE, 4),
+        (c::MEDIA_ITEM, 5),
+        (c::IS_FROM_ME, 6),
+        (c::FROM_JID, 7),
+        (c::STARRED, 8),
+        (c::IS_FORWARDED, 9),
+        (c::DELETED, 10),
+        (c::SORT, 11),
         // Extended columns — present in modern WhatsApp iOS schemas
-        ("ZGROUPMEMBER", 12),
-        ("ZFLAGS", 13),
+        (c::GROUP_MEMBER, 12),
+        (c::FLAGS, 13),
     ]
     .iter()
     .map(|(k, v)| (k.to_string(), *v))
@@ -343,24 +344,25 @@ fn record_to_message(
         }
     };
 
-    let chat_id = get_int("ZCHATSESSION")?;
+    use schema::col_names as c;
+    let chat_id = get_int(c::CHAT_SESSION)?;
     // Task 4: handle millisecond timestamps (value > 4_000_000_000)
-    let ts_ms = get_real("ZMESSAGEDATE").map(zmessagedate_to_utc_ms)?;
-    let text = get_text("ZTEXT");
-    let msg_type_val = get_int("ZMESSAGETYPE").unwrap_or(0) as i32;
-    let media_item_pk = get_int("ZMEDIAITEM");
-    let from_me = get_int("ZISFROMME").unwrap_or(0) != 0;
+    let ts_ms = get_real(c::MESSAGE_DATE).map(zmessagedate_to_utc_ms)?;
+    let text = get_text(c::TEXT);
+    let msg_type_val = get_int(c::MESSAGE_TYPE).unwrap_or(0) as i32;
+    let media_item_pk = get_int(c::MEDIA_ITEM);
+    let from_me = get_int(c::IS_FROM_ME).unwrap_or(0) != 0;
     // Task 3: resolve group sender via ZGROUPMEMBER FK → ZWAGROUPMEMBER.ZMEMBERJID
-    let group_member_fk = get_int("ZGROUPMEMBER");
+    let group_member_fk = get_int(c::GROUP_MEMBER);
     let sender_jid = group_member_fk
         .and_then(|fk| member_map.get(&fk).cloned())
-        .or_else(|| get_text("ZFROMJID"));
-    let starred = get_int("ZSTARRED").unwrap_or(0) != 0;
+        .or_else(|| get_text(c::FROM_JID));
+    let starred = get_int(c::STARRED).unwrap_or(0) != 0;
     // Task 2: forwarded requires both bit 7 (0x80) and bit 8 (0x100) set in ZFLAGS
-    let is_forwarded = get_int("ZFLAGS")
+    let is_forwarded = get_int(c::FLAGS)
         .map(zflags_is_forwarded)
-        .unwrap_or_else(|| get_int("ZISFORWARDED").unwrap_or(0) != 0);
-    let deleted = get_int("ZDELETED").unwrap_or(0) != 0;
+        .unwrap_or_else(|| get_int(c::IS_FORWARDED).unwrap_or(0) != 0);
+    let deleted = get_int(c::DELETED).unwrap_or(0) != 0;
 
     let content = if deleted || msg_type_val == msg_type::DELETED {
         MessageContent::Deleted
