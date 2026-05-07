@@ -596,6 +596,66 @@ mod tests {
         );
     }
 
+    /// Build a DB with ZWAGROUPMEMBER and a group message referencing it.
+    fn make_group_member_db() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("
+            PRAGMA user_version = 32;
+            CREATE TABLE ZWACHATSESSION (
+                Z_PK INTEGER PRIMARY KEY,
+                ZARCHIVED INTEGER DEFAULT 0,
+                ZCONTACTIDENTIFIER TEXT,
+                ZPARTNERNAME TEXT,
+                ZLASTMESSAGEDATE REAL,
+                ZSESSIONTYPE INTEGER DEFAULT 0
+            );
+            CREATE TABLE ZWAGROUPMEMBER (
+                Z_PK INTEGER PRIMARY KEY,
+                ZMEMBERJID TEXT,
+                ZCHATSESSION INTEGER
+            );
+            CREATE TABLE ZWAMESSAGE (
+                Z_PK INTEGER PRIMARY KEY,
+                ZCHATSESSION INTEGER,
+                ZMESSAGEDATE REAL NOT NULL,
+                ZTEXT TEXT,
+                ZMESSAGETYPE INTEGER DEFAULT 0,
+                ZMEDIAITEM INTEGER,
+                ZISFROMME INTEGER DEFAULT 0,
+                ZFROMJID TEXT,
+                ZSTARRED INTEGER DEFAULT 0,
+                ZISFORWARDED INTEGER DEFAULT 0,
+                ZDELETED INTEGER DEFAULT 0,
+                ZSORT REAL,
+                ZGROUPMEMBER INTEGER,
+                ZFLAGS INTEGER DEFAULT 0
+            );
+            CREATE TABLE ZWAMEDIAITEM (Z_PK INTEGER PRIMARY KEY, ZMESSAGE INTEGER, ZMIMETYPE TEXT, ZFILESIZE INTEGER DEFAULT 0, ZLOCALPATH TEXT, ZMEDIAURL TEXT);
+            CREATE TABLE ZWACONTACT (Z_PK INTEGER PRIMARY KEY, ZABUSEIDENTIFIER TEXT, ZPHONENUMBER TEXT, ZFULLNAME TEXT);
+            INSERT INTO ZWACHATSESSION VALUES (1, 0, 'group@g.us', 'TestGroup', 600000000.0, 1);
+            INSERT INTO ZWAGROUPMEMBER VALUES (42, '1234567890@s.whatsapp.net', 1);
+            -- ZFROMJID is NULL; sender comes from ZGROUPMEMBER FK=42
+            INSERT INTO ZWAMESSAGE VALUES (1, 1, 600000000.0, 'group hello', 0, NULL, 0, NULL, 0, 0, 0, 1.0, 42, 0);
+        ").unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn group_sender_resolved_from_zwagroupmember() {
+        let db = make_group_member_db();
+        let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
+
+        let chat = result.chats.iter().find(|c| c.jid == "group@g.us").expect("group chat must exist");
+        assert_eq!(chat.messages.len(), 1, "must have 1 message");
+        assert_eq!(
+            chat.messages[0].sender_jid.as_deref(),
+            Some("1234567890@s.whatsapp.net"),
+            "sender must be resolved from ZWAGROUPMEMBER.ZMEMBERJID via ZGROUPMEMBER FK"
+        );
+    }
+
     #[test]
     fn call_extraction_from_zwacallevent() {
         let db = make_callevent_db();

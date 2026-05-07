@@ -1900,3 +1900,193 @@ mod fts5_tests {
         );
     }
 }
+
+// ── Task 1: msg_type_label correctness tests (RED) ────────────────────────────
+
+#[cfg(test)]
+mod msg_type_label_tests {
+    use super::*;
+
+    /// Task 1: verify the corrected WhatsApp Android message type labels.
+    ///
+    /// Historical bug: type 8 was labelled "AudioCall" and type 9 was "Application".
+    /// Community reverse engineering shows:
+    ///   8  = VoiceNote (long-form audio attachment, not PTT)
+    ///   9  = Document  (arbitrary file attachment)
+    ///   13 = Gif       (animated GIF, distinct from video type 3)
+    ///   15 = Deleted   (deleted-for-all tombstone placeholder, NOT ProductSingle)
+    #[test]
+    fn type_8_label_is_voice_note() {
+        assert_eq!(msg_type_label(8), "VoiceNote");
+    }
+
+    #[test]
+    fn type_9_label_is_document() {
+        assert_eq!(msg_type_label(9), "Document");
+    }
+
+    #[test]
+    fn type_13_label_is_gif() {
+        assert_eq!(msg_type_label(13), "Gif");
+    }
+
+    #[test]
+    fn type_15_label_is_deleted() {
+        assert_eq!(msg_type_label(15), "Deleted");
+    }
+
+    /// Sanity-check a selection of unambiguous types that must remain unchanged.
+    #[test]
+    fn unchanged_types_still_correct() {
+        assert_eq!(msg_type_label(0), "Text");
+        assert_eq!(msg_type_label(1), "Image");
+        assert_eq!(msg_type_label(2), "Audio");
+        assert_eq!(msg_type_label(3), "Video");
+        assert_eq!(msg_type_label(4), "Contact");
+        assert_eq!(msg_type_label(5), "Location");
+        assert_eq!(msg_type_label(7), "StatusUpdate");
+        assert_eq!(msg_type_label(20), "Sticker");
+    }
+}
+
+// ── Task 2: edit_version delete semantics tests (RED) ─────────────────────────
+
+#[cfg(test)]
+mod edit_version_tests {
+    use super::*;
+
+    /// Build a minimal msgstore with a message that has `edit_version` set.
+    ///
+    /// `edit_version_val`: the integer value to store in the edit_version column.
+    /// When the schema includes `edit_version` at column index 10, values 5 and 7
+    /// must both produce `MessageContent::Deleted`.
+    fn make_msgstore_with_edit_version(edit_version_val: i64) -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(r#"
+            PRAGMA user_version = 230;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+            CREATE TABLE message (
+                _id INTEGER PRIMARY KEY,
+                chat_row_id INTEGER NOT NULL,
+                sender_jid_row_id INTEGER,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                text_data TEXT,
+                message_type INTEGER NOT NULL DEFAULT 0,
+                media_mime_type TEXT,
+                media_name TEXT,
+                starred INTEGER NOT NULL DEFAULT 0,
+                edit_version INTEGER
+            );
+            INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+            INSERT INTO chat VALUES (1, 1, NULL);
+            -- A message that originally had text, but was deleted (edit_version={})
+            INSERT INTO message VALUES (1, 1, NULL, 1, 1710513500000, 'original text', 0, NULL, NULL, 0, {});
+        "#, edit_version_val, edit_version_val)).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn edit_version_7_produces_deleted_content() {
+        // edit_version=7: deleted-for-all (sender deleted from everyone's view)
+        let db = make_msgstore_with_edit_version(7);
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
+        assert!(
+            matches!(&msg.content, MessageContent::Deleted),
+            "edit_version=7 (deleted-for-all) must produce MessageContent::Deleted, got: {:?}",
+            msg.content
+        );
+    }
+
+    #[test]
+    fn edit_version_5_produces_deleted_content() {
+        // edit_version=5: deleted-for-me (local deletion only)
+        let db = make_msgstore_with_edit_version(5);
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
+        assert!(
+            matches!(&msg.content, MessageContent::Deleted),
+            "edit_version=5 (deleted-for-me) must produce MessageContent::Deleted, got: {:?}",
+            msg.content
+        );
+    }
+
+    #[test]
+    fn edit_version_0_preserves_original_content() {
+        // edit_version=0 (or NULL): normal message, content must not be overridden
+        let db = make_msgstore_with_edit_version(0);
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
+        assert!(
+            matches!(&msg.content, MessageContent::Text(s) if s == "original text"),
+            "edit_version=0 must not override content, got: {:?}",
+            msg.content
+        );
+    }
+}
+
+// ── Task 3: bounds-check / truncated-record regression tests (RED) ────────────
+
+#[cfg(test)]
+mod truncated_record_tests {
+    use super::*;
+
+    /// Build a msgstore whose message row has fewer columns than the modern schema
+    /// (simulates an older/legacy schema version where columns 7–9 may not exist).
+    ///
+    /// This must not panic — the extractor must degrade gracefully to the available data.
+    fn make_msgstore_with_short_message_row() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Deliberately omit media_mime_type, media_name, starred, edit_version
+        // so that column indices 7, 8, 9, 10 are absent from the physical row.
+        conn.execute_batch(r#"
+            PRAGMA user_version = 100;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+            CREATE TABLE message (
+                _id INTEGER PRIMARY KEY,
+                chat_row_id INTEGER NOT NULL,
+                sender_jid_row_id INTEGER,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                timestamp INTEGER NOT NULL,
+                text_data TEXT,
+                message_type INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+            INSERT INTO chat VALUES (1, 1, NULL);
+            INSERT INTO message VALUES (1, 1, NULL, 1, 1710513500000, 'hello short', 0);
+        "#).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn truncated_row_does_not_panic() {
+        // Must not panic even when columns 7–10 are absent.
+        let db = make_msgstore_with_short_message_row();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern);
+        assert!(result.is_ok(), "extraction must not fail on truncated rows");
+    }
+
+    #[test]
+    fn truncated_row_text_content_preserved() {
+        // The text must still be extracted from the available columns.
+        let db = make_msgstore_with_short_message_row();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
+        assert!(
+            matches!(&msg.content, MessageContent::Text(s) if s == "hello short"),
+            "text content must be preserved from truncated row, got: {:?}",
+            msg.content
+        );
+    }
+}
