@@ -500,6 +500,39 @@ fn detect_coredata_pk_gaps(
 mod tests {
     use super::*;
 
+    // ── tbl helper ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tbl_returns_slice_when_key_present() {
+        let r1 = RecoveredRecord {
+            table: "ZWAMESSAGE".to_string(),
+            row_id: Some(1),
+            values: vec![],
+            source: chat4n6_plugin_api::EvidenceSource::Live,
+            offset: 0,
+            confidence: 1.0,
+        };
+        let r2 = RecoveredRecord {
+            table: "ZWAMESSAGE".to_string(),
+            row_id: Some(2),
+            values: vec![],
+            source: chat4n6_plugin_api::EvidenceSource::Live,
+            offset: 0,
+            confidence: 1.0,
+        };
+        let mut by: HashMap<String, Vec<&RecoveredRecord>> = HashMap::new();
+        by.insert("ZWAMESSAGE".to_string(), vec![&r1, &r2]);
+        let slice = tbl(&by, "ZWAMESSAGE");
+        assert_eq!(slice.len(), 2);
+    }
+
+    #[test]
+    fn tbl_returns_empty_slice_when_key_absent() {
+        let by: HashMap<String, Vec<&RecoveredRecord>> = HashMap::new();
+        let slice = tbl(&by, "ZWAMESSAGE");
+        assert!(slice.is_empty());
+    }
+
     /// Build a minimal ChatStorage with ZWAPROFILEPUSHNAME to test push-name resolution.
     fn make_pushname_db() -> Vec<u8> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
