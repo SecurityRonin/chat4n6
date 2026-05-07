@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
-    CallRecord, CallResult, Chat, ExtractionResult, ForensicTimestamp, ForensicWarning,
+    Chat, ExtractionResult, ForensicTimestamp, ForensicWarning,
     ForwardOrigin, ForwardOriginKind, MediaRef, Message, MessageContent,
 };
 use chat4n6_sqlite_forensics::{
@@ -10,18 +10,24 @@ use chat4n6_sqlite_forensics::{
 };
 use std::collections::{HashMap, HashSet};
 
-/// Extract all forensic artifacts from a Telegram cache.db byte slice.
+pub use crate::tl::decode_tl_message_text;
+
+/// Extract all forensic artifacts from a Telegram cache4.db byte slice.
 ///
 /// Column layout (values[0] is always Null — INTEGER PRIMARY KEY alias):
 ///
-///   users:    [0]=Null(uid), [1]=name
-///   dialogs:  [0]=Null(did), [1]=date, [2]=last_mid
-///   messages: [0]=Null(mid), [1]=uid, [2]=date, [3]=out, [4]=data,
-///             [5]=send_state, [6]=read_state,
-///             [7]=fwd_from_id (optional), [8]=fwd_from_name (optional),
-///             [9]=fwd_date (optional)
-///   media_v4: [0]=mid, [1]=uid, [2]=date, [3]=type, [4]=data  (no INTEGER PRIMARY KEY)
-///   tgcalls:  [0]=Null(id), [1]=uid, [2]=date, [3]=out, [4]=duration, [5]=video
+///   users:       [0]=Null(uid), [1]=name
+///   chats:       [0]=Null(uid), [1]=name, [2]=data
+///   dialogs:     [0]=Null(did), [1]=date, [2]=last_mid
+///   messages_v2: [0]=Null(mid), [1]=uid, [2]=date, [3]=out, [4]=data,
+///                [5]=send_state, [6]=read_state,
+///                [7]=fwd_from_id (optional), [8]=fwd_from_name (optional),
+///                [9]=fwd_date (optional)
+///   messages:    same layout — fallback if messages_v2 absent
+///   media_v4:    [0]=mid, [1]=uid, [2]=date, [3]=type, [4]=data (no INTEGER PRIMARY KEY)
+///
+/// Note: tgcalls table does NOT exist in Telegram Android.
+///       Call data is embedded in message service records.
 pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<ExtractionResult> {
     let engine = ForensicEngine::new(db_bytes, Some(tz_offset_secs))
         .context("failed to open Telegram cache.db")?;
@@ -35,6 +41,10 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
     // Build uid → name from users table
     let users_map = build_users_map(by_table.get("users").map(|v| v.as_slice()).unwrap_or(&[]));
 
+    // Build uid → name from chats table (group/channel names; Task 4)
+    let chats_name_map =
+        build_chats_name_map(by_table.get("chats").map(|v| v.as_slice()).unwrap_or(&[]));
+
     // Build media set: set of mid values that have a media_v4 row
     let media_mids = build_media_set(
         by_table
@@ -43,13 +53,22 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
             .unwrap_or(&[]),
     );
 
+    // Task 1: prefer messages_v2; fall back to messages if absent.
+    let msg_records = if by_table.contains_key("messages_v2") {
+        by_table
+            .get("messages_v2")
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    } else {
+        by_table
+            .get("messages")
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    };
+
     // Process messages → grouped by uid (dialog ID)
     let mut chats: HashMap<i64, Chat> = HashMap::new();
     let mut forensic_warnings: Vec<ForensicWarning> = Vec::new();
-    let msg_records = by_table
-        .get("messages")
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
 
     for r in msg_records {
         let mid = match r.row_id {
@@ -173,8 +192,13 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         };
 
         let chat = chats.entry(uid).or_insert_with(|| {
-            let name = users_map.get(&uid).cloned();
             let is_group = uid < 0;
+            // Task 4: group/channel names come from the chats table; DM names from users.
+            let name = if is_group {
+                chats_name_map.get(&uid).cloned()
+            } else {
+                users_map.get(&uid).cloned()
+            };
             Chat {
                 id: uid,
                 jid: uid.to_string(),
@@ -187,15 +211,8 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
         chat.messages.push(msg);
     }
 
-    // Process calls from tgcalls table
-    let calls = build_calls(
-        by_table
-            .get("tgcalls")
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]),
-        &users_map,
-        tz_offset_secs,
-    );
+    // Task 2: tgcalls does not exist in Telegram Android — no call extraction.
+    let calls = Vec::new();
 
     Ok(ExtractionResult {
         chats: chats.into_values().collect(),
@@ -246,58 +263,22 @@ fn build_media_set(records: &[&RecoveredRecord]) -> HashSet<i64> {
     set
 }
 
-/// tgcalls: [0]=Null(id), [1]=uid, [2]=date, [3]=out, [4]=duration, [5]=video
-fn build_calls(
-    records: &[&RecoveredRecord],
-    users_map: &HashMap<i64, String>,
-    tz_offset_secs: i32,
-) -> Vec<CallRecord> {
-    let mut calls = Vec::new();
+/// chats: [0]=Null(uid), [1]=name, [2]=data
+/// Builds uid → name map for group chats and channels.
+fn build_chats_name_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
+    let mut map = HashMap::new();
     for r in records {
-        let call_id = match r.row_id {
+        let uid = match r.row_id {
             Some(id) => id,
             None => continue,
         };
-        let uid = match r.values.get(1) {
-            Some(SqlValue::Int(n)) => *n,
+        let name = match r.values.get(1) {
+            Some(SqlValue::Text(s)) => s.clone(),
             _ => continue,
         };
-        let date_secs = match r.values.get(2) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
-        };
-        let from_me = match r.values.get(3) {
-            Some(SqlValue::Int(n)) => *n != 0,
-            _ => false,
-        };
-        let duration = match r.values.get(4) {
-            Some(SqlValue::Int(n)) => *n as u32,
-            _ => 0,
-        };
-        let video = match r.values.get(5) {
-            Some(SqlValue::Int(n)) => *n != 0,
-            _ => false,
-        };
-
-        let participant = users_map
-            .get(&uid)
-            .cloned()
-            .unwrap_or_else(|| uid.to_string());
-
-        calls.push(CallRecord {
-            call_id,
-            participants: vec![participant],
-            from_me,
-            video,
-            group_call: false,
-            duration_secs: duration,
-            call_result: CallResult::Unknown,
-            timestamp: ForensicTimestamp::from_millis(date_secs * 1000, tz_offset_secs),
-            source: r.source.clone(),
-            call_creator_device_jid: None,
-        });
+        map.insert(uid, name);
     }
-    calls
+    map
 }
 
 #[cfg(test)]
@@ -400,13 +381,14 @@ mod tests {
 
     #[test]
     fn forwarded_from_populates_origin_metadata() {
-        // Build a DB with a forwarded message: fwd_from_id=99999 which IS in users table
+        // Build a DB with a forwarded message: fwd_from_id=99999 which IS in users table.
+        // Uses messages_v2 (modern schema).
         let db = make_telegram_db(
-            "ALTER TABLE messages ADD COLUMN fwd_from_id INTEGER;
-             ALTER TABLE messages ADD COLUMN fwd_from_name TEXT;
-             ALTER TABLE messages ADD COLUMN fwd_date INTEGER;
+            "ALTER TABLE messages_v2 ADD COLUMN fwd_from_id INTEGER;
+             ALTER TABLE messages_v2 ADD COLUMN fwd_from_name TEXT;
+             ALTER TABLE messages_v2 ADD COLUMN fwd_date INTEGER;
              INSERT INTO users VALUES (99999, 'Channel X');
-             INSERT INTO messages (mid, uid, date, out, data, send_state, read_state, fwd_from_id, fwd_from_name, fwd_date)
+             INSERT INTO messages_v2 (mid, uid, date, out, data, send_state, read_state, fwd_from_id, fwd_from_name, fwd_date)
                VALUES (10, 100, 1710513127, 0, x'00', 0, 0, 99999, 'Channel X', 1700000000);",
         );
         let result = extract_from_telegram_db(&db, 0).unwrap();
@@ -444,12 +426,13 @@ mod tests {
 
     #[test]
     fn unresolved_forward_source_emitted_when_user_missing() {
-        // fwd_from_id=12345 is NOT in users table → UnresolvedForwardSource warning
+        // fwd_from_id=12345 is NOT in users table → UnresolvedForwardSource warning.
+        // Uses messages_v2 (modern schema).
         let db = make_telegram_db(
-            "ALTER TABLE messages ADD COLUMN fwd_from_id INTEGER;
-             ALTER TABLE messages ADD COLUMN fwd_from_name TEXT;
-             ALTER TABLE messages ADD COLUMN fwd_date INTEGER;
-             INSERT INTO messages (mid, uid, date, out, data, send_state, read_state, fwd_from_id, fwd_from_name, fwd_date)
+            "ALTER TABLE messages_v2 ADD COLUMN fwd_from_id INTEGER;
+             ALTER TABLE messages_v2 ADD COLUMN fwd_from_name TEXT;
+             ALTER TABLE messages_v2 ADD COLUMN fwd_date INTEGER;
+             INSERT INTO messages_v2 (mid, uid, date, out, data, send_state, read_state, fwd_from_id, fwd_from_name, fwd_date)
                VALUES (20, 100, 1710513127, 0, x'00', 0, 0, 12345, NULL, NULL);",
         );
         let result = extract_from_telegram_db(&db, 0).unwrap();
