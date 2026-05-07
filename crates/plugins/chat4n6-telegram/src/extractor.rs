@@ -481,26 +481,155 @@ mod tests {
         );
     }
 
+    // Task 2: tgcalls does not exist — calls must be empty (no phantom table extraction)
     #[test]
-    fn telegram_calls_extracted() {
+    fn no_calls_extracted_tgcalls_does_not_exist() {
+        // Modern Telegram has no tgcalls table; calls are embedded in messages.
+        // Extractor must NOT attempt to query tgcalls and must return empty calls.
         let db = make_telegram_db("");
         let result = extract_from_telegram_db(&db, 0).unwrap();
-        assert!(!result.calls.is_empty(), "should have at least one call");
-        let call = &result.calls[0];
-        assert!(call.from_me, "call should be outgoing (out=1)");
-        assert_eq!(call.duration_secs, 65);
-        assert!(!call.video, "call should not be video");
+        assert!(
+            result.calls.is_empty(),
+            "calls must be empty — tgcalls table does not exist in Telegram Android"
+        );
+    }
+
+    // Task 1: messages_v2 with fallback
+    #[test]
+    fn uses_messages_v2_when_present() {
+        // Build a DB with messages_v2 (and no messages table).
+        // Messages in messages_v2 must appear in extraction result.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Minimal schema: users + messages_v2 only (no messages table)
+        conn.execute_batch(
+            "PRAGMA user_version = 2;
+             CREATE TABLE users (uid INTEGER PRIMARY KEY, name TEXT);
+             CREATE TABLE dialogs (did INTEGER PRIMARY KEY, date INTEGER NOT NULL, last_mid INTEGER DEFAULT 0);
+             CREATE TABLE media_v4 (mid INTEGER NOT NULL, uid INTEGER NOT NULL, date INTEGER NOT NULL, type INTEGER NOT NULL, data BLOB);
+             CREATE TABLE chats (uid INTEGER PRIMARY KEY, name TEXT, data BLOB);
+             CREATE TABLE messages_v2 (mid INTEGER PRIMARY KEY, uid INTEGER NOT NULL, date INTEGER NOT NULL, out INTEGER DEFAULT 0, data BLOB, send_state INTEGER DEFAULT 0, read_state INTEGER DEFAULT 0);
+             INSERT INTO users VALUES (42, 'V2 User');
+             INSERT INTO messages_v2 VALUES (101, 42, 1710514000, 0, NULL, 1, 0);",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let result = extract_from_telegram_db(&db, 0).unwrap();
+        let msg = result
+            .chats
+            .iter()
+            .flat_map(|c| c.messages.iter())
+            .find(|m| m.id == 101);
+        assert!(
+            msg.is_some(),
+            "message mid=101 from messages_v2 must be extracted"
+        );
     }
 
     #[test]
-    fn telegram_call_participant_from_users() {
+    fn falls_back_to_messages_when_no_messages_v2() {
+        // Standard fixture has only `messages` table, no messages_v2.
+        // Existing messages (mid 1-5) must still be extracted.
         let db = make_telegram_db("");
         let result = extract_from_telegram_db(&db, 0).unwrap();
-        assert!(!result.calls.is_empty());
-        let call = &result.calls[0];
+        let all_ids: Vec<i64> = result
+            .chats
+            .iter()
+            .flat_map(|c| c.messages.iter())
+            .map(|m| m.id)
+            .collect();
         assert!(
-            call.participants.iter().any(|p| p == "Alice Smith"),
-            "call participant must be resolved from users table"
+            all_ids.contains(&1),
+            "message mid=1 from fallback messages table must be extracted"
+        );
+    }
+
+    // Task 3: TL BLOB decoding
+    #[test]
+    fn decode_tl_message_text_empty_data_returns_none() {
+        assert_eq!(decode_tl_message_text(&[]), None);
+        assert_eq!(decode_tl_message_text(&[0x3f, 0x1f]), None);
+    }
+
+    #[test]
+    fn decode_tl_message_text_empty_cid_returns_none() {
+        // TL_messageEmpty (0x1c9b1027) → None
+        let data = [0x27u8, 0x10, 0x9b, 0x1c, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(decode_tl_message_text(&data), None);
+    }
+
+    #[test]
+    fn decode_tl_message_text_service_returns_none() {
+        // TL_messageService (0xa7ab1991) → None
+        let data = [0x91u8, 0x19, 0xab, 0xa7, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(decode_tl_message_text(&data), None);
+    }
+
+    #[test]
+    fn decode_tl_message_text_hello() {
+        // TL_message (0x94dd1f3f), flags=0, then at offset 8: len=5, "Hello"
+        let mut data = vec![0x3fu8, 0x1f, 0xdd, 0x94]; // cid LE
+        data.extend_from_slice(&[0u8; 4]); // flags
+        data.push(5); // length byte
+        data.extend_from_slice(b"Hello");
+        assert_eq!(decode_tl_message_text(&data), Some("Hello".to_string()));
+    }
+
+    #[test]
+    fn decode_tl_message_text_short_string() {
+        // TL_message, single char "X"
+        let mut data = vec![0x3fu8, 0x1f, 0xdd, 0x94];
+        data.extend_from_slice(&[0u8; 4]);
+        data.push(1);
+        data.push(b'X');
+        assert_eq!(decode_tl_message_text(&data), Some("X".to_string()));
+    }
+
+    #[test]
+    fn decode_tl_message_text_malformed_utf8_returns_none() {
+        // TL_message, length=2, invalid UTF-8 bytes
+        let mut data = vec![0x3fu8, 0x1f, 0xdd, 0x94];
+        data.extend_from_slice(&[0u8; 4]);
+        data.push(2);
+        data.push(0xfe); // invalid UTF-8
+        data.push(0xfe);
+        assert_eq!(decode_tl_message_text(&data), None);
+    }
+
+    // Task 4: chats table → group names
+    #[test]
+    fn group_chat_name_populated_from_chats_table() {
+        // Build DB with a chats table containing uid=-12345, name="Test Group"
+        // and a messages row for that uid.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version = 2;
+             CREATE TABLE users (uid INTEGER PRIMARY KEY, name TEXT);
+             CREATE TABLE dialogs (did INTEGER PRIMARY KEY, date INTEGER NOT NULL, last_mid INTEGER DEFAULT 0);
+             CREATE TABLE media_v4 (mid INTEGER NOT NULL, uid INTEGER NOT NULL, date INTEGER NOT NULL, type INTEGER NOT NULL, data BLOB);
+             CREATE TABLE chats (uid INTEGER PRIMARY KEY, name TEXT, data BLOB);
+             CREATE TABLE messages (mid INTEGER PRIMARY KEY, uid INTEGER NOT NULL, date INTEGER NOT NULL, out INTEGER DEFAULT 0, data BLOB, send_state INTEGER DEFAULT 0, read_state INTEGER DEFAULT 0);
+             INSERT INTO chats VALUES (-12345, 'Test Group', NULL);
+             INSERT INTO messages VALUES (200, -12345, 1710514000, 0, NULL, 1, 0);",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let result = extract_from_telegram_db(&db, 0).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == -12345);
+        assert!(chat.is_some(), "chat with uid=-12345 must exist");
+        let chat = chat.unwrap();
+        assert!(chat.is_group, "uid < 0 must be is_group=true");
+        assert_eq!(
+            chat.name.as_deref(),
+            Some("Test Group"),
+            "chat name must come from chats table"
         );
     }
 }
