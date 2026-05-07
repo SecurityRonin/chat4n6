@@ -41,36 +41,32 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
     let records = engine.recover_layer1().context("Layer 1 recovery failed")?;
 
     let by_table = partition_by_table(&records);
-    let empty: Vec<RecoveredRecord> = Vec::new();
 
     // Determine schema version early — used for schema-aware table/column selection.
     let schema_version: u32 = read_schema_version(db_bytes);
 
     // Build recipient lookup: _id → (jid_string, display_name, phone)
-    let recipients = build_recipient_map(by_table.get("recipient").map(|v| v.as_slice()).unwrap_or(&empty));
+    let recipients = build_recipient_map(tbl(&by_table, "recipient"));
 
     // Build thread map: thread._id → Chat (filled with messages below)
-    let mut chats = build_thread_map(by_table.get("thread").map(|v| v.as_slice()).unwrap_or(&empty), &recipients);
+    let mut chats = build_thread_map(tbl(&by_table, "thread"), &recipients);
 
     // Build attachment lookup: message_id → MediaRef.
     // Schema v168+: table is `attachment` (columns: message_id, file_name, data_size)
     // pre-v168:     table is `part`       (columns: mid, name, file_size)
     let attach_table = helpers::attachment_table_name(Some(schema_version));
-    let parts = build_part_map(
-        by_table.get(attach_table).map(|v| v.as_slice()).unwrap_or(&empty),
-        Some(schema_version),
-    );
+    let parts = build_part_map(tbl(&by_table, attach_table), Some(schema_version));
 
     // Build reaction lookup: sms._id → Vec<Reaction>
     let reactions = build_reaction_map(
-        by_table.get("reaction").map(|v| v.as_slice()).unwrap_or(&empty),
+        tbl(&by_table, "reaction"),
         &recipients,
         tz_offset_secs,
         Some(schema_version),
     );
 
     // Map sms rows into chats
-    for rec in by_table.get("sms").map(|v| v.as_slice()).unwrap_or(&empty) {
+    for rec in tbl(&by_table, "sms") {
         if let Some(msg) = record_to_message(rec, &parts, &reactions, tz_offset_secs) {
             chats
                 .entry(msg.chat_id)
@@ -81,10 +77,7 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
     }
 
     // Extract calls
-    let calls = extract_calls(
-        by_table.get("call").map(|v| v.as_slice()).unwrap_or(&empty),
-        tz_offset_secs,
-    );
+    let calls = extract_calls(tbl(&by_table, "call"), tz_offset_secs);
 
     // Build contacts from recipients
     let contacts: Vec<Contact> = recipients
@@ -100,12 +93,12 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
     // Detect forensic warnings
     let mut forensic_warnings: Vec<ForensicWarning> = Vec::new();
     detect_disappearing_timers(
-        by_table.get("thread").map(|v| v.as_slice()).unwrap_or(&empty),
-        by_table.get("sms").map(|v| v.as_slice()).unwrap_or(&empty),
+        tbl(&by_table, "thread"),
+        tbl(&by_table, "sms"),
         &mut forensic_warnings,
     );
     detect_sealed_sender_unresolved(
-        by_table.get("sms").map(|v| v.as_slice()).unwrap_or(&empty),
+        tbl(&by_table, "sms"),
         &recipients,
         &mut forensic_warnings,
     );
@@ -158,17 +151,18 @@ fn tbl<'a>(by: &'a HashMap<String, Vec<RecoveredRecord>>, name: &str) -> &'a [Re
 /// values[] after the leading Null (INTEGER PRIMARY KEY): [0]=Null, [1]=e164, [2]=aci,
 /// [3]=group_id, [4]=system_display_name, [5]=profile_joined_name, [6]=type
 fn build_recipient_map(records: &[RecoveredRecord]) -> HashMap<i64, RecipientInfo> {
+    use helpers::cols::recipient as col;
     let mut map = HashMap::new();
     for r in records {
         let id = match r.row_id {
             Some(id) => id,
             None => continue,
         };
-        let e164 = r.text_val(1);
-        let aci = r.text_val(2);
-        let _group_id = r.text_val(3);
-        let system_name = r.text_val(4);
-        let joined_name = r.text_val(5);
+        let e164 = r.text_val(col::E164);
+        let aci = r.text_val(col::ACI);
+        let _group_id = r.text_val(col::GROUP_ID);
+        let system_name = r.text_val(col::SYSTEM_DISPLAY_NAME);
+        let joined_name = r.text_val(col::PROFILE_JOINED_NAME);
 
         // JID: prefer e164, fall back to aci
         let jid = if let Some(ref phone) = e164 {
@@ -195,17 +189,18 @@ fn build_thread_map(
     records: &[RecoveredRecord],
     recipients: &HashMap<i64, RecipientInfo>,
 ) -> HashMap<i64, Chat> {
+    use helpers::cols::thread as col;
     let mut map = HashMap::new();
     for r in records {
         let thread_id = match r.row_id {
             Some(id) => id,
             None => continue,
         };
-        let recipient_id = match r.values.get(1) {
+        let recipient_id = match r.values.get(col::RECIPIENT_ID) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let archived = match r.values.get(2) {
+        let archived = match r.values.get(col::ARCHIVED) {
             Some(SqlValue::Int(n)) => *n != 0,
             _ => false,
         };
@@ -239,15 +234,16 @@ fn build_thread_map(
 ///   post-v168 `attachment`: _id, message_id, content_type, file_name, data_size
 /// values[]: [0]=Null, [1]=message_id, [2]=content_type, [3]=file_name, [4]=file_size
 fn build_part_map(records: &[RecoveredRecord], _schema_version: Option<u32>) -> HashMap<i64, MediaRef> {
+    use helpers::cols::attachment as col;
     let mut map = HashMap::new();
     for r in records {
-        let mid = match r.values.get(1) {
+        let mid = match r.values.get(col::MESSAGE_ID) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let mime_type = r.text_val(2).unwrap_or_else(|| "application/octet-stream".to_string());
-        let file_name = r.text_val(3);
-        let file_size = match r.values.get(4) {
+        let mime_type = r.text_val(col::CONTENT_TYPE).unwrap_or_else(|| "application/octet-stream".to_string());
+        let file_name = r.text_val(col::FILE_NAME);
+        let file_size = match r.values.get(col::FILE_SIZE) {
             Some(SqlValue::Int(n)) => *n as u64,
             _ => 0,
         };
@@ -287,18 +283,20 @@ fn build_reaction_map(
     tz_offset_secs: i32,
     schema_version: Option<u32>,
 ) -> HashMap<i64, Vec<Reaction>> {
+    use helpers::cols::reaction as col;
     // Determine column offsets based on schema version.
-    // pre-v168: author_id at 3, emoji at 4, date_sent at 5
-    // v168+:    author_id at 2, emoji at 3, date_sent at 4
+    // pre-v168 had an extra `is_mms` column at index 2; all subsequent columns shift +1.
+    // v168+:    author_id=col::AUTHOR_ID(2), emoji=col::EMOJI(3), date_sent=col::DATE_SENT(4)
+    // pre-v168: author_id=3, emoji=4, date_sent=5
     let (author_col, emoji_col, date_sent_col) = if schema_version.map_or(false, |v| v >= 168) {
-        (2usize, 3usize, 4usize)
+        (col::AUTHOR_ID, col::EMOJI, col::DATE_SENT)
     } else {
-        (3usize, 4usize, 5usize)
+        (col::AUTHOR_ID + 1, col::EMOJI + 1, col::DATE_SENT + 1)
     };
 
     let mut map: HashMap<i64, Vec<Reaction>> = HashMap::new();
     for r in records {
-        let message_id = match r.values.get(1) {
+        let message_id = match r.values.get(col::MESSAGE_ID) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
@@ -347,23 +345,24 @@ fn record_to_message(
     reactions: &HashMap<i64, Vec<Reaction>>,
     tz_offset_secs: i32,
 ) -> Option<Message> {
+    use helpers::cols::sms as col;
     let id = r.row_id?;
-    let thread_id = match r.values.get(1)? {
+    let thread_id = match r.values.get(col::THREAD_ID)? {
         SqlValue::Int(n) => *n,
         _ => return None,
     };
     // date (sent) is mandatory — used as last-resort fallback.
-    let date_sent_ms = match r.values.get(2)? {
+    let date_sent_ms = match r.values.get(col::DATE)? {
         SqlValue::Int(n) => *n,
         _ => return None,
     };
     // date_received: prefer over date_sent when available and positive.
-    let date_received_ms = match r.values.get(3) {
+    let date_received_ms = match r.values.get(col::DATE_RECEIVED) {
         Some(SqlValue::Int(n)) if *n > 0 => Some(*n),
         _ => None,
     };
-    // date_server: highest priority — index 11 (absent in older schemas → None).
-    let date_server_ms = match r.values.get(11) {
+    // date_server: highest priority — absent in older schemas → None.
+    let date_server_ms = match r.values.get(col::DATE_SERVER) {
         Some(SqlValue::Int(n)) if *n > 0 => Some(*n),
         _ => None,
     };
@@ -372,12 +371,12 @@ fn record_to_message(
         .or(date_received_ms)
         .unwrap_or(date_sent_ms);
 
-    let sms_type = match r.values.get(4) {
+    let sms_type = match r.values.get(col::TYPE) {
         Some(SqlValue::Int(n)) => *n,
         _ => 0,
     };
-    let body = r.text_val(5);
-    let remote_deleted = match r.values.get(8) {
+    let body = r.text_val(col::BODY);
+    let remote_deleted = match r.values.get(col::REMOTE_DELETED) {
         Some(SqlValue::Int(n)) => *n != 0,
         _ => false,
     };
@@ -504,12 +503,13 @@ fn detect_disappearing_timers(
     sms_records: &[RecoveredRecord],
     warnings: &mut Vec<ForensicWarning>,
 ) {
+    use helpers::cols::{thread as tcol, sms as scol};
     for thread_rec in thread_records {
         let thread_id = match thread_rec.row_id {
             Some(id) => id,
             None => continue,
         };
-        let expires_in = match thread_rec.values.get(4) {
+        let expires_in = match thread_rec.values.get(tcol::EXPIRES_IN) {
             Some(SqlValue::Int(n)) if *n > 0 => *n as u32,
             _ => continue,
         };
@@ -520,7 +520,7 @@ fn detect_disappearing_timers(
             .iter()
             .filter(|sms| {
                 // Check thread_id matches
-                let tid = match sms.values.get(1) {
+                let tid = match sms.values.get(scol::THREAD_ID) {
                     Some(SqlValue::Int(n)) => *n,
                     _ => return false,
                 };
@@ -528,7 +528,7 @@ fn detect_disappearing_timers(
                     return false;
                 }
                 // Body absent or empty
-                let body_empty = match sms.values.get(5) {
+                let body_empty = match sms.values.get(scol::BODY) {
                     None | Some(SqlValue::Null) => true,
                     Some(SqlValue::Text(s)) => s.is_empty(),
                     _ => false,
@@ -537,7 +537,7 @@ fn detect_disappearing_timers(
                     return false;
                 }
                 // expires_started > 0
-                match sms.values.get(9) {
+                match sms.values.get(scol::EXPIRES_STARTED) {
                     Some(SqlValue::Int(n)) => *n > 0,
                     _ => false,
                 }
@@ -582,6 +582,75 @@ pub mod helpers {
         const OUTGOING_BASE_TYPES: &[i64] = &[2, 11, 21, 22, 23, 24, 25, 26, 28];
         let base = type_val & 0x1F;
         OUTGOING_BASE_TYPES.contains(&base)
+    }
+
+    /// Column index constants for `RecoveredRecord::values[]`.
+    ///
+    /// Index 0 is always `Null` (the implicit `_id` INTEGER PRIMARY KEY rowid alias).
+    /// Real column data starts at index 1.
+    pub mod cols {
+        /// `sms` table column indices.
+        ///
+        /// Schema: _id, thread_id, date, date_received, type, body,
+        ///         from_recipient_id, read, remote_deleted[, expires_started
+        ///         [, envelope_type[, date_server]]]
+        pub mod sms {
+            pub const THREAD_ID: usize = 1;
+            pub const DATE: usize = 2;          // date_sent (ms)
+            pub const DATE_RECEIVED: usize = 3;
+            pub const TYPE: usize = 4;
+            pub const BODY: usize = 5;
+            pub const FROM_RECIPIENT_ID: usize = 6;
+            pub const READ: usize = 7;
+            pub const REMOTE_DELETED: usize = 8;
+            pub const EXPIRES_STARTED: usize = 9;
+            pub const ENVELOPE_TYPE: usize = 10;
+            pub const DATE_SERVER: usize = 11;
+        }
+        /// `thread` table column indices.
+        ///
+        /// Schema: _id, recipient_id, archived, message_count[, expires_in]
+        pub mod thread {
+            pub const RECIPIENT_ID: usize = 1;
+            pub const ARCHIVED: usize = 2;
+            pub const MESSAGE_COUNT: usize = 3;
+            pub const EXPIRES_IN: usize = 4;
+        }
+        /// `recipient` table column indices.
+        ///
+        /// Schema: _id, e164, aci, group_id, system_display_name, profile_joined_name, type
+        pub mod recipient {
+            pub const E164: usize = 1;
+            pub const ACI: usize = 2;
+            pub const GROUP_ID: usize = 3;
+            pub const SYSTEM_DISPLAY_NAME: usize = 4;
+            pub const PROFILE_JOINED_NAME: usize = 5;
+            pub const TYPE: usize = 6;
+        }
+        /// `reaction` table column indices (post-v168 layout).
+        ///
+        /// Schema: _id, message_id, author_id, emoji, date_sent, date_received
+        ///
+        /// Pre-v168 had an extra `is_mms` column at index 2; author_id shifted to 3.
+        /// Use `build_reaction_map`'s schema-version branch for the offset adjustment.
+        pub mod reaction {
+            pub const MESSAGE_ID: usize = 1;
+            pub const AUTHOR_ID: usize = 2;     // post-v168; pre-v168 = 3
+            pub const EMOJI: usize = 3;         // post-v168; pre-v168 = 4
+            pub const DATE_SENT: usize = 4;     // post-v168; pre-v168 = 5
+            pub const DATE_RECEIVED: usize = 5; // post-v168; pre-v168 = 6
+        }
+        /// `attachment` / `part` table column indices.
+        ///
+        /// Both tables share the same column positions (only names differ):
+        ///   pre-v168 `part`:       _id, mid,        content_type, name,      file_size
+        ///   post-v168 `attachment`: _id, message_id, content_type, file_name, data_size
+        pub mod attachment {
+            pub const MESSAGE_ID: usize = 1;
+            pub const CONTENT_TYPE: usize = 2;
+            pub const FILE_NAME: usize = 3;
+            pub const FILE_SIZE: usize = 4;
+        }
     }
 }
 
@@ -636,11 +705,12 @@ fn detect_sealed_sender_unresolved(
     recipients: &HashMap<i64, RecipientInfo>,
     warnings: &mut Vec<ForensicWarning>,
 ) {
+    use helpers::cols::sms as col;
     let mut unresolved_per_thread: HashMap<i64, u32> = HashMap::new();
 
     for sms in sms_records {
-        // envelope_type at index 10 — silently skip if column absent
-        let envelope_type = match sms.values.get(10) {
+        // envelope_type — silently skip if column absent (older schemas)
+        let envelope_type = match sms.values.get(col::ENVELOPE_TYPE) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
@@ -649,11 +719,11 @@ fn detect_sealed_sender_unresolved(
             continue;
         }
 
-        let thread_id = match sms.values.get(1) {
+        let thread_id = match sms.values.get(col::THREAD_ID) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let from_recipient_id = match sms.values.get(6) {
+        let from_recipient_id = match sms.values.get(col::FROM_RECIPIENT_ID) {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
