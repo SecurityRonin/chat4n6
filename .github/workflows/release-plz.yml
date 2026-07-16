@@ -1,0 +1,64 @@
+name: release-plz
+
+# Owns crates.io publishing + changelogs + version bumps for this workspace's
+# library crates:
+#   chat4n6-plugin-api, chat4n6-fs, dar-archive, ios-backup,
+#   chat4n6-sqlite-forensics, chat4n6-whatsapp, chat4n6-signal,
+#   chat4n6-telegram, chat4n6-ios-whatsapp, chat4n6-report, chat4n6
+# Configuration lives in release-plz.toml.
+#
+# On every push to main:
+#   - release-plz-pr:      opens/updates a human-reviewed version-bump PR
+#   - release-plz-release: publishes any crate whose version is ahead of crates.io
+#                          (release-plz resolves inter-crate dependency order)
+#
+# Binary distribution (if a release.yml is added) triggers on a manual `v[0-9]*` tag;
+# release-plz's per-crate tags (`chat4n6-plugin-api-v*`) never match it.
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz-release:
+    name: release-plz release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: release-plz release
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release-plz-pr:
+    name: release-plz PR
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-pr
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: release-plz release-pr
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

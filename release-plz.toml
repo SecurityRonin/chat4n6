@@ -1,0 +1,42 @@
+# release-plz owns crates.io publishing + changelogs + per-crate version bumps for
+# this workspace's library crates:
+#   chat4n6-plugin-api, chat4n6-fs, dar-archive, ios-backup,
+#   chat4n6-sqlite-forensics, chat4n6-whatsapp, chat4n6-signal,
+#   chat4n6-telegram, chat4n6-ios-whatsapp, chat4n6-report, chat4n6
+# It runs on pushes to main (see .github/workflows/release-plz.yml):
+#   - `release-pr`  opens a human-reviewed version-bump PR (conventional commits)
+#   - `release`     publishes any crate whose Cargo.toml version is ahead of
+#                   crates.io, in inter-crate dependency order, and tags it
+#
+# All workspace members publish to crates.io; no per-package publish=false override
+# is needed.
+
+[workspace]
+# Per-package git tags, e.g. `chat4n6-plugin-api-v0.1.1`. `v[0-9]*` binary triggers never
+# match these — see the fleet release standard.
+git_tag_enable = true
+git_release_enable = false
+changelog_update = true
+dependencies_update = false
+# Only prepare a release on a real change. release-plz's detection is file-based, so a
+# changelog-only "chore: release" commit otherwise re-triggers a release (the churn
+# loop). This allowlist makes feat/fix/perf/refactor/doc/revert the only triggers.
+release_commits = "^(feat|fix|perf|refactor|doc|revert)"
+
+[changelog]
+commit_parsers = [
+    { message = "^chore\\(release\\):", skip = true },
+    { message = "^chore: release", skip = true },
+    { message = "^feat", group = "added" },
+    { message = "^fix", group = "fixed" },
+    { message = "^perf", group = "performance" },
+    { message = "^refactor", group = "other" },
+    { message = "^doc", group = "documentation" },
+    { message = "^revert", group = "other" },
+    { message = "^style", skip = true },
+    { message = "^test", skip = true },
+    { message = "^ci", skip = true },
+    { message = "^build", skip = true },
+    { message = "^chore", skip = true },
+    { message = "^.*", group = "other" },
+]
