@@ -75,6 +75,24 @@ pub fn default_mime_for_type(msg_type: i32) -> &'static str {
 mod tests {
     use super::*;
 
+    /// Classification of the committed legacy fixture, so the legacy branch is
+    /// pinned to a concrete schema rather than a hand-written table list.
+    #[test]
+    fn legacy_fixture_is_classified_legacy() {
+        let ddl = include_str!("../tests/fixtures/legacy_schema.sql");
+        let tables: Vec<&str> = ddl
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("CREATE TABLE "))
+            .filter_map(|l| l.split_whitespace().next())
+            .filter_map(|t| t.split('(').next())
+            .collect();
+        assert!(
+            tables.contains(&"messages"),
+            "fixture must declare `messages`"
+        );
+        assert_eq!(detect_schema_version(1, &tables), SchemaVersion::Legacy);
+    }
+
     #[test]
     fn test_schema_legacy_detection() {
         assert_eq!(

@@ -2309,6 +2309,118 @@ mod real_schema_tests {
         assert_eq!(voice.duration_secs, 137);
     }
 
+    fn make_shuffled_msgstore() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/shuffled_schema.sql"))
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    /// Two databases that differ only in column declaration order must extract
+    /// identically.  Any ordinal creeping back into the extractor breaks this.
+    #[test]
+    fn column_order_does_not_change_the_extraction() {
+        let straight = extract_from_msgstore(&make_real_msgstore(), 0, SchemaVersion::Modern)
+            .expect("real-order fixture");
+        let shuffled = extract_from_msgstore(&make_shuffled_msgstore(), 0, SchemaVersion::Modern)
+            .expect("permuted-order fixture");
+
+        let summarise = |r: &ExtractionResult| {
+            let mut chats: Vec<(i64, String, Option<String>, bool)> = r
+                .chats
+                .iter()
+                .map(|c| (c.id, c.jid.clone(), c.name.clone(), c.archived))
+                .collect();
+            chats.sort();
+            let mut msgs: Vec<(i64, i64, Option<String>, bool, i64, bool)> = r
+                .chats
+                .iter()
+                .flat_map(|c| c.messages.iter())
+                .map(|m| {
+                    (
+                        m.id,
+                        m.chat_id,
+                        m.sender_jid.clone(),
+                        m.from_me,
+                        m.timestamp.utc.timestamp_millis(),
+                        m.starred,
+                    )
+                })
+                .collect();
+            msgs.sort();
+            let mut calls: Vec<(i64, bool, u32, i64, bool)> = r
+                .calls
+                .iter()
+                .map(|c| {
+                    (
+                        c.call_id,
+                        c.video,
+                        c.duration_secs,
+                        c.timestamp.utc.timestamp_millis(),
+                        c.group_call,
+                    )
+                })
+                .collect();
+            calls.sort();
+            (chats, msgs, calls)
+        };
+
+        assert_eq!(
+            summarise(&straight),
+            summarise(&shuffled),
+            "extraction must depend on column names, not on their declaration order"
+        );
+        // Guard against the comparison passing because both sides are empty.
+        assert_eq!(summarise(&straight).1.len(), 3);
+    }
+
+    /// A legacy-generation database has no `message` table at all.  Reporting
+    /// zero messages would be indistinguishable from a clean device.
+    #[test]
+    fn a_legacy_schema_database_is_refused_rather_than_reported_empty() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/legacy_schema.sql"))
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let err = extract_from_msgstore(&db, 0, SchemaVersion::Legacy)
+            .expect_err("a legacy database must not yield a silently empty report");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("messages"),
+            "error must name the legacy table it found: {msg}"
+        );
+        assert!(
+            msg.contains("message") && msg.contains("legacy"),
+            "error must say which generation it recognised: {msg}"
+        );
+    }
+
+    /// A database with neither table is likewise a refusal, not an empty report.
+    #[test]
+    fn a_database_with_no_message_table_is_refused() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE unrelated (_id INTEGER PRIMARY KEY, x TEXT);")
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let err = extract_from_msgstore(&db, 0, SchemaVersion::Modern)
+            .expect_err("a database with no message table is not a msgstore.db");
+        assert!(
+            format!("{err:#}").contains("message"),
+            "error must name what it looked for: {err:#}"
+        );
+    }
+
     /// A database whose `message.timestamp` column does not hold epoch
     /// milliseconds is a bootstrap failure: extraction must stop rather than
     /// emit a report whose every date is wrong.
