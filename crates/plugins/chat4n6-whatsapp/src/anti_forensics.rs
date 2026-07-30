@@ -130,6 +130,30 @@ pub fn detect_timestamp_anomalies(result: &ExtractionResult) -> Vec<ForensicWarn
     warnings
 }
 
+/// Share of messages predating WhatsApp above which the distribution itself is
+/// the finding.
+pub const IMPLAUSIBLE_SHARE_PCT: u8 = 5;
+
+/// Detect an implausible timestamp *distribution* across the whole extraction.
+///
+/// [`detect_timestamp_anomalies`] compares neighbouring messages, so it says
+/// nothing about a set that is uniformly wrong: a quarter of a million messages
+/// all dated 1970-01-01 are in perfect order.  This looks at the set instead
+/// and fires when more than [`IMPLAUSIBLE_SHARE_PCT`] of messages predate
+/// WhatsApp's 2009 release.
+///
+/// A concentrated block of epoch-zero timestamps is caught by the same rule:
+/// any modal instant large enough to matter is already past the share
+/// threshold.  Two triggers would only differ on sets too small to conclude
+/// anything from.
+///
+/// Its standing job is genuine tampering — a database whose timestamps were
+/// rewritten shows the same signature.
+pub fn detect_timestamp_distribution_anomaly(_chats: &[Chat]) -> Vec<ForensicWarning> {
+    // RED stub — detection is implemented in the GREEN commit.
+    Vec::new()
+}
+
 // ── New detectors (§2.6) ─────────────────────────────────────────────────────
 
 /// Detect duplicate XMPP stanza IDs (key_id column) in the message table.
@@ -605,6 +629,175 @@ mod new_detector_tests {
                     if table == "messages"
             )),
             "expected RowIdReuseDetected for rowid=42, got: {warnings:?}"
+        );
+    }
+}
+
+// ── T3: distribution-level timestamp detection ───────────────────────────────
+
+#[cfg(test)]
+mod timestamp_distribution_tests {
+    use super::*;
+    use chat4n6_plugin_api::{EvidenceSource, ForensicTimestamp, Message, MessageContent};
+
+    /// 2022-09-15T12:00:00Z.
+    const GOOD_MS: i64 = 1_663_243_200_000;
+
+    fn msg(id: i64, ts_ms: i64) -> Message {
+        Message {
+            id,
+            chat_id: 1,
+            sender_jid: None,
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(ts_ms, 0),
+            content: MessageContent::Text(String::new()),
+            reactions: vec![],
+            quoted_message: None,
+            source: EvidenceSource::Live,
+            row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
+            forwarded_from: None,
+        }
+    }
+
+    fn chat_of(messages: Vec<Message>) -> Vec<Chat> {
+        vec![Chat {
+            id: 1,
+            jid: "a@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages,
+            archived: false,
+        }]
+    }
+
+    fn distribution_warning(chats: &[Chat]) -> Option<ForensicWarning> {
+        detect_timestamp_distribution_anomaly(chats)
+            .into_iter()
+            .find(|w| matches!(w, ForensicWarning::TimestampDistributionAnomaly { .. }))
+    }
+
+    /// The headline failure: every message at epoch zero, in perfect order, so
+    /// the pairwise detector sees nothing wrong.
+    #[test]
+    fn mass_epoch_zero_timestamps_raise_a_warning() {
+        let chats = chat_of((1..=100).map(|i| msg(i, 0)).collect());
+        assert!(
+            distribution_warning(&chats).is_some(),
+            "100 messages dated 1970-01-01 must not pass unremarked"
+        );
+        assert!(
+            detect_timestamp_anomalies(&ExtractionResult {
+                chats: chats.clone(),
+                contacts: vec![],
+                calls: vec![],
+                wal_deltas: vec![],
+                timezone_offset_seconds: Some(0),
+                schema_version: 1,
+                forensic_warnings: vec![],
+                group_participant_events: vec![],
+                extraction_started_at: None,
+                extraction_finished_at: None,
+                wal_snapshots: vec![],
+            })
+            .is_empty(),
+            "the pairwise detector cannot see this — which is why the set-level one exists"
+        );
+    }
+
+    #[test]
+    fn warning_reports_the_count_share_and_modal_instant() {
+        let mut messages: Vec<Message> = (1..=90).map(|i| msg(i, GOOD_MS + i)).collect();
+        messages.extend((91..=100).map(|i| msg(i, 0)));
+        let warning = distribution_warning(&chat_of(messages)).expect("10% is over the threshold");
+        match warning {
+            ForensicWarning::TimestampDistributionAnomaly {
+                total_messages,
+                implausible_count,
+                ratio_pct,
+                modal_utc,
+                modal_occurrences,
+            } => {
+                assert_eq!(total_messages, 100);
+                assert_eq!(implausible_count, 10);
+                assert_eq!(ratio_pct, 10);
+                assert_eq!(
+                    modal_utc.timestamp_millis(),
+                    0,
+                    "epoch zero is the modal instant"
+                );
+                assert_eq!(modal_occurrences, 10);
+            }
+            other => panic!("expected TimestampDistributionAnomaly, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_healthy_distribution_raises_nothing() {
+        let chats = chat_of((1..=100).map(|i| msg(i, GOOD_MS + i * 1000)).collect());
+        assert!(
+            distribution_warning(&chats).is_none(),
+            "plausible timestamps must not be flagged"
+        );
+    }
+
+    #[test]
+    fn a_handful_of_bad_rows_stays_below_the_threshold() {
+        let mut messages: Vec<Message> = (1..=98).map(|i| msg(i, GOOD_MS + i * 1000)).collect();
+        messages.push(msg(99, 0));
+        messages.push(msg(100, 1));
+        assert!(
+            distribution_warning(&chat_of(messages)).is_none(),
+            "2% of implausible rows is an outlier, not a distribution anomaly"
+        );
+    }
+
+    #[test]
+    fn an_empty_extraction_raises_nothing() {
+        assert!(detect_timestamp_distribution_anomaly(&[]).is_empty());
+        assert!(distribution_warning(&chat_of(vec![])).is_none());
+    }
+
+    #[test]
+    fn the_share_is_measured_across_all_chats_not_per_chat() {
+        // 10 implausible messages sitting in their own chat are 10% of the
+        // extraction, not 100% of one chat.
+        let good = Chat {
+            id: 1,
+            jid: "a@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages: (1..=90).map(|i| msg(i, GOOD_MS + i * 1000)).collect(),
+            archived: false,
+        };
+        let bad = Chat {
+            id: 2,
+            jid: "b@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages: (91..=100).map(|i| msg(i, 0)).collect(),
+            archived: false,
+        };
+        let warning = distribution_warning(&[good, bad]).expect("10% overall");
+        if let ForensicWarning::TimestampDistributionAnomaly { ratio_pct, .. } = warning {
+            assert_eq!(ratio_pct, 10);
+        }
+    }
+
+    #[test]
+    fn the_warning_renders_the_numbers_it_carries() {
+        let chats = chat_of((1..=20).map(|i| msg(i, 0)).collect());
+        let rendered = distribution_warning(&chats)
+            .expect("all implausible")
+            .to_string();
+        assert!(rendered.contains("20"), "must state the counts: {rendered}");
+        assert!(
+            rendered.contains("1970"),
+            "must state the modal instant: {rendered}"
         );
     }
 }
