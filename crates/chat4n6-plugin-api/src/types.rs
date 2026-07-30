@@ -323,6 +323,17 @@ pub enum ForensicWarning {
     SelectiveDeletion { suspect_jid: String, deletion_rate_pct: u8 },
     /// Timestamp order violated: a later ROWID has an earlier timestamp.
     TimestampAnomaly { message_row_id: i64, description: String },
+    /// The message timestamp distribution is implausible in bulk — a large share
+    /// of messages predate the app's existence.  A property of the whole set,
+    /// which no per-message check can express.
+    TimestampDistributionAnomaly {
+        total_messages: u32,
+        implausible_count: u32,
+        ratio_pct: u8,
+        /// The most frequent implausible instant, and how often it occurs.
+        modal_utc: DateTime<Utc>,
+        modal_occurrences: u32,
+    },
     /// Backup crypt14/15 HMAC does not match payload — file may have been tampered.
     HmacMismatch,
     /// PRAGMA user_version inconsistent with claimed app version.
@@ -381,6 +392,11 @@ impl fmt::Display for ForensicWarning {
             }
             Self::TimestampAnomaly { message_row_id, description } => {
                 write!(f, "Timestamp anomaly at row {message_row_id}: {description}")
+            }
+            Self::TimestampDistributionAnomaly {
+                total_messages, implausible_count, ratio_pct, modal_utc, modal_occurrences
+            } => {
+                write!(f, "Implausible timestamp distribution: {implausible_count} of {total_messages} messages ({ratio_pct}%) predate 2009-01-01; most frequent is {modal_utc} ({modal_occurrences}×)")
             }
             Self::HmacMismatch => write!(f, "HMAC mismatch — backup integrity check FAILED"),
             Self::SchemaVersionMismatch { db_version, app_version } => {

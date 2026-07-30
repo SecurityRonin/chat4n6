@@ -1,0 +1,17 @@
+[
+  {
+    "description": "iOS WhatsApp, Signal and Telegram resolve column positions by name instead of hardcoded ordinals",
+    "steps": [
+      "Audit chat4n6-ios-whatsapp, chat4n6-signal and chat4n6-telegram for the pattern the Android WhatsApp plugin carried: record fields read at a fixed values[] index (helpers::cols::* in Signal, cols::* in Telegram, CoreData attribute positions in iOS)",
+      "For each plugin, record the real CREATE TABLE DDL from a genuine database of that platform (DDL only, no case content) and check it against the ordinals the code assumes",
+      "Add a real-DDL fixture per plugin whose column layout differs from the simplified fixture, so a positional reader fails by construction",
+      "Add a column-order-permuted fixture per plugin, as tests/fixtures/shuffled_schema.sql does for Android WhatsApp, and assert both extract identically",
+      "Reuse chat4n6-whatsapp's columns module for name-to-ordinal resolution rather than reimplementing it per plugin; promote it to a shared crate if three plugins need it",
+      "Apply the equivalent of schema_gate::validate_message_columns per platform, so a contradicted column map aborts instead of producing a complete but wrong report",
+      "Note the iOS timestamp base differs (seconds since 2001-01-01), so the plausibility bounds need converting rather than copying",
+      "Update the 'other plugins are unaudited' gap in docs/validation.md",
+      "cargo test --workspace passes"
+    ],
+    "passes": false
+  }
+]

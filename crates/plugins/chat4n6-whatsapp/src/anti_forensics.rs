@@ -3,6 +3,7 @@
 //! Detects evidence of tampering, selective deletion, timestamp anomalies,
 //! and SQLite VACUUM operations that destroy deleted record remnants.
 
+use crate::schema_gate::EARLIEST_PLAUSIBLE_MS;
 use chat4n6_plugin_api::{Chat, ExtractionResult, ForensicWarning};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -24,7 +25,9 @@ pub fn detect_vacuum(db_bytes: &[u8]) -> Vec<ForensicWarning> {
     }
     let free_pages = u32::from_be_bytes([db_bytes[36], db_bytes[37], db_bytes[38], db_bytes[39]]);
     if free_pages > 0 {
-        vec![ForensicWarning::DatabaseVacuumed { freelist_page_count: free_pages }]
+        vec![ForensicWarning::DatabaseVacuumed {
+            freelist_page_count: free_pages,
+        }]
     } else {
         vec![]
     }
@@ -47,8 +50,9 @@ pub fn detect_header_tamper(db_bytes: &[u8]) -> Vec<ForensicWarning> {
 
     // Check 1: write_counter vs read_counter (bytes 92–95 vs 96–99).
     let write_version = db_bytes[18]; // 1=journal, 2=WAL
-    let write_counter = u32::from_be_bytes([db_bytes[92], db_bytes[93], db_bytes[94], db_bytes[95]]);
-    let read_counter  = u32::from_be_bytes([db_bytes[96], db_bytes[97], db_bytes[98], db_bytes[99]]);
+    let write_counter =
+        u32::from_be_bytes([db_bytes[92], db_bytes[93], db_bytes[94], db_bytes[95]]);
+    let read_counter = u32::from_be_bytes([db_bytes[96], db_bytes[97], db_bytes[98], db_bytes[99]]);
     if write_counter != read_counter && write_version != 2 {
         warnings.push(ForensicWarning::HeaderTampered {
             change_counter: write_counter,
@@ -58,8 +62,13 @@ pub fn detect_header_tamper(db_bytes: &[u8]) -> Vec<ForensicWarning> {
 
     // Check 2: declared page_size × page_count vs actual file length.
     let raw_page_size = u16::from_be_bytes([db_bytes[16], db_bytes[17]]);
-    let page_size: u64 = if raw_page_size == 1 { 65536 } else { raw_page_size as u64 };
-    let page_count = u32::from_be_bytes([db_bytes[28], db_bytes[29], db_bytes[30], db_bytes[31]]) as u64;
+    let page_size: u64 = if raw_page_size == 1 {
+        65536
+    } else {
+        raw_page_size as u64
+    };
+    let page_count =
+        u32::from_be_bytes([db_bytes[28], db_bytes[29], db_bytes[30], db_bytes[31]]) as u64;
     let expected_size = page_size * page_count;
     let actual_size = db_bytes.len() as u64;
     if actual_size >= 100 && actual_size != expected_size {
@@ -122,15 +131,71 @@ pub fn detect_timestamp_anomalies(result: &ExtractionResult) -> Vec<ForensicWarn
     warnings
 }
 
+/// Share of messages predating WhatsApp above which the distribution itself is
+/// the finding.
+pub const IMPLAUSIBLE_SHARE_PCT: u8 = 5;
+
+/// Detect an implausible timestamp *distribution* across the whole extraction.
+///
+/// [`detect_timestamp_anomalies`] compares neighbouring messages, so it says
+/// nothing about a set that is uniformly wrong: a quarter of a million messages
+/// all dated 1970-01-01 are in perfect order.  This looks at the set instead
+/// and fires when more than [`IMPLAUSIBLE_SHARE_PCT`] of messages predate
+/// WhatsApp's 2009 release.
+///
+/// A concentrated block of epoch-zero timestamps is caught by the same rule:
+/// any modal instant large enough to matter is already past the share
+/// threshold.  Two triggers would only differ on sets too small to conclude
+/// anything from.
+///
+/// Its standing job is genuine tampering — a database whose timestamps were
+/// rewritten shows the same signature.
+pub fn detect_timestamp_distribution_anomaly(chats: &[Chat]) -> Vec<ForensicWarning> {
+    let mut total: u32 = 0;
+    let mut occurrences: HashMap<DateTime<Utc>, u32> = HashMap::new();
+    for msg in chats.iter().flat_map(|c| c.messages.iter()) {
+        total = total.saturating_add(1);
+        // Compared in milliseconds so the bound needs no fallible conversion.
+        if msg.timestamp.utc.timestamp_millis() < EARLIEST_PLAUSIBLE_MS {
+            *occurrences.entry(msg.timestamp.utc).or_insert(0) += 1;
+        }
+    }
+
+    let implausible_count: u32 = occurrences.values().sum();
+    if total == 0 || implausible_count == 0 {
+        return vec![];
+    }
+
+    // u64 avoids overflowing the ×100 on a large extraction.
+    let ratio_pct = (u64::from(implausible_count) * 100 / u64::from(total)).min(100) as u8;
+    if ratio_pct <= IMPLAUSIBLE_SHARE_PCT {
+        return vec![];
+    }
+
+    // Ties broken by the earlier instant so the finding is reproducible.
+    let Some((&modal_utc, &modal_occurrences)) = occurrences
+        .iter()
+        .max_by_key(|(instant, count)| (**count, std::cmp::Reverse(**instant)))
+    else {
+        return vec![];
+    };
+
+    vec![ForensicWarning::TimestampDistributionAnomaly {
+        total_messages: total,
+        implausible_count,
+        ratio_pct,
+        modal_utc,
+        modal_occurrences,
+    }]
+}
+
 // ── New detectors (§2.6) ─────────────────────────────────────────────────────
 
 /// Detect duplicate XMPP stanza IDs (key_id column) in the message table.
 ///
 /// Takes a map of key_id → list of message row_ids built from raw SQLite records.
 /// Any key_id appearing more than once emits `DuplicateStanzaId`.
-pub fn detect_duplicate_stanza_ids(
-    key_id_map: &HashMap<String, Vec<i64>>,
-) -> Vec<ForensicWarning> {
+pub fn detect_duplicate_stanza_ids(key_id_map: &HashMap<String, Vec<i64>>) -> Vec<ForensicWarning> {
     key_id_map
         .iter()
         .filter(|(_, rows)| rows.len() > 1)
@@ -238,7 +303,9 @@ mod header_tamper_tests {
         let header = valid_header(4096, 1, 5, 3);
         let warnings = detect_header_tamper(&header);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
             "write/read counter mismatch must emit HeaderTampered, got: {warnings:?}"
         );
     }
@@ -249,7 +316,9 @@ mod header_tamper_tests {
         let header = valid_header(4096, 2, 1, 1);
         let warnings = detect_header_tamper(&header);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
             "page size * count != file size must emit HeaderTampered, got: {warnings:?}"
         );
     }
@@ -278,14 +347,18 @@ mod header_tamper_tests {
         buf[36..40].copy_from_slice(&5u32.to_be_bytes()); // free_pages=5
         let warnings = detect_vacuum(&buf);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::DatabaseVacuumed { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::DatabaseVacuumed { .. })),
             "non-zero free_pages must emit DatabaseVacuumed"
         );
     }
 
     #[test]
     fn selective_deletion_detected() {
-        use chat4n6_plugin_api::{Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent};
+        use chat4n6_plugin_api::{
+            Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent,
+        };
         let make_msg = |id: i64| Message {
             id,
             chat_id: 1,
@@ -310,8 +383,12 @@ mod header_tamper_tests {
             name: None,
             is_group: false,
             messages: vec![
-                make_msg(1), make_msg(2), make_msg(3),
-                make_msg(100), make_msg(101), make_msg(102), // gap 3→100
+                make_msg(1),
+                make_msg(2),
+                make_msg(3),
+                make_msg(100),
+                make_msg(101),
+                make_msg(102), // gap 3→100
             ],
             archived: false,
         };
@@ -324,20 +401,24 @@ mod header_tamper_tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
-        extraction_started_at: None,
-        extraction_finished_at: None,
-        wal_snapshots: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
         };
         let warnings = detect_selective_deletion(&result);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::SelectiveDeletion { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::SelectiveDeletion { .. })),
             "gap 3→100 should trigger SelectiveDeletion, got: {warnings:?}"
         );
     }
 
     #[test]
     fn timestamp_anomaly_pre_whatsapp() {
-        use chat4n6_plugin_api::{Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent};
+        use chat4n6_plugin_api::{
+            Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent,
+        };
         let make_msg = |id: i64, ts: i64| Message {
             id,
             chat_id: 1,
@@ -376,13 +457,15 @@ mod header_tamper_tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
-        extraction_started_at: None,
-        extraction_finished_at: None,
-        wal_snapshots: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
         };
         let warnings = detect_timestamp_anomalies(&result);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::TimestampAnomaly { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::TimestampAnomaly { .. })),
             "reversed timestamps should emit TimestampAnomaly, got: {warnings:?}"
         );
     }
@@ -404,7 +487,8 @@ mod new_detector_tests {
         use crate::schema::SchemaVersion;
 
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             PRAGMA user_version = 200;
             CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL);
@@ -423,9 +507,12 @@ mod new_detector_tests {
             INSERT INTO message VALUES (1, 1, NULL, 0, 1710513127000, 'hello', 0, 'ABC123');
             INSERT INTO message VALUES (2, 1, NULL, 1, 1710513128000, 'world', 0, 'ABC123');
             INSERT INTO message VALUES (3, 1, NULL, 0, 1710513129000, 'foo',   0, 'XYZ999');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         let db = std::fs::read(tmp.path()).unwrap();
 
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
@@ -451,7 +538,8 @@ mod new_detector_tests {
         use crate::schema::SchemaVersion;
 
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             PRAGMA user_version = 200;
             CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL);
@@ -488,9 +576,12 @@ mod new_detector_tests {
             INSERT INTO message_thumbnails VALUES (13, x'ff');
             INSERT INTO message_thumbnails VALUES (14, x'ff');
             INSERT INTO message_thumbnails VALUES (15, x'ff');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         let db = std::fs::read(tmp.path()).unwrap();
 
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
@@ -498,7 +589,11 @@ mod new_detector_tests {
         assert!(
             result.forensic_warnings.iter().any(|w| matches!(
                 w,
-                ForensicWarning::ThumbnailOrphanHigh { orphan_thumbnails: 5, total_messages: 10, ratio_pct: 50 }
+                ForensicWarning::ThumbnailOrphanHigh {
+                    orphan_thumbnails: 5,
+                    total_messages: 10,
+                    ratio_pct: 50
+                }
             )),
             "expected ThumbnailOrphanHigh with 5 orphans / 10 messages = 50%, got: {:?}",
             result.forensic_warnings
@@ -569,6 +664,175 @@ mod new_detector_tests {
                     if table == "messages"
             )),
             "expected RowIdReuseDetected for rowid=42, got: {warnings:?}"
+        );
+    }
+}
+
+// ── T3: distribution-level timestamp detection ───────────────────────────────
+
+#[cfg(test)]
+mod timestamp_distribution_tests {
+    use super::*;
+    use chat4n6_plugin_api::{EvidenceSource, ForensicTimestamp, Message, MessageContent};
+
+    /// 2022-09-15T12:00:00Z.
+    const GOOD_MS: i64 = 1_663_243_200_000;
+
+    fn msg(id: i64, ts_ms: i64) -> Message {
+        Message {
+            id,
+            chat_id: 1,
+            sender_jid: None,
+            from_me: false,
+            timestamp: ForensicTimestamp::from_millis(ts_ms, 0),
+            content: MessageContent::Text(String::new()),
+            reactions: vec![],
+            quoted_message: None,
+            source: EvidenceSource::Live,
+            row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
+            forwarded_from: None,
+        }
+    }
+
+    fn chat_of(messages: Vec<Message>) -> Vec<Chat> {
+        vec![Chat {
+            id: 1,
+            jid: "a@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages,
+            archived: false,
+        }]
+    }
+
+    fn distribution_warning(chats: &[Chat]) -> Option<ForensicWarning> {
+        detect_timestamp_distribution_anomaly(chats)
+            .into_iter()
+            .find(|w| matches!(w, ForensicWarning::TimestampDistributionAnomaly { .. }))
+    }
+
+    /// The headline failure: every message at epoch zero, in perfect order, so
+    /// the pairwise detector sees nothing wrong.
+    #[test]
+    fn mass_epoch_zero_timestamps_raise_a_warning() {
+        let chats = chat_of((1..=100).map(|i| msg(i, 0)).collect());
+        assert!(
+            distribution_warning(&chats).is_some(),
+            "100 messages dated 1970-01-01 must not pass unremarked"
+        );
+        assert!(
+            detect_timestamp_anomalies(&ExtractionResult {
+                chats: chats.clone(),
+                contacts: vec![],
+                calls: vec![],
+                wal_deltas: vec![],
+                timezone_offset_seconds: Some(0),
+                schema_version: 1,
+                forensic_warnings: vec![],
+                group_participant_events: vec![],
+                extraction_started_at: None,
+                extraction_finished_at: None,
+                wal_snapshots: vec![],
+            })
+            .is_empty(),
+            "the pairwise detector cannot see this — which is why the set-level one exists"
+        );
+    }
+
+    #[test]
+    fn warning_reports_the_count_share_and_modal_instant() {
+        let mut messages: Vec<Message> = (1..=90).map(|i| msg(i, GOOD_MS + i)).collect();
+        messages.extend((91..=100).map(|i| msg(i, 0)));
+        let warning = distribution_warning(&chat_of(messages)).expect("10% is over the threshold");
+        match warning {
+            ForensicWarning::TimestampDistributionAnomaly {
+                total_messages,
+                implausible_count,
+                ratio_pct,
+                modal_utc,
+                modal_occurrences,
+            } => {
+                assert_eq!(total_messages, 100);
+                assert_eq!(implausible_count, 10);
+                assert_eq!(ratio_pct, 10);
+                assert_eq!(
+                    modal_utc.timestamp_millis(),
+                    0,
+                    "epoch zero is the modal instant"
+                );
+                assert_eq!(modal_occurrences, 10);
+            }
+            other => panic!("expected TimestampDistributionAnomaly, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_healthy_distribution_raises_nothing() {
+        let chats = chat_of((1..=100).map(|i| msg(i, GOOD_MS + i * 1000)).collect());
+        assert!(
+            distribution_warning(&chats).is_none(),
+            "plausible timestamps must not be flagged"
+        );
+    }
+
+    #[test]
+    fn a_handful_of_bad_rows_stays_below_the_threshold() {
+        let mut messages: Vec<Message> = (1..=98).map(|i| msg(i, GOOD_MS + i * 1000)).collect();
+        messages.push(msg(99, 0));
+        messages.push(msg(100, 1));
+        assert!(
+            distribution_warning(&chat_of(messages)).is_none(),
+            "2% of implausible rows is an outlier, not a distribution anomaly"
+        );
+    }
+
+    #[test]
+    fn an_empty_extraction_raises_nothing() {
+        assert!(detect_timestamp_distribution_anomaly(&[]).is_empty());
+        assert!(distribution_warning(&chat_of(vec![])).is_none());
+    }
+
+    #[test]
+    fn the_share_is_measured_across_all_chats_not_per_chat() {
+        // 10 implausible messages sitting in their own chat are 10% of the
+        // extraction, not 100% of one chat.
+        let good = Chat {
+            id: 1,
+            jid: "a@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages: (1..=90).map(|i| msg(i, GOOD_MS + i * 1000)).collect(),
+            archived: false,
+        };
+        let bad = Chat {
+            id: 2,
+            jid: "b@s.whatsapp.net".to_string(),
+            name: None,
+            is_group: false,
+            messages: (91..=100).map(|i| msg(i, 0)).collect(),
+            archived: false,
+        };
+        let warning = distribution_warning(&[good, bad]).expect("10% overall");
+        if let ForensicWarning::TimestampDistributionAnomaly { ratio_pct, .. } = warning {
+            assert_eq!(ratio_pct, 10);
+        }
+    }
+
+    #[test]
+    fn the_warning_renders_the_numbers_it_carries() {
+        let chats = chat_of((1..=20).map(|i| msg(i, 0)).collect());
+        let rendered = distribution_warning(&chats)
+            .expect("all implausible")
+            .to_string();
+        assert!(rendered.contains("20"), "must state the counts: {rendered}");
+        assert!(
+            rendered.contains("1970"),
+            "must state the modal instant: {rendered}"
         );
     }
 }

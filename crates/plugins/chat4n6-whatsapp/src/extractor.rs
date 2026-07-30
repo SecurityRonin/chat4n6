@@ -1,7 +1,14 @@
-use crate::anti_forensics::{detect_duplicate_stanza_ids, detect_rowid_reuse, detect_thumbnail_orphans};
-use crate::schema::{cols, SchemaVersion};
+use crate::anti_forensics::{
+    detect_duplicate_stanza_ids, detect_rowid_reuse, detect_thumbnail_orphans,
+    detect_timestamp_distribution_anomaly,
+};
+use crate::columns::{
+    CallLogColumns, ChatColumns, JidColumns, MessageColumns, SchemaColumns, TableColumns,
+};
+use crate::schema::SchemaVersion;
 pub use crate::schema::{default_mime_for_type, is_media_type, msg_type_label};
-use anyhow::{Context, Result};
+use crate::schema_gate::validate_message_columns;
+use anyhow::{bail, Context, Result};
 use chat4n6_plugin_api::{
     CallRecord, CallResult, Chat, Contact, EditHistoryEntry, ExtractionResult, ForensicTimestamp,
     GroupParticipantEvent, MediaRef, Message, MessageContent, MessageReceipt, ParticipantAction,
@@ -12,6 +19,7 @@ use chat4n6_sqlite_forensics::{
     partition_by_table,
     record::{RecoveredRecord, SqlValue},
 };
+use chrono::Utc;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -19,18 +27,10 @@ use std::collections::{HashMap, HashSet};
 ///
 /// `tz_offset_secs` is seconds east of UTC for local time display.
 ///
-/// NOTE on column indices: the btree walker stores INTEGER PRIMARY KEY as
-/// SqlValue::Null at values[0].  Real column data starts at values[1].
-/// Schema layout (zero-based values[] index, after the leading Null):
-///
-///   jid:      [0]=Null(_id), [1]=raw_string
-///   chat:     [0]=Null(_id), [1]=jid_row_id, [2]=subject
-///   message:  [0]=Null(_id), [1]=chat_row_id,  [2]=sender_jid_row_id,
-///             [3]=from_me,   [4]=timestamp,    [5]=text_data, [6]=message_type,
-///             [7]=media_mime_type, [8]=media_name, [9]=starred,
-///             [10]=edit_version (newer schemas; 5=deleted-for-me, 7=deleted-for-all)
-///   call_log: [0]=Null(_id), [1]=jid_row_id,  [2]=from_me,
-///             [3]=video_call,[4]=duration,     [5]=timestamp
+/// Every column position is resolved by name from the database's own
+/// `CREATE TABLE` SQL (see [`crate::columns`]).  WhatsApp reorders these tables
+/// between releases, so a fixed ordinal is only ever right for one schema —
+/// reading the wrong one yields a complete report full of wrong values.
 pub fn extract_from_msgstore(
     db_bytes: &[u8],
     tz_offset_secs: i32,
@@ -39,8 +39,39 @@ pub fn extract_from_msgstore(
     let engine = ForensicEngine::new(db_bytes, Some(tz_offset_secs))
         .context("failed to open msgstore.db")?;
 
-    // Read DDL map for schema-aware column index resolution (e.g. key_id position).
+    // Resolve every column position from the database's own schema.  A database
+    // whose sqlite_master cannot be read is a bootstrap failure, not an empty
+    // database: report it rather than returning a plausible-looking empty result.
     let ddl_map = engine.table_ddl();
+    if ddl_map.is_empty() {
+        bail!(
+            "no CREATE TABLE statement could be read from sqlite_master (page 1 of \
+             {} bytes); refusing to extract with unresolved column positions",
+            db_bytes.len()
+        );
+    }
+    let schema_cols = SchemaColumns::from_ddl_map(&ddl_map);
+    if schema_cols.table("message").is_empty() {
+        // Reporting zero messages here would be indistinguishable from a clean
+        // device, so name what was actually found instead.
+        if !schema_cols.table("messages").is_empty() {
+            bail!(
+                "msgstore.db declares the legacy `messages` table and no modern `message` \
+                 table; this extractor reads the modern generation (message/jid/chat) only. \
+                 Refusing to report zero messages for a database it cannot read."
+            );
+        }
+        bail!(
+            "msgstore.db declares no `message` table, and no legacy `messages` table \
+             either. Tables found ({} total): [{}]",
+            schema_cols.table_names().len(),
+            summarise_table_names(&schema_cols.table_names())
+        );
+    }
+    let msg_cols = MessageColumns::resolve(schema_cols.table("message"));
+    let jid_cols = JidColumns::resolve(schema_cols.table("jid"));
+    let chat_cols = ChatColumns::resolve(schema_cols.table("chat"));
+    let call_cols = CallLogColumns::resolve(schema_cols.table("call_log"));
 
     let records = engine.recover_layer1().context("Layer 1 recovery failed")?;
 
@@ -48,19 +79,22 @@ pub fn extract_from_msgstore(
     let by_table = partition_by_table(&records);
 
     // Build JID lookup: id → raw_string
-    let jid_map = build_jid_map(tbl(&by_table, "jid"));
+    let jid_map = build_jid_map(tbl(&by_table, "jid"), &jid_cols);
 
     // Build chat map: chat_id → Chat (populated with messages below)
-    let mut chats = build_chats(
-        tbl(&by_table, "chat"),
-        &jid_map,
-    );
+    let mut chats = build_chats(tbl(&by_table, "chat"), &jid_map, &chat_cols);
+
+    // Validate the resolved map against the records before interpreting any of
+    // them.  A wrong map still yields a complete report, so this must fail
+    // loudly rather than degrade.
+    let msg_records = tbl(&by_table, "message");
+    validate_message_columns(msg_records, &msg_cols, Utc::now().timestamp_millis())
+        .context("msgstore.db schema validation failed")?;
 
     // Map messages into chats.  If the chat record was deleted/unrecovered,
     // create a stub so forensically-recovered messages are never silently dropped.
-    let msg_records = tbl(&by_table, "message");
     for rec in msg_records {
-        if let Some(msg) = record_to_message(rec, &jid_map, tz_offset_secs) {
+        if let Some(msg) = record_to_message(rec, &jid_map, tz_offset_secs, &msg_cols) {
             chats
                 .entry(msg.chat_id)
                 .or_insert_with(|| Chat {
@@ -77,20 +111,20 @@ pub fn extract_from_msgstore(
     }
 
     // Build key_id → Vec<row_id> map for DuplicateStanzaId detection.
-    // Uses DDL-parsed column index to be robust to varying schema column order.
-    let key_id_map = build_key_id_map(msg_records, &ddl_map);
+    let key_id_map = build_key_id_map(msg_records, msg_cols.key_id);
 
     // ── Quoted messages ──────────────────────────────────────────────────
     // Build a map of message_row_id → (text, sender_jid, from_me, timestamp)
     // from the message_quoted table, then attach to parent messages.
+    let quoted_cols = schema_cols.table("message_quoted");
     let quoted_records = tbl(&by_table, "message_quoted");
-    let quoted_map = build_quoted_map(quoted_records, &jid_map, tz_offset_secs);
+    let quoted_map = build_quoted_map(quoted_records, &jid_map, tz_offset_secs, quoted_cols);
 
     // Build ghost map: message_row_id → text_data for ghost recovery.
     // When a deleted/tombstone message (msg_type=15) is later quoted, the
     // message_quoted table preserves its original text.  We index that here
     // so we can upgrade Deleted/Unknown(15) messages to GhostRecovered.
-    let ghost_map = build_ghost_map(quoted_records);
+    let ghost_map = build_ghost_map(quoted_records, quoted_cols);
 
     for chat in chats.values_mut() {
         for msg in &mut chat.messages {
@@ -100,7 +134,10 @@ pub fn extract_from_msgstore(
             }
             // Ghost recovery: upgrade tombstone messages whose original text
             // was preserved in message_quoted.
-            if matches!(&msg.content, MessageContent::Unknown(15) | MessageContent::Deleted) {
+            if matches!(
+                &msg.content,
+                MessageContent::Unknown(15) | MessageContent::Deleted
+            ) {
                 if let Some(ghost_text) = ghost_map.get(&msg.id) {
                     msg.content = MessageContent::GhostRecovered(ghost_text.clone());
                 }
@@ -111,58 +148,53 @@ pub fn extract_from_msgstore(
     // ── Reactions (message_add_on type=56) ──────────────────────────────────
     // Build map: message_row_id → Vec<Reaction>
     let mut reactions_map: HashMap<i64, Vec<Reaction>> = HashMap::new();
+    let add_on_cols = schema_cols.table("message_add_on");
+    let add_on_msg_row_id = add_on_cols.get("message_row_id");
+    let add_on_sender = add_on_cols.get("sender_jid_row_id");
+    let add_on_ts = add_on_cols.get("timestamp");
+    let add_on_type_col = add_on_cols.get("type");
+    let add_on_text = add_on_cols.get("text_data");
     let add_on_records = tbl(&by_table, "message_add_on");
     for r in add_on_records {
-        let msg_row_id = match r.values.get(1) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(msg_row_id) = int_at(r, add_on_msg_row_id) else {
+            continue;
         };
-        let add_on_type = match r.values.get(5) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(add_on_type) = int_at(r, add_on_type_col) else {
+            continue;
         };
         if add_on_type == 56 {
             // Reaction: emoji in text_data
-            let emoji = match r.values.get(6) {
-                Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
-                _ => continue,
+            let Some(emoji) = text_at(r, add_on_text) else {
+                continue;
             };
-            let ts_ms = match r.values.get(4) {
-                Some(SqlValue::Int(n)) => *n,
-                _ => 0,
-            };
-            let reactor_jid = match r.values.get(3) {
-                Some(SqlValue::Int(n)) => jid_map.get(n).cloned().unwrap_or_default(),
-                _ => String::new(),
-            };
-            reactions_map
-                .entry(msg_row_id)
-                .or_default()
-                .push(Reaction {
-                    emoji,
-                    reactor_jid,
-                    timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
-                    source: r.source.clone(),
-                });
+            let ts_ms = int_at(r, add_on_ts).unwrap_or(0);
+            let reactor_jid = int_at(r, add_on_sender)
+                .and_then(|n| jid_map.get(&n).cloned())
+                .unwrap_or_default();
+            reactions_map.entry(msg_row_id).or_default().push(Reaction {
+                emoji,
+                reactor_jid,
+                timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
+                source: r.source.clone(),
+            });
         }
     }
 
     // ── Edit history (message_edit_info) ────────────────────────────────────
     // Build map: message_row_id → Vec<EditHistoryEntry>
     let mut edits_map: HashMap<i64, Vec<EditHistoryEntry>> = HashMap::new();
+    let edit_cols = schema_cols.table("message_edit_info");
+    let edit_msg_row_id = edit_cols.get("message_row_id");
+    let edit_ts = edit_cols.get("edited_timestamp");
+    let edit_text = edit_cols.get("original_text");
     let edit_records = tbl(&by_table, "message_edit_info");
     for r in edit_records {
-        let msg_row_id = match r.values.get(1) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(msg_row_id) = int_at(r, edit_msg_row_id) else {
+            continue;
         };
-        let edited_ts = match r.values.get(2) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => 0,
-        };
-        let original_text = match r.values.get(3) {
-            Some(SqlValue::Text(s)) => s.clone(),
-            _ => continue,
+        let edited_ts = int_at(r, edit_ts).unwrap_or(0);
+        let Some(original_text) = text_at(r, edit_text) else {
+            continue;
         };
         edits_map
             .entry(msg_row_id)
@@ -177,24 +209,23 @@ pub fn extract_from_msgstore(
     // ── Receipts (receipt_user) ─────────────────────────────────────────────
     // Build map: message_row_id → Vec<MessageReceipt>
     let mut receipts_map: HashMap<i64, Vec<MessageReceipt>> = HashMap::new();
+    let receipt_cols = schema_cols.table("receipt_user");
+    let receipt_msg_row_id = receipt_cols.get("message_row_id");
+    let receipt_jid_row_id = receipt_cols.get("receipt_user_jid_row_id");
+    let receipt_status = receipt_cols.get("status");
+    let receipt_ts = receipt_cols.get("timestamp");
     let receipt_records = tbl(&by_table, "receipt_user");
     for r in receipt_records {
-        let msg_row_id = match r.values.get(1) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(msg_row_id) = int_at(r, receipt_msg_row_id) else {
+            continue;
         };
-        let jid_row_id = match r.values.get(2) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(jid_row_id) = int_at(r, receipt_jid_row_id) else {
+            continue;
         };
-        let status = match r.values.get(3) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(status) = int_at(r, receipt_status) else {
+            continue;
         };
-        let ts_ms = match r.values.get(4) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => 0,
-        };
+        let ts_ms = int_at(r, receipt_ts).unwrap_or(0);
         let receipt_type = match status {
             5 => ReceiptType::Delivered,
             13 => ReceiptType::Read,
@@ -216,17 +247,18 @@ pub fn extract_from_msgstore(
     // ── Forwarded messages (message_forwarded) ───────────────────────────────
     // Build map: message_row_id → forward_score
     let mut forwarded_map: HashMap<i64, u32> = HashMap::new();
+    let fwd_cols = schema_cols.table("message_forwarded");
+    let fwd_msg_row_id = fwd_cols.get("message_row_id");
+    let fwd_score = fwd_cols.get("forward_score");
     let fwd_records = tbl(&by_table, "message_forwarded");
     for r in fwd_records {
-        let msg_row_id = match r.values.get(1) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(msg_row_id) = int_at(r, fwd_msg_row_id) else {
+            continue;
         };
-        let score = match r.values.get(2) {
-            Some(SqlValue::Int(n)) => *n as u32,
-            _ => continue,
+        let Some(score) = int_at(r, fwd_score) else {
+            continue;
         };
-        forwarded_map.insert(msg_row_id, score);
+        forwarded_map.insert(msg_row_id, score as u32);
     }
 
     // Attach reactions, edit history, receipts, and forwarding to messages
@@ -257,14 +289,18 @@ pub fn extract_from_msgstore(
     let call_records = tbl(&by_table, "call_log");
     let raw_calls: Vec<(CallRecord, Option<i64>)> = call_records
         .iter()
-        .filter_map(|r| record_to_call(r, &jid_map, tz_offset_secs))
+        .filter_map(|r| record_to_call(r, &jid_map, tz_offset_secs, &call_cols))
         .collect();
     let calls = merge_group_calls(raw_calls);
 
     // ── Group participant events (group_participant_user) ───────────────────
     let gpe_records = tbl(&by_table, "group_participant_user");
-    let group_participant_events =
-        build_group_participant_events(gpe_records, &jid_map, tz_offset_secs);
+    let group_participant_events = build_group_participant_events(
+        gpe_records,
+        &jid_map,
+        tz_offset_secs,
+        schema_cols.table("group_participant_user"),
+    );
 
     // WAL deltas (placeholder — WAL integration in CLI layer)
     let wal_deltas: Vec<WalDelta> = Vec::new();
@@ -280,17 +316,15 @@ pub fn extract_from_msgstore(
     // ── §2.6 Anti-forensics detectors ────────────────────────────────────────
 
     // Collect live message IDs for thumbnail orphan detection.
-    let live_message_ids: HashSet<i64> = chats.values()
+    let live_message_ids: HashSet<i64> = chats
+        .values()
         .flat_map(|c| c.messages.iter().map(|m| m.id))
         .collect();
     let total_messages = live_message_ids.len() as u32;
 
     // Collect message_thumbnails row IDs.
     let thumbnail_records = tbl(&by_table, "message_thumbnails");
-    let thumbnail_row_ids: Vec<i64> = thumbnail_records
-        .iter()
-        .filter_map(|r| r.row_id)
-        .collect();
+    let thumbnail_row_ids: Vec<i64> = thumbnail_records.iter().filter_map(|r| r.row_id).collect();
 
     let chats_vec: Vec<_> = chats.into_values().collect();
 
@@ -302,6 +336,7 @@ pub fn extract_from_msgstore(
         total_messages,
     ));
     forensic_warnings.extend(detect_rowid_reuse(&chats_vec));
+    forensic_warnings.extend(detect_timestamp_distribution_anomaly(&chats_vec));
 
     Ok(ExtractionResult {
         chats: chats_vec,
@@ -362,179 +397,154 @@ pub fn extract_parallel(
 
 /// Look up a table name in a `partition_by_table` map and return its records as a slice.
 /// Returns an empty slice when the table is absent.
-fn tbl<'a>(by: &'a HashMap<String, Vec<&'a RecoveredRecord>>, name: &str) -> &'a [&'a RecoveredRecord] {
+fn tbl<'a>(
+    by: &'a HashMap<String, Vec<&'a RecoveredRecord>>,
+    name: &str,
+) -> &'a [&'a RecoveredRecord] {
     by.get(name).map(|v| v.as_slice()).unwrap_or_default()
+}
+
+/// Render a table-name list for a diagnostic.
+///
+/// A real msgstore declares well over a hundred tables, so whole names beyond
+/// the first 20 are omitted — and the omission is stated, with the full count
+/// alongside. Every name shown is verbatim.
+fn summarise_table_names(names: &[&str]) -> String {
+    const SHOWN: usize = 20;
+    let head = names
+        .iter()
+        .take(SHOWN)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > SHOWN {
+        format!("{head}, and {} more", names.len() - SHOWN)
+    } else {
+        head
+    }
+}
+
+/// Read the integer at a resolved column position.
+///
+/// `None` when the schema does not declare the column, the record is shorter
+/// than that position, or the stored value is not an integer — never a
+/// neighbouring column's value.
+fn int_at(r: &RecoveredRecord, idx: Option<usize>) -> Option<i64> {
+    match r.values.get(idx?) {
+        Some(SqlValue::Int(n)) => Some(*n),
+        _ => None,
+    }
+}
+
+/// Read the non-empty text at a resolved column position.
+fn text_at(r: &RecoveredRecord, idx: Option<usize>) -> Option<String> {
+    match r.values.get(idx?) {
+        Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Read a resolved column as a boolean flag (any non-zero integer is true).
+fn flag_at(r: &RecoveredRecord, idx: Option<usize>) -> bool {
+    int_at(r, idx).is_some_and(|n| n != 0)
 }
 
 /// Build a map of key_id (XMPP stanza ID) → list of message row_ids.
 ///
-/// Parses the CREATE TABLE DDL for the `message` table to determine the
-/// zero-based values[] index of the `key_id` column (accounting for the
-/// leading Null at index 0 for the INTEGER PRIMARY KEY). Returns an empty
-/// map if the column doesn't exist in this schema.
+/// Empty when the schema declares no `key_id` column.
 fn build_key_id_map(
     msg_records: &[&RecoveredRecord],
-    ddl_map: &HashMap<String, String>,
+    key_id_idx: Option<usize>,
 ) -> HashMap<String, Vec<i64>> {
-    // Find the values[] index for key_id by parsing the DDL column list.
-    // The btree walker puts INTEGER PRIMARY KEY at values[0] as Null,
-    // so real column n (1-based in DDL order after _id) → values[n].
-    let key_id_idx = match ddl_map.get("message") {
-        Some(ddl) => key_id_column_index(ddl),
-        None => return HashMap::new(),
-    };
-    let Some(idx) = key_id_idx else {
-        return HashMap::new();
-    };
-
     let mut map: HashMap<String, Vec<i64>> = HashMap::new();
+    if key_id_idx.is_none() {
+        return map;
+    }
     for rec in msg_records {
-        let row_id = match rec.row_id {
-            Some(id) => id,
-            None => continue,
+        let Some(row_id) = rec.row_id else {
+            continue;
         };
-        if let Some(SqlValue::Text(kid)) = rec.values.get(idx) {
-            if !kid.is_empty() {
-                map.entry(kid.clone()).or_default().push(row_id);
-            }
+        if let Some(kid) = text_at(rec, key_id_idx) {
+            map.entry(kid).or_default().push(row_id);
         }
     }
     map
 }
 
-/// Parse a CREATE TABLE DDL string and return the 1-based values[] index
-/// for the `key_id` column (i.e. column position counting from 1, since
-/// index 0 is the INTEGER PRIMARY KEY alias Null).
+/// jid table: row_id is `_id`; the JID string lives in `raw_string`.
 ///
-/// Returns `None` if the column is not found.
-fn key_id_column_index(ddl: &str) -> Option<usize> {
-    // Strip everything up to the first '(' and after the last ')'.
-    let start = ddl.find('(')?;
-    let end = ddl.rfind(')')?;
-    let cols_str = &ddl[start + 1..end];
-
-    // Split on commas (naive but sufficient for well-formed SQLite DDL).
-    // Column 0 in values[] is the INTEGER PRIMARY KEY (always first column).
-    // Real columns start at index 1 in values[].
-    let mut idx = 0usize;
-    for col_def in cols_str.split(',') {
-        let col_def = col_def.trim();
-        // Extract first token as column name (may be quoted with `backticks` or plain).
-        let col_name = col_def
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .trim_matches('`')
-            .trim_matches('"');
-        if col_name.eq_ignore_ascii_case("key_id") {
-            return Some(idx);
-        }
-        idx += 1;
-    }
-    None
-}
-
-/// jid table: row_id=_id, values[0]=Null(_id alias), values[1]=raw_string
-fn build_jid_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
+/// Reading the neighbouring `user` column instead yields a bare phone number,
+/// which looks plausible enough to hide the mistake.
+fn build_jid_map(records: &[&RecoveredRecord], cols: &JidColumns) -> HashMap<i64, String> {
     let mut map = HashMap::new();
     for r in records {
-        let id = match r.row_id {
-            Some(id) => id,
-            None => continue,
+        let Some(id) = r.row_id else {
+            continue;
         };
-        let raw = match r.values.get(1) {
-            Some(SqlValue::Text(s)) => s.clone(),
-            _ => continue,
+        let Some(raw) = text_at(r, cols.raw_string) else {
+            continue;
         };
         map.insert(id, raw);
     }
     map
 }
 
-/// chat table: row_id=_id, values[0]=Null, [1]=jid_row_id, [2]=subject
-fn build_chats(records: &[&RecoveredRecord], jid_map: &HashMap<i64, String>) -> HashMap<i64, Chat> {
+/// chat table: row_id is `_id`; `jid_row_id` links to `jid`.
+fn build_chats(
+    records: &[&RecoveredRecord],
+    jid_map: &HashMap<i64, String>,
+    cols: &ChatColumns,
+) -> HashMap<i64, Chat> {
     let mut map = HashMap::new();
     for r in records {
-        let id = match r.row_id {
-            Some(id) => id,
-            None => continue,
+        let Some(id) = r.row_id else {
+            continue;
         };
-        let jid_row_id = match r.values.get(1) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(jid_row_id) = int_at(r, cols.jid_row_id) else {
+            continue;
         };
         let jid = jid_map.get(&jid_row_id).cloned().unwrap_or_default();
-        let subject = match r.values.get(2) {
-            Some(SqlValue::Text(s)) => Some(s.clone()),
-            _ => None,
-        };
         let is_group = jid.ends_with("@g.us");
         map.insert(
             id,
             Chat {
                 id,
                 jid,
-                name: subject,
+                name: text_at(r, cols.subject),
                 is_group,
                 messages: Vec::new(),
-                archived: matches!(r.values.get(3), Some(SqlValue::Int(1))),
+                archived: flag_at(r, cols.archived),
             },
         );
     }
     map
 }
 
-/// message table: row_id=_id, values[0]=Null, [1]=chat_row_id,
-/// [2]=sender_jid_row_id, [3]=from_me, [4]=timestamp, [5]=text_data, [6]=message_type,
-/// [7]=media_mime_type, [8]=media_name, [9]=starred, [10]=edit_version (newer schemas)
+/// Map one `message` record using resolved column positions.
+///
+/// A record without a resolvable `chat_row_id` or `timestamp` is skipped rather
+/// than attributed to a guessed column.
 fn record_to_message(
     r: &RecoveredRecord,
     jid_map: &HashMap<i64, String>,
     tz_offset_secs: i32,
+    cols: &MessageColumns,
 ) -> Option<Message> {
-    use cols::message as col;
     let id = r.row_id?;
-    let chat_id = match r.values.get(col::CHAT_ROW_ID)? {
-        SqlValue::Int(n) => *n,
-        _ => return None,
-    };
-    let sender_jid = match r.values.get(col::SENDER_JID_ROW_ID) {
-        Some(SqlValue::Int(n)) => jid_map.get(n).cloned(),
-        _ => None,
-    };
-    let from_me = match r.values.get(col::FROM_ME) {
-        Some(SqlValue::Int(n)) => *n != 0,
-        _ => false,
-    };
-    let ts_ms = match r.values.get(col::TIMESTAMP)? {
-        SqlValue::Int(n) => *n,
-        _ => return None,
-    };
-    let msg_type = match r.values.get(col::MESSAGE_TYPE) {
-        Some(SqlValue::Int(n)) => *n as i32,
-        _ => 0,
-    };
-    let media_mime = match r.values.get(col::MEDIA_MIME_TYPE) {
-        Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-        _ => None,
-    };
-    let media_name = match r.values.get(col::MEDIA_NAME) {
-        Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-        _ => None,
-    };
-    let starred = matches!(r.values.get(col::STARRED), Some(SqlValue::Int(n)) if *n != 0);
+    let chat_id = int_at(r, cols.chat_row_id)?;
+    let sender_jid = int_at(r, cols.sender_jid_row_id).and_then(|n| jid_map.get(&n).cloned());
+    let from_me = flag_at(r, cols.from_me);
+    let ts_ms = int_at(r, cols.timestamp)?;
+    let msg_type = int_at(r, cols.message_type).unwrap_or(0) as i32;
+    let media_mime = text_at(r, cols.media_mime_type);
+    let media_name = text_at(r, cols.media_name);
+    let starred = flag_at(r, cols.starred);
     // edit_version column added in newer schema versions.
     //   5 = deleted-for-me  (local deletion only)
     //   7 = deleted-for-all (sender deleted from everyone's view)
     // Both cases override the content to Deleted regardless of msg_type or text_data.
-    let edit_version = match r.values.get(col::EDIT_VERSION) {
-        Some(SqlValue::Int(n)) => *n,
-        _ => 0,
-    };
-    let text_data = match r.values.get(col::TEXT_DATA) {
-        Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-        _ => None,
-    };
+    let edit_version = int_at(r, cols.edit_version).unwrap_or(0);
+    let text_data = text_at(r, cols.text_data);
     let content = if edit_version == 5 || edit_version == 7 {
         // Message deleted: override any msg_type or text content.
         // edit_version=5 → deleted-for-me; edit_version=7 → deleted-for-all.
@@ -542,7 +552,12 @@ fn record_to_message(
     } else if msg_type == 53 || msg_type == 54 {
         // View-once image (53) or video (54) — media key/CDN URL may survive device deletion
         let mime = media_mime.unwrap_or_else(|| {
-            if msg_type == 54 { "video/mp4" } else { "image/jpeg" }.to_string()
+            if msg_type == 54 {
+                "video/mp4"
+            } else {
+                "image/jpeg"
+            }
+            .to_string()
         });
         MessageContent::ViewOnce(MediaRef {
             file_path: media_name.unwrap_or_default(),
@@ -600,50 +615,30 @@ fn record_to_message(
     })
 }
 
-/// call_log: row_id=_id, values[0]=Null, [1]=jid_row_id, [2]=from_me,
-/// [3]=video_call, [4]=duration, [5]=timestamp, [6]=call_result,
-/// [7]=call_row_id (optional grouping key), [8]=call_creator_device_jid_row_id (optional)
+/// Map one `call_log` record using resolved column positions.
 ///
-/// Returns `(CallRecord, call_row_id)` where call_row_id groups group-call participants.
+/// Returns `(CallRecord, call_row_id)`, where `call_row_id` groups the
+/// participants of one group call.  Schemas that declare no such column yield
+/// `None`, so unrelated calls are never merged on a neighbouring value — the
+/// modern schema has no `call_row_id`, and reading `duration` in its place
+/// collapses every pair of calls that happened to run the same length.
 fn record_to_call(
     r: &RecoveredRecord,
     jid_map: &HashMap<i64, String>,
     tz_offset_secs: i32,
+    cols: &CallLogColumns,
 ) -> Option<(CallRecord, Option<i64>)> {
     let id = r.row_id?;
-    let jid_row_id = match r.values.get(1)? {
-        SqlValue::Int(n) => *n,
-        _ => return None,
-    };
+    let jid_row_id = int_at(r, cols.jid_row_id)?;
     let participant = jid_map.get(&jid_row_id).cloned().unwrap_or_default();
-    let from_me = match r.values.get(2) {
-        Some(SqlValue::Int(n)) => *n != 0,
-        _ => false,
-    };
-    let video = match r.values.get(3) {
-        Some(SqlValue::Int(n)) => *n != 0,
-        _ => false,
-    };
-    let duration = match r.values.get(4) {
-        Some(SqlValue::Int(n)) => *n as u32,
-        _ => 0,
-    };
-    let ts_ms = match r.values.get(5)? {
-        SqlValue::Int(n) => *n,
-        _ => return None,
-    };
-    let call_result = match r.values.get(6) {
-        Some(SqlValue::Int(n)) => CallResult::from(*n),
-        _ => CallResult::Unknown,
-    };
-    let call_row_id = match r.values.get(7) {
-        Some(SqlValue::Int(n)) => Some(*n),
-        _ => None,
-    };
-    let call_creator_device_jid = match r.values.get(8) {
-        Some(SqlValue::Int(n)) => jid_map.get(n).cloned(),
-        _ => None,
-    };
+    let from_me = flag_at(r, cols.from_me);
+    let video = flag_at(r, cols.video_call);
+    let duration = int_at(r, cols.duration).unwrap_or(0) as u32;
+    let ts_ms = int_at(r, cols.timestamp)?;
+    let call_result = int_at(r, cols.call_result).map_or(CallResult::Unknown, CallResult::from);
+    let call_row_id = int_at(r, cols.call_row_id);
+    let call_creator_device_jid =
+        int_at(r, cols.call_creator_device_jid_row_id).and_then(|n| jid_map.get(&n).cloned());
     Some((
         CallRecord {
             call_id: id,
@@ -698,48 +693,37 @@ fn merge_group_calls(raw: Vec<(CallRecord, Option<i64>)>) -> Vec<CallRecord> {
 
 // ── Quoted message support ───────────────────────────────────────────────────
 
-/// message_quoted: [0]=Null(_id), [1]=message_row_id, [2]=chat_row_id,
-/// [3]=sender_jid_row_id, [4]=from_me, [5]=timestamp, [6]=text_data, [7]=message_type
+/// message_quoted: the snapshot a reply keeps of the message it quotes.
 fn build_quoted_map(
     records: &[&RecoveredRecord],
     jid_map: &HashMap<i64, String>,
     tz_offset_secs: i32,
+    cols: &TableColumns,
 ) -> HashMap<i64, Message> {
+    let msg_row_id_col = cols.get("message_row_id");
+    let chat_row_id_col = cols.get("chat_row_id");
+    let sender_col = cols.get("sender_jid_row_id");
+    let from_me_col = cols.get("from_me");
+    let ts_col = cols.get("timestamp");
+    let text_col = cols.get("text_data");
+    let type_col = cols.get("message_type");
+
     let mut map = HashMap::new();
     for r in records {
-        let msg_row_id = match r.values.get(1) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(msg_row_id) = int_at(r, msg_row_id_col) else {
+            continue;
         };
-        let chat_id = match r.values.get(2) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(chat_id) = int_at(r, chat_row_id_col) else {
+            continue;
         };
-        let sender_jid = match r.values.get(3) {
-            Some(SqlValue::Int(n)) => jid_map.get(n).cloned(),
-            _ => None,
-        };
-        let from_me = match r.values.get(4) {
-            Some(SqlValue::Int(n)) => *n != 0,
-            _ => false,
-        };
-        let ts_ms = match r.values.get(5) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => 0,
-        };
-        let msg_type = match r.values.get(7) {
-            Some(SqlValue::Int(n)) => *n as i32,
-            _ => 0,
-        };
-        let content = match r.values.get(6) {
-            Some(SqlValue::Text(s)) if !s.is_empty() => MessageContent::Text(s.clone()),
-            _ => {
-                if msg_type == 0 {
-                    MessageContent::Deleted
-                } else {
-                    MessageContent::Unknown(msg_type)
-                }
-            }
+        let sender_jid = int_at(r, sender_col).and_then(|n| jid_map.get(&n).cloned());
+        let from_me = flag_at(r, from_me_col);
+        let ts_ms = int_at(r, ts_col).unwrap_or(0);
+        let msg_type = int_at(r, type_col).unwrap_or(0) as i32;
+        let content = match text_at(r, text_col) {
+            Some(text) => MessageContent::Text(text),
+            None if msg_type == 0 => MessageContent::Deleted,
+            None => MessageContent::Unknown(msg_type),
         };
 
         map.insert(
@@ -769,31 +753,30 @@ fn build_quoted_map(
 
 // ── Group participant events ─────────────────────────────────────────────────
 
-/// group_participant_user: [0]=Null(_id), [1]=group_jid_row_id, [2]=jid_row_id,
-/// [3]=user_action, [4]=action_ts, [5]=actor_jid_row_id
+/// group_participant_user: membership changes for group chats.
 fn build_group_participant_events(
     records: &[&RecoveredRecord],
     jid_map: &HashMap<i64, String>,
     tz_offset_secs: i32,
+    cols: &TableColumns,
 ) -> Vec<GroupParticipantEvent> {
+    let group_col = cols.get("group_jid_row_id");
+    let jid_col = cols.get("jid_row_id");
+    let action_col = cols.get("user_action");
+    let action_ts_col = cols.get("action_ts");
+
     let mut events = Vec::new();
     for r in records {
-        let group_jid_row_id = match r.values.get(1) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(group_jid_row_id) = int_at(r, group_col) else {
+            continue;
         };
-        let jid_row_id = match r.values.get(2) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(jid_row_id) = int_at(r, jid_col) else {
+            continue;
         };
-        let user_action = match r.values.get(3) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(user_action) = int_at(r, action_col) else {
+            continue;
         };
-        let action_ts = match r.values.get(4) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => 0,
-        };
+        let action_ts = int_at(r, action_ts_col).unwrap_or(0);
         let action = match user_action {
             0 => ParticipantAction::Added,
             1 => ParticipantAction::Removed,
@@ -820,16 +803,17 @@ fn build_group_participant_events(
 /// Used to recover the original text of deleted/tombstone messages (msg_type=15)
 /// that were later quoted by another message. The quoting message preserves
 /// the original text in message_quoted.text_data.
-fn build_ghost_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
+fn build_ghost_map(records: &[&RecoveredRecord], cols: &TableColumns) -> HashMap<i64, String> {
+    let msg_row_id_col = cols.get("message_row_id");
+    let text_col = cols.get("text_data");
+
     let mut map = HashMap::new();
     for r in records {
-        let msg_row_id = match r.values.get(1) {
-            Some(SqlValue::Int(n)) => *n,
-            _ => continue,
+        let Some(msg_row_id) = int_at(r, msg_row_id_col) else {
+            continue;
         };
-        let text = match r.values.get(6) {
-            Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
-            _ => continue,
+        let Some(text) = text_at(r, text_col) else {
+            continue;
         };
         map.insert(msg_row_id, text);
     }
@@ -839,28 +823,27 @@ fn build_ghost_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
 // ── wa.db contact extraction ─────────────────────────────────────────────────
 
 /// Extract contacts from wa.db bytes using the forensic B-tree walker.
-/// wa_contacts table: [0]=Null(_id), [1]=jid, [2]=display_name, [3]=status, [4]=number
+///
+/// `wa_contacts` column positions are resolved by name, as for msgstore.db.
 pub fn extract_contacts(wa_db_bytes: &[u8]) -> Result<Vec<Contact>> {
-    let engine = ForensicEngine::new(wa_db_bytes, None)
-        .context("failed to open wa.db")?;
+    let engine = ForensicEngine::new(wa_db_bytes, None).context("failed to open wa.db")?;
+    let schema_cols = SchemaColumns::from_ddl_map(&engine.table_ddl());
+    let cols = schema_cols.table("wa_contacts");
+    let jid_col = cols.get("jid");
+    let display_name_col = cols.get("display_name");
+    let number_col = cols.get("number");
+
     let records = engine.recover_layer1().context("wa.db layer 1 recovery")?;
     let by_table = partition_by_table(&records);
     let contact_records = tbl(&by_table, "wa_contacts");
 
     let mut contacts = Vec::new();
     for r in contact_records {
-        let jid = match r.values.get(1) {
-            Some(SqlValue::Text(s)) => s.clone(),
-            _ => continue,
+        let Some(jid) = text_at(r, jid_col) else {
+            continue;
         };
-        let display_name = match r.values.get(2) {
-            Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-            _ => None,
-        };
-        let phone_number = match r.values.get(4) {
-            Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-            _ => None,
-        };
+        let display_name = text_at(r, display_name_col);
+        let phone_number = text_at(r, number_col);
         contacts.push(Contact {
             jid,
             display_name,
@@ -962,7 +945,10 @@ mod tests {
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         assert_eq!(result.calls.len(), 1);
         // Fixture inserts call_result=1 (Connected)
-        assert_eq!(result.calls[0].call_result, chat4n6_plugin_api::CallResult::Connected);
+        assert_eq!(
+            result.calls[0].call_result,
+            chat4n6_plugin_api::CallResult::Connected
+        );
     }
 
     // ── E5: quoted message tests ─────────────────────────────────────────
@@ -1021,7 +1007,10 @@ mod tests {
     fn test_extract_contacts_from_wa_db() {
         let wa_db = make_wa_db();
         let contacts = extract_contacts(&wa_db).unwrap();
-        assert!(contacts.len() >= 2, "should have at least 2 contacts with names");
+        assert!(
+            contacts.len() >= 2,
+            "should have at least 2 contacts with names"
+        );
         let alice = contacts
             .iter()
             .find(|c| c.jid == "4155550100@s.whatsapp.net")
@@ -1108,9 +1097,16 @@ mod tests {
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
         // Message 6 has message_type=15 (tombstone, no message_quoted entry) → Deleted
-        let msg6 = chat1.messages.iter().find(|m| m.id == 6).expect("msg 6 (tombstone)");
+        let msg6 = chat1
+            .messages
+            .iter()
+            .find(|m| m.id == 6)
+            .expect("msg 6 (tombstone)");
         assert!(
-            matches!(&msg6.content, MessageContent::Deleted | MessageContent::GhostRecovered(_)),
+            matches!(
+                &msg6.content,
+                MessageContent::Deleted | MessageContent::GhostRecovered(_)
+            ),
             "msg_type=15 tombstone should produce Deleted or GhostRecovered, got {:?}",
             msg6.content
         );
@@ -1133,14 +1129,18 @@ mod tests {
     #[test]
     fn schema_version_is_read_from_pragma_user_version() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql")).unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
+            .unwrap();
         conn.execute_batch("PRAGMA user_version = 215;").unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         let db = std::fs::read(tmp.path()).unwrap();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        assert_eq!(result.schema_version, 215,
-            "schema_version must be read from PRAGMA user_version, not hardcoded");
+        assert_eq!(
+            result.schema_version, 215,
+            "schema_version must be read from PRAGMA user_version, not hardcoded"
+        );
     }
 
     // ── C8: ghost message recovery from message_quoted ───────────────────
@@ -1148,30 +1148,39 @@ mod tests {
     #[test]
     fn ghost_message_recovered_from_message_quoted() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql")).unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
+            .unwrap();
         conn.execute_batch(
             "INSERT INTO message_quoted VALUES (99, 6, 1, NULL, 1, 1710513600000, 'Secret deleted message', 0, NULL, NULL);",
         ).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         let db = std::fs::read(tmp.path()).unwrap();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let ghost = result.chats.iter()
+        let ghost = result
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter())
             .find(|m| matches!(&m.content, MessageContent::GhostRecovered(_)));
-        assert!(ghost.is_some(), "msg_type=15 with message_quoted entry must produce GhostRecovered");
+        assert!(
+            ghost.is_some(),
+            "msg_type=15 with message_quoted entry must produce GhostRecovered"
+        );
         if let Some(MessageContent::GhostRecovered(text)) = ghost.map(|m| &m.content) {
-            assert!(text.contains("Secret deleted message"),
-                "GhostRecovered text must contain the quoted text_data");
+            assert!(
+                text.contains("Secret deleted message"),
+                "GhostRecovered text must contain the quoted text_data"
+            );
         }
     }
 
     #[test]
     fn test_is_media_type_helper() {
-        assert!(is_media_type(1));  // image
-        assert!(is_media_type(2));  // audio
-        assert!(is_media_type(3));  // video
-        assert!(is_media_type(8));  // document
+        assert!(is_media_type(1)); // image
+        assert!(is_media_type(2)); // audio
+        assert!(is_media_type(3)); // video
+        assert!(is_media_type(8)); // document
         assert!(is_media_type(13)); // gif
         assert!(is_media_type(20)); // sticker
         assert!(!is_media_type(0)); // text
@@ -1216,7 +1225,8 @@ mod tests {
             INSERT INTO call_log VALUES (1, 1, 0, 0, 90, 1710513500000, 1, NULL, 2);
         "#).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1273,7 +1283,8 @@ mod tests {
             INSERT INTO call_log VALUES (3, 1, 1, 0, 60, 1710513500000, 1, NULL, NULL);
         "#).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1282,7 +1293,11 @@ mod tests {
         let db = make_msgstore_with_group_call();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let group_calls: Vec<_> = result.calls.iter().filter(|c| c.group_call).collect();
-        assert_eq!(group_calls.len(), 1, "two rows with same call_row_id → 1 merged record");
+        assert_eq!(
+            group_calls.len(),
+            1,
+            "two rows with same call_row_id → 1 merged record"
+        );
         assert_eq!(group_calls[0].participants.len(), 2);
     }
 
@@ -1290,8 +1305,14 @@ mod tests {
     fn test_group_call_participants_contain_both_jids() {
         let db = make_msgstore_with_group_call();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let gc = result.calls.iter().find(|c| c.group_call).expect("no group call");
-        assert!(gc.participants.contains(&"alice@s.whatsapp.net".to_string()));
+        let gc = result
+            .calls
+            .iter()
+            .find(|c| c.group_call)
+            .expect("no group call");
+        assert!(gc
+            .participants
+            .contains(&"alice@s.whatsapp.net".to_string()));
         assert!(gc.participants.contains(&"bob@s.whatsapp.net".to_string()));
     }
 
@@ -1487,7 +1508,10 @@ mod features_i1_i8_tests {
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
         let msg2 = chat1.messages.iter().find(|m| m.id == 2).expect("msg 2");
-        assert!(msg2.starred, "msg 2 starred=1 in DB must produce Message.starred=true");
+        assert!(
+            msg2.starred,
+            "msg 2 starred=1 in DB must produce Message.starred=true"
+        );
         let msg1 = chat1.messages.iter().find(|m| m.id == 1).expect("msg 1");
         assert!(!msg1.starred, "msg 1 starred=0 must be false");
     }
@@ -1519,7 +1543,10 @@ mod features_i1_i8_tests {
             Some(8),
             "msg 5 forward_score should be Some(8)"
         );
-        assert!(msg5.is_forwarded, "msg 5 with forward_score=8 must be is_forwarded=true");
+        assert!(
+            msg5.is_forwarded,
+            "msg 5 with forward_score=8 must be is_forwarded=true"
+        );
     }
 }
 
@@ -1530,10 +1557,12 @@ mod proptest_redo_tests {
 
     fn make_db_with_sql(extra_sql: &str) -> Vec<u8> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql")).unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
+            .unwrap();
         conn.execute_batch(extra_sql).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1545,11 +1574,16 @@ mod proptest_redo_tests {
              VALUES (1, 1, 0, 1710514000000, NULL, 53, 'image/jpeg', 'Media/WhatsApp View Once/VIEW-001.jpg');",
         );
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let view_once_count = result.chats.iter()
+        let view_once_count = result
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter())
             .filter(|m| matches!(&m.content, MessageContent::ViewOnce(_)))
             .count();
-        assert_eq!(view_once_count, 1, "msg_type 53 must produce ViewOnce, not Unknown");
+        assert_eq!(
+            view_once_count, 1,
+            "msg_type 53 must produce ViewOnce, not Unknown"
+        );
     }
 
     #[test]
@@ -1560,7 +1594,9 @@ mod proptest_redo_tests {
              VALUES (1, 1, 0, 1710514100000, NULL, 54, 'video/mp4', 'Media/WhatsApp View Once/VIEW-002.mp4');",
         );
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let view_once_count = result.chats.iter()
+        let view_once_count = result
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter())
             .filter(|m| matches!(&m.content, MessageContent::ViewOnce(_)))
             .count();
@@ -1576,7 +1612,10 @@ mod proptest_redo_tests {
         );
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let archived_chats: Vec<_> = result.chats.iter().filter(|c| c.archived).collect();
-        assert!(!archived_chats.is_empty(), "archived=1 in DB must produce Chat.archived=true");
+        assert!(
+            !archived_chats.is_empty(),
+            "archived=1 in DB must produce Chat.archived=true"
+        );
     }
 
     #[test]
@@ -1691,7 +1730,8 @@ mod media_type_extended_tests {
             INSERT INTO message VALUES (1, 1, NULL, 1, 1710513500000, NULL, {}, NULL, NULL, 0, 0, NULL);
         "#, msg_type_val)).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1703,7 +1743,8 @@ mod media_type_extended_tests {
         let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
         assert!(
             matches!(&msg.content, MessageContent::Media(mr) if mr.mime_type.contains("geo")),
-            "msg_type=5 (location) should produce Media with geo mime, got: {:?}", msg.content
+            "msg_type=5 (location) should produce Media with geo mime, got: {:?}",
+            msg.content
         );
     }
 
@@ -1715,7 +1756,8 @@ mod media_type_extended_tests {
         let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
         assert!(
             matches!(&msg.content, MessageContent::Media(_)),
-            "msg_type=42 (live location) should produce Media, got: {:?}", msg.content
+            "msg_type=42 (live location) should produce Media, got: {:?}",
+            msg.content
         );
     }
 
@@ -1727,7 +1769,8 @@ mod media_type_extended_tests {
         let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
         assert!(
             matches!(&msg.content, MessageContent::Media(mr) if mr.mime_type == "text/vcard"),
-            "msg_type=64 (contact card) should produce Media with text/vcard, got: {:?}", msg.content
+            "msg_type=64 (contact card) should produce Media with text/vcard, got: {:?}",
+            msg.content
         );
     }
 
@@ -1754,7 +1797,8 @@ mod streaming_extraction_tests {
 
     fn make_multi_message_db(msg_count: usize) -> Vec<u8> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             PRAGMA user_version = 200;
             CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
@@ -1774,15 +1818,23 @@ mod streaming_extraction_tests {
             );
             INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
             INSERT INTO chat VALUES (1, 1, NULL);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         for i in 1..=msg_count {
             conn.execute(
                 "INSERT INTO message VALUES (?, 1, NULL, 0, ?, ?, 0, NULL, NULL, 0, 0, NULL)",
-                rusqlite::params![i as i64, (1710000000000i64 + i as i64 * 1000), format!("msg {}", i)],
-            ).unwrap();
+                rusqlite::params![
+                    i as i64,
+                    (1710000000000i64 + i as i64 * 1000),
+                    format!("msg {}", i)
+                ],
+            )
+            .unwrap();
         }
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1793,7 +1845,8 @@ mod streaming_extraction_tests {
         let count_clone = Arc::clone(&count);
         extract_streaming(&db, 0, SchemaVersion::Modern, |_msg| {
             count_clone.fetch_add(1, Ordering::SeqCst);
-        }).expect("extract_streaming should succeed");
+        })
+        .expect("extract_streaming should succeed");
         assert_eq!(
             count.load(Ordering::SeqCst),
             10,
@@ -1807,7 +1860,9 @@ mod streaming_extraction_tests {
 
         // Batch extraction
         let batch = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let mut batch_ids: Vec<i64> = batch.chats.iter()
+        let mut batch_ids: Vec<i64> = batch
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter().map(|m| m.id))
             .collect();
         batch_ids.sort();
@@ -1816,7 +1871,8 @@ mod streaming_extraction_tests {
         let mut streaming_ids = Vec::new();
         extract_streaming(&db, 0, SchemaVersion::Modern, |msg| {
             streaming_ids.push(msg.id);
-        }).expect("extract_streaming should succeed");
+        })
+        .expect("extract_streaming should succeed");
         streaming_ids.sort();
 
         assert_eq!(
@@ -1830,13 +1886,17 @@ mod streaming_extraction_tests {
         let db = make_multi_message_db(20);
 
         let serial = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let mut serial_ids: Vec<i64> = serial.chats.iter()
+        let mut serial_ids: Vec<i64> = serial
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter().map(|m| m.id))
             .collect();
         serial_ids.sort();
 
         let parallel = extract_parallel(&db, 0, SchemaVersion::Modern).unwrap();
-        let mut parallel_ids: Vec<i64> = parallel.chats.iter()
+        let mut parallel_ids: Vec<i64> = parallel
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter().map(|m| m.id))
             .collect();
         parallel_ids.sort();
@@ -1854,9 +1914,11 @@ mod fts5_tests {
 
     fn make_fts5_db() -> Vec<u8> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../tests/fixtures/fts5_schema.sql")).unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/fts5_schema.sql"))
+            .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1865,10 +1927,14 @@ mod fts5_tests {
         let db = make_fts5_db();
         let fragments = extract_fts5_content(&db).unwrap();
         // Should find at least one _content table with text fragments
-        let content_tables: Vec<_> = fragments.keys()
+        let content_tables: Vec<_> = fragments
+            .keys()
             .filter(|k| k.ends_with("_content"))
             .collect();
-        assert!(!content_tables.is_empty(), "must find at least one FTS5 _content table");
+        assert!(
+            !content_tables.is_empty(),
+            "must find at least one FTS5 _content table"
+        );
         let all_texts: Vec<_> = fragments.values().flatten().collect();
         assert!(
             all_texts.iter().any(|t| t.contains("forensics")),
@@ -1961,7 +2027,8 @@ mod edit_version_tests {
             INSERT INTO message VALUES (1, 1, NULL, 1, 1710513500000, 'original text', 0, NULL, NULL, 0, {});
         "#, edit_version_val, edit_version_val)).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -2043,7 +2110,11 @@ mod tbl_helper_tests {
         let mut map: HashMap<String, Vec<&RecoveredRecord>> = HashMap::new();
         map.insert("message".to_string(), vec![&record]);
         let result = tbl(&map, "message");
-        assert_eq!(result.len(), 1, "known key must return the inserted records");
+        assert_eq!(
+            result.len(),
+            1,
+            "known key must return the inserted records"
+        );
     }
 }
 
@@ -2061,7 +2132,8 @@ mod truncated_record_tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         // Deliberately omit media_mime_type, media_name, starred, edit_version
         // so that column indices 7, 8, 9, 10 are absent from the physical row.
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             PRAGMA user_version = 100;
             CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
@@ -2077,9 +2149,12 @@ mod truncated_record_tests {
             INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
             INSERT INTO chat VALUES (1, 1, NULL);
             INSERT INTO message VALUES (1, 1, NULL, 1, 1710513500000, 'hello short', 0);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -2102,6 +2177,382 @@ mod truncated_record_tests {
             matches!(&msg.content, MessageContent::Text(s) if s == "hello short"),
             "text content must be preserved from truncated row, got: {:?}",
             msg.content
+        );
+    }
+}
+
+// ── T1: extraction against the real 2023-era device schema ───────────────────
+
+/// These exercise the same code path as the simplified fixtures, but against
+/// the `CREATE TABLE` shapes read out of a real device.  Every assertion here
+/// is one the hardcoded-ordinal reader gets wrong: it lands on
+/// `sender_jid_row_id` instead of `timestamp`, `user` instead of `raw_string`,
+/// `hidden` instead of `subject`, and `duration` instead of `call_row_id`.
+#[cfg(test)]
+mod real_schema_tests {
+    use super::*;
+    use chrono::Datelike;
+
+    fn make_real_msgstore() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/real_modern_schema.sql"))
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    fn all_messages(result: &ExtractionResult) -> Vec<&Message> {
+        result
+            .chats
+            .iter()
+            .flat_map(|c| c.messages.iter())
+            .collect()
+    }
+
+    #[test]
+    fn message_timestamps_are_2022_not_epoch_zero() {
+        let db = make_real_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let msgs = all_messages(&result);
+        assert_eq!(msgs.len(), 3, "all three messages must be extracted");
+        for m in &msgs {
+            assert_eq!(
+                m.timestamp.utc.year(),
+                2022,
+                "message {} timestamp resolved to {} — the reader is on the wrong column",
+                m.id,
+                m.timestamp.utc
+            );
+        }
+    }
+
+    #[test]
+    fn message_text_comes_from_text_data() {
+        let db = make_real_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let texts: Vec<&str> = all_messages(&result)
+            .iter()
+            .filter_map(|m| match &m.content {
+                MessageContent::Text(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.contains(&"Incoming real-schema message"),
+            "text_data must be read by name, got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn sender_resolves_via_jid_raw_string_not_bare_user() {
+        let db = make_real_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let received = all_messages(&result)
+            .into_iter()
+            .find(|m| m.id == 2)
+            .expect("message 2");
+        assert_eq!(
+            received.sender_jid.as_deref(),
+            Some("4155550100@s.whatsapp.net"),
+            "sender must come from jid.raw_string, not the bare `user` column"
+        );
+    }
+
+    #[test]
+    fn from_me_is_read_by_name() {
+        let db = make_real_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let msgs = all_messages(&result);
+        let outgoing = msgs.iter().find(|m| m.id == 1).expect("message 1");
+        let incoming = msgs.iter().find(|m| m.id == 2).expect("message 2");
+        assert!(outgoing.from_me, "message 1 has from_me = 1");
+        assert!(!incoming.from_me, "message 2 has from_me = 0");
+    }
+
+    #[test]
+    fn starred_flag_is_read_by_name() {
+        let db = make_real_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let msgs = all_messages(&result);
+        assert!(
+            msgs.iter().find(|m| m.id == 2).expect("message 2").starred,
+            "message 2 has starred = 1 at DDL position 16"
+        );
+        assert!(
+            !msgs.iter().find(|m| m.id == 1).expect("message 1").starred,
+            "message 1 has starred = 0"
+        );
+    }
+
+    #[test]
+    fn chat_subject_and_archived_are_read_by_name() {
+        let db = make_real_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let group = result.chats.iter().find(|c| c.id == 2).expect("chat 2");
+        assert_eq!(
+            group.name.as_deref(),
+            Some("Real Schema Group"),
+            "subject sits at position 3; position 2 is `hidden`"
+        );
+        assert!(group.archived, "chat 2 has archived = 1 at position 10");
+        let direct = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        assert!(!direct.archived, "chat 1 has archived = 0");
+    }
+
+    #[test]
+    fn chat_jid_resolves_and_group_is_flagged() {
+        let db = make_real_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let group = result.chats.iter().find(|c| c.id == 2).expect("chat 2");
+        assert_eq!(group.jid, "120363001234567890@g.us");
+        assert!(group.is_group);
+    }
+
+    #[test]
+    fn calls_are_not_collapsed_by_a_mistaken_grouping_key() {
+        let db = make_real_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        assert_eq!(
+            result.calls.len(),
+            3,
+            "three call_log rows must yield three records; the real schema has no \
+             call_row_id column, so nothing may be merged"
+        );
+        assert!(
+            result.calls.iter().all(|c| !c.group_call),
+            "no call may be flagged as a group call"
+        );
+    }
+
+    #[test]
+    fn call_duration_and_video_flag_are_read_by_name() {
+        let db = make_real_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let video = result
+            .calls
+            .iter()
+            .find(|c| c.call_id == 2)
+            .expect("call 2");
+        assert!(video.video, "call 2 has video_call = 1 at position 6");
+        assert_eq!(video.duration_secs, 42, "duration sits at position 7");
+        let voice = result
+            .calls
+            .iter()
+            .find(|c| c.call_id == 1)
+            .expect("call 1");
+        assert!(!voice.video);
+        assert_eq!(voice.duration_secs, 137);
+    }
+
+    fn make_shuffled_msgstore() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/shuffled_schema.sql"))
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    /// Two databases that differ only in column declaration order must extract
+    /// identically.  Any ordinal creeping back into the extractor breaks this.
+    #[test]
+    fn column_order_does_not_change_the_extraction() {
+        let straight = extract_from_msgstore(&make_real_msgstore(), 0, SchemaVersion::Modern)
+            .expect("real-order fixture");
+        let shuffled = extract_from_msgstore(&make_shuffled_msgstore(), 0, SchemaVersion::Modern)
+            .expect("permuted-order fixture");
+
+        let summarise = |r: &ExtractionResult| {
+            let mut chats: Vec<(i64, String, Option<String>, bool)> = r
+                .chats
+                .iter()
+                .map(|c| (c.id, c.jid.clone(), c.name.clone(), c.archived))
+                .collect();
+            chats.sort();
+            let mut msgs: Vec<(i64, i64, Option<String>, bool, i64, bool)> = r
+                .chats
+                .iter()
+                .flat_map(|c| c.messages.iter())
+                .map(|m| {
+                    (
+                        m.id,
+                        m.chat_id,
+                        m.sender_jid.clone(),
+                        m.from_me,
+                        m.timestamp.utc.timestamp_millis(),
+                        m.starred,
+                    )
+                })
+                .collect();
+            msgs.sort();
+            let mut calls: Vec<(i64, bool, u32, i64, bool)> = r
+                .calls
+                .iter()
+                .map(|c| {
+                    (
+                        c.call_id,
+                        c.video,
+                        c.duration_secs,
+                        c.timestamp.utc.timestamp_millis(),
+                        c.group_call,
+                    )
+                })
+                .collect();
+            calls.sort();
+            (chats, msgs, calls)
+        };
+
+        assert_eq!(
+            summarise(&straight),
+            summarise(&shuffled),
+            "extraction must depend on column names, not on their declaration order"
+        );
+        // Guard against the comparison passing because both sides are empty.
+        assert_eq!(summarise(&straight).1.len(), 3);
+    }
+
+    /// A legacy-generation database has no `message` table at all.  Reporting
+    /// zero messages would be indistinguishable from a clean device.
+    #[test]
+    fn a_legacy_schema_database_is_refused_rather_than_reported_empty() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/legacy_schema.sql"))
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let err = extract_from_msgstore(&db, 0, SchemaVersion::Legacy)
+            .expect_err("a legacy database must not yield a silently empty report");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("messages"),
+            "error must name the legacy table it found: {msg}"
+        );
+        assert!(
+            msg.contains("message") && msg.contains("legacy"),
+            "error must say which generation it recognised: {msg}"
+        );
+    }
+
+    /// A database with neither table is likewise a refusal, not an empty report.
+    #[test]
+    fn a_database_with_no_message_table_is_refused() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE unrelated (_id INTEGER PRIMARY KEY, x TEXT);")
+            .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let err = extract_from_msgstore(&db, 0, SchemaVersion::Modern)
+            .expect_err("a database with no message table is not a msgstore.db");
+        assert!(
+            format!("{err:#}").contains("message"),
+            "error must name what it looked for: {err:#}"
+        );
+    }
+
+    /// A database whose `message.timestamp` column does not hold epoch
+    /// milliseconds is a bootstrap failure: extraction must stop rather than
+    /// emit a report whose every date is wrong.
+    #[test]
+    fn implausible_timestamps_abort_extraction_naming_the_values() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+             CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL,
+                 sender_jid_row_id INTEGER, from_me INTEGER, timestamp INTEGER,
+                 text_data TEXT, message_type INTEGER);
+             INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+             INSERT INTO chat VALUES (1, 1, NULL);
+             INSERT INTO message VALUES (1, 1, NULL, 1, 5243, 'a', 0);
+             INSERT INTO message VALUES (2, 1, NULL, 1, 5244, 'b', 0);
+             INSERT INTO message VALUES (3, 1, NULL, 1, 5245, 'c', 0);",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let err = extract_from_msgstore(&db, 0, SchemaVersion::Modern)
+            .expect_err("must refuse to report on timestamps that are not epoch millis");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("timestamp"), "must name the column: {msg}");
+        assert!(msg.contains("5243"), "must quote an offending value: {msg}");
+    }
+
+    /// A schema that declares no `timestamp` at all must be named, not silently
+    /// treated as a database with no messages.
+    #[test]
+    fn message_table_without_a_timestamp_column_aborts_extraction() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+             CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL,
+                 text_data TEXT);
+             INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+             INSERT INTO chat VALUES (1, 1, NULL);
+             INSERT INTO message VALUES (1, 1, 'orphan');",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let err = extract_from_msgstore(&db, 0, SchemaVersion::Modern)
+            .expect_err("an unrecognisable message schema must be reported");
+        assert!(
+            format!("{err:#}").contains("timestamp"),
+            "error must name the missing column: {err:#}"
+        );
+    }
+
+    /// The invariant every resolved ordinal rests on: SQLite writes the
+    /// `INTEGER PRIMARY KEY` column as a NULL **at its declared position**, so
+    /// `values[i]` is the column at DDL position `i` — even when the rowid
+    /// alias is not declared first.
+    #[test]
+    fn rowid_alias_is_null_at_its_declared_position() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t (a TEXT, _id INTEGER PRIMARY KEY, c INTEGER);
+             INSERT INTO t VALUES ('first', 7, 42);",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let engine = ForensicEngine::new(&db, None).unwrap();
+        let records = engine.recover_layer1().unwrap();
+        let r = records.iter().find(|r| r.table == "t").expect("table t");
+
+        assert_eq!(r.row_id, Some(7), "rowid comes from the cell header");
+        assert!(
+            matches!(r.values.first(), Some(SqlValue::Text(s)) if s == "first"),
+            "position 0 is the declared first column, got {:?}",
+            r.values.first()
+        );
+        assert!(
+            matches!(r.values.get(1), Some(SqlValue::Null)),
+            "the rowid alias reads as Null at its own declared position, got {:?}",
+            r.values.get(1)
+        );
+        assert!(
+            matches!(r.values.get(2), Some(SqlValue::Int(42))),
+            "position 2 is the declared third column, got {:?}",
+            r.values.get(2)
         );
     }
 }

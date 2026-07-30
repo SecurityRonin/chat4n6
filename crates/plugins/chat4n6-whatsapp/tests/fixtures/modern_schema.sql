@@ -1,5 +1,25 @@
--- Minimal modern WhatsApp Android msgstore schema + sample data
--- Column order matches what ForensicEngine/btree walker will emit
+-- Simplified WhatsApp Android msgstore schema + sample data.
+--
+-- READ THIS BEFORE ADDING A TEST HERE
+--   These CREATE TABLE shapes are a simplification, not a device's schema. They
+--   were written to the same column layout the extractor's old hardcoded
+--   ordinals assumed, so for as long as those ordinals existed this fixture
+--   agreed with the code while both were wrong about real data. It is kept for
+--   two reasons, neither of which is realism:
+--
+--     1. It carries `media_mime_type` and `media_name` on the `message` table.
+--        Those columns are genuine in older modern-generation schemas but the
+--        2023-era device moved media metadata to `message_media`, which the
+--        extractor does not yet read. This fixture is what exercises the
+--        media-in-message path.
+--     2. Its aux tables (message_quoted, message_add_on, receipt_user, …) have
+--        not been checked against a device, so the column names here are the
+--        only ones those code paths are known against.
+--
+--   For anything about column POSITIONS, use real_modern_schema.sql (real
+--   device DDL) or shuffled_schema.sql (same names, permuted order). A test
+--   that could pass here purely because the layout happens to match the reader
+--   proves nothing.
 
 PRAGMA user_version = 200;
 
