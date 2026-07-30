@@ -39,12 +39,72 @@ const OFFENDERS_SHOWN: usize = 3;
 /// `now_ms` is the acquisition time in epoch milliseconds; it is passed in
 /// rather than read from the clock so the bounds are testable.
 pub fn validate_message_columns(
-    _records: &[&RecoveredRecord],
-    _cols: &MessageColumns,
-    _now_ms: i64,
+    records: &[&RecoveredRecord],
+    cols: &MessageColumns,
+    now_ms: i64,
 ) -> Result<()> {
-    // RED stub — validation is implemented in the GREEN commit.
-    Ok(())
+    let Some(ts_idx) = cols.timestamp else {
+        bail!(
+            "msgstore `message` table declares no `timestamp` column; the schema is \
+             unrecognised and its records will not be interpreted"
+        );
+    };
+    if cols.chat_row_id.is_none() {
+        bail!(
+            "msgstore `message` table declares no `chat_row_id` column; messages \
+             cannot be attributed to a chat and will not be interpreted"
+        );
+    }
+    if records.is_empty() {
+        return Ok(());
+    }
+
+    let latest_ms = now_ms.saturating_add(FUTURE_GRACE_MS);
+    let mut sampled = 0usize;
+    let mut plausible = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    let mut short_rows = 0usize;
+
+    for r in records.iter().take(SAMPLE_SIZE) {
+        let value = r.values.get(ts_idx);
+        if value.is_none() {
+            short_rows += 1;
+        }
+        sampled += 1;
+        if matches!(value, Some(SqlValue::Int(ms)) if *ms >= EARLIEST_PLAUSIBLE_MS && *ms <= latest_ms)
+        {
+            plausible += 1;
+        } else if offenders.len() < OFFENDERS_SHOWN {
+            let row = r
+                .row_id
+                .map_or_else(|| "?".to_string(), |id| id.to_string());
+            offenders.push(format!("_id={row} -> {}", render_value(value)));
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss)] // sample is at most SAMPLE_SIZE rows
+    let ratio = plausible as f64 / sampled as f64;
+    if ratio >= MIN_PLAUSIBLE_RATIO {
+        return Ok(());
+    }
+
+    let detail = if short_rows == sampled {
+        format!("no sampled record is long enough to carry column {ts_idx}")
+    } else {
+        format!(
+            "{plausible} of {sampled} sampled rows carry a plausible epoch-millisecond \
+             value (need {:.0}%)",
+            MIN_PLAUSIBLE_RATIO * 100.0
+        )
+    };
+
+    bail!(
+        "msgstore `message`.`timestamp` resolved to column {ts_idx}, but {detail}. \
+         Offending values: [{}]. Expected epoch milliseconds between \
+         {EARLIEST_PLAUSIBLE_MS} (2009-01-01) and {latest_ms} (acquisition + 1 day). \
+         Refusing to report on a column map the data contradicts.",
+        offenders.join("; ")
+    )
 }
 
 /// Render a stored value for a diagnostic, verbatim where it is bounded.

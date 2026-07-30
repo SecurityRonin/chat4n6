@@ -6,6 +6,7 @@ use crate::columns::{
 };
 use crate::schema::SchemaVersion;
 pub use crate::schema::{default_mime_for_type, is_media_type, msg_type_label};
+use crate::schema_gate::validate_message_columns;
 use anyhow::{bail, Context, Result};
 use chat4n6_plugin_api::{
     CallRecord, CallResult, Chat, Contact, EditHistoryEntry, ExtractionResult, ForensicTimestamp,
@@ -17,6 +18,7 @@ use chat4n6_sqlite_forensics::{
     partition_by_table,
     record::{RecoveredRecord, SqlValue},
 };
+use chrono::Utc;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -64,9 +66,15 @@ pub fn extract_from_msgstore(
     // Build chat map: chat_id → Chat (populated with messages below)
     let mut chats = build_chats(tbl(&by_table, "chat"), &jid_map, &chat_cols);
 
+    // Validate the resolved map against the records before interpreting any of
+    // them.  A wrong map still yields a complete report, so this must fail
+    // loudly rather than degrade.
+    let msg_records = tbl(&by_table, "message");
+    validate_message_columns(msg_records, &msg_cols, Utc::now().timestamp_millis())
+        .context("msgstore.db schema validation failed")?;
+
     // Map messages into chats.  If the chat record was deleted/unrecovered,
     // create a stub so forensically-recovered messages are never silently dropped.
-    let msg_records = tbl(&by_table, "message");
     for rec in msg_records {
         if let Some(msg) = record_to_message(rec, &jid_map, tz_offset_secs, &msg_cols) {
             chats
