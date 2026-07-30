@@ -3,6 +3,7 @@
 //! Detects evidence of tampering, selective deletion, timestamp anomalies,
 //! and SQLite VACUUM operations that destroy deleted record remnants.
 
+use crate::schema_gate::EARLIEST_PLAUSIBLE_MS;
 use chat4n6_plugin_api::{Chat, ExtractionResult, ForensicWarning};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -149,9 +150,43 @@ pub const IMPLAUSIBLE_SHARE_PCT: u8 = 5;
 ///
 /// Its standing job is genuine tampering — a database whose timestamps were
 /// rewritten shows the same signature.
-pub fn detect_timestamp_distribution_anomaly(_chats: &[Chat]) -> Vec<ForensicWarning> {
-    // RED stub — detection is implemented in the GREEN commit.
-    Vec::new()
+pub fn detect_timestamp_distribution_anomaly(chats: &[Chat]) -> Vec<ForensicWarning> {
+    let mut total: u32 = 0;
+    let mut occurrences: HashMap<DateTime<Utc>, u32> = HashMap::new();
+    for msg in chats.iter().flat_map(|c| c.messages.iter()) {
+        total = total.saturating_add(1);
+        // Compared in milliseconds so the bound needs no fallible conversion.
+        if msg.timestamp.utc.timestamp_millis() < EARLIEST_PLAUSIBLE_MS {
+            *occurrences.entry(msg.timestamp.utc).or_insert(0) += 1;
+        }
+    }
+
+    let implausible_count: u32 = occurrences.values().sum();
+    if total == 0 || implausible_count == 0 {
+        return vec![];
+    }
+
+    // u64 avoids overflowing the ×100 on a large extraction.
+    let ratio_pct = (u64::from(implausible_count) * 100 / u64::from(total)).min(100) as u8;
+    if ratio_pct <= IMPLAUSIBLE_SHARE_PCT {
+        return vec![];
+    }
+
+    // Ties broken by the earlier instant so the finding is reproducible.
+    let Some((&modal_utc, &modal_occurrences)) = occurrences
+        .iter()
+        .max_by_key(|(instant, count)| (**count, std::cmp::Reverse(**instant)))
+    else {
+        return vec![];
+    };
+
+    vec![ForensicWarning::TimestampDistributionAnomaly {
+        total_messages: total,
+        implausible_count,
+        ratio_pct,
+        modal_utc,
+        modal_occurrences,
+    }]
 }
 
 // ── New detectors (§2.6) ─────────────────────────────────────────────────────

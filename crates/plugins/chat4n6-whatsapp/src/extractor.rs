@@ -1,5 +1,6 @@
 use crate::anti_forensics::{
     detect_duplicate_stanza_ids, detect_rowid_reuse, detect_thumbnail_orphans,
+    detect_timestamp_distribution_anomaly,
 };
 use crate::columns::{
     CallLogColumns, ChatColumns, JidColumns, MessageColumns, SchemaColumns, TableColumns,
@@ -318,6 +319,7 @@ pub fn extract_from_msgstore(
         total_messages,
     ));
     forensic_warnings.extend(detect_rowid_reuse(&chats_vec));
+    forensic_warnings.extend(detect_timestamp_distribution_anomaly(&chats_vec));
 
     Ok(ExtractionResult {
         chats: chats_vec,
