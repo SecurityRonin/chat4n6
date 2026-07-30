@@ -2,25 +2,26 @@
 
 pub mod anti_forensics;
 
+pub mod album;
 pub mod cdn;
+pub mod columns;
 pub mod contact_report;
 pub mod decrypt;
 pub mod extractor;
-pub mod orphaned_media;
-pub mod platform;
-pub mod system_event;
-pub mod schema;
-pub mod timezone;
-pub mod album;
-pub mod poll;
 pub mod group_metadata;
+pub mod link;
 pub mod location;
 pub mod mention;
+pub mod orphaned_media;
 pub mod pin;
+pub mod platform;
+pub mod poll;
+pub mod schema;
 pub mod status;
-pub mod link;
+pub mod system_event;
+pub mod timezone;
 
-use crate::extractor::{extract_contacts, extract_from_msgstore, build_contact_names};
+use crate::extractor::{build_contact_names, extract_contacts, extract_from_msgstore};
 use crate::schema::detect_schema_version;
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{ExtractionResult, ForensicFs, ForensicPlugin};
@@ -156,10 +157,9 @@ fn detect_timezone(fs: &dyn ForensicFs) -> i32 {
 
 impl WhatsAppPlugin {
     fn try_decrypt(&self, bytes: &[u8]) -> Result<Vec<u8>> {
-        let key = self
-            .key
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("database is not SQLite and no decryption key provided"))?;
+        let key = self.key.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("database is not SQLite and no decryption key provided")
+        })?;
         // Try crypt15 first, then crypt14
         if let Ok(plain) = decrypt::decrypt_db(bytes, key, decrypt::CryptVersion::Crypt15) {
             return Ok(plain);
@@ -299,7 +299,8 @@ mod tests {
 
     fn db_to_bytes(conn: &rusqlite::Connection) -> Vec<u8> {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -332,7 +333,8 @@ mod tests {
                 jid TEXT, display_name TEXT, status TEXT, number TEXT);
             INSERT INTO wa_contacts VALUES (1, '{jid}', '{display_name}', NULL, NULL);
             "
-        )).unwrap();
+        ))
+        .unwrap();
         db_to_bytes(&conn)
     }
 
@@ -340,9 +342,7 @@ mod tests {
     fn wa_db_contact_names_applied_to_chats() {
         let msgstore = minimal_msgstore("alice@s.whatsapp.net");
         let wa_db = minimal_wa_db("alice@s.whatsapp.net", "Alice");
-        let fs = MockFs::new()
-            .add(DB_PATH, msgstore)
-            .add(WA_DB_PATH, wa_db);
+        let fs = MockFs::new().add(DB_PATH, msgstore).add(WA_DB_PATH, wa_db);
         let result = WhatsAppPlugin::new().extract(&fs, None).unwrap();
         let chat = result.chats.first().expect("expected at least one chat");
         assert_eq!(
@@ -355,9 +355,10 @@ mod tests {
     #[test]
     fn timezone_autodetect_from_property_file() {
         let msgstore = minimal_msgstore("test@s.whatsapp.net");
-        let fs = MockFs::new()
-            .add(DB_PATH, msgstore)
-            .add("data/property/persist.sys.timezone", b"Asia/Manila\n".to_vec());
+        let fs = MockFs::new().add(DB_PATH, msgstore).add(
+            "data/property/persist.sys.timezone",
+            b"Asia/Manila\n".to_vec(),
+        );
         let result = WhatsAppPlugin::new().extract(&fs, None).unwrap();
         assert_eq!(
             result.timezone_offset_seconds,

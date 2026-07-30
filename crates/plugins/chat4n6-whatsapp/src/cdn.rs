@@ -18,12 +18,12 @@ pub enum CdnError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CdnAcquisitionRecord {
-    pub url_hash: String,              // SHA-256 hex of the URL (NOT the URL itself)
-    pub media_key_hash: String,        // SHA-256 hex of the raw media key bytes
-    pub timestamp_utc: String,         // ISO 8601 UTC timestamp of download attempt
+    pub url_hash: String,       // SHA-256 hex of the URL (NOT the URL itself)
+    pub media_key_hash: String, // SHA-256 hex of the raw media key bytes
+    pub timestamp_utc: String,  // ISO 8601 UTC timestamp of download attempt
     pub file_hash_result: Option<String>, // SHA-256 hex of plaintext bytes (None if download failed)
     pub file_size_bytes: Option<u64>,
-    pub examiner: Option<String>,      // examiner identifier for chain of custody
+    pub examiner: Option<String>, // examiner identifier for chain of custody
     pub success: bool,
 }
 
@@ -43,7 +43,7 @@ pub fn decrypt_whatsapp_media(
     media_key_bytes: &[u8],
     encrypted_bytes: &[u8],
 ) -> Result<Vec<u8>, CdnError> {
-    use aes::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+    use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
     type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
     // Minimum: need at least 1 AES block (16 bytes) of ciphertext — check blob first
@@ -64,7 +64,7 @@ pub fn decrypt_whatsapp_media(
     let mut buf = encrypted_bytes.to_vec();
     let plaintext_len = Aes256CbcDec::new(aes_key.into(), iv.into())
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
-        .map_err(|_| CdnError::HmacMismatch)?  // unpad failure treated as decrypt error
+        .map_err(|_| CdnError::HmacMismatch)? // unpad failure treated as decrypt error
         .len();
     buf.truncate(plaintext_len);
     Ok(buf)
@@ -136,7 +136,10 @@ mod tests {
         assert!(!record.url_hash.is_empty(), "url_hash must not be empty");
         // Verify it's the expected SHA-256 hex
         let expected = hex::encode(Sha256::digest(url.as_bytes()));
-        assert_eq!(record.url_hash, expected, "url_hash should be SHA-256 of the URL");
+        assert_eq!(
+            record.url_hash, expected,
+            "url_hash should be SHA-256 of the URL"
+        );
     }
 
     #[test]
@@ -145,18 +148,30 @@ mod tests {
         let key = b"0123456789abcdef0123456789abcdef"; // 32 bytes
         let record = build_acquisition_record(url, key, None, None);
         let expected = hex::encode(Sha256::digest(key));
-        assert_eq!(record.media_key_hash, expected, "media_key_hash should be SHA-256 of key bytes");
+        assert_eq!(
+            record.media_key_hash, expected,
+            "media_key_hash should be SHA-256 of key bytes"
+        );
         // Also verify it doesn't leak the actual key
         let key_hex = hex::encode(key);
-        assert_ne!(record.media_key_hash, key_hex, "media_key_hash should be SHA-256, not hex of key");
+        assert_ne!(
+            record.media_key_hash, key_hex,
+            "media_key_hash should be SHA-256, not hex of key"
+        );
     }
 
     #[test]
     fn test_build_acquisition_record_success_false_when_no_plaintext() {
         let key = vec![0u8; 32];
         let record = build_acquisition_record("https://example.com", &key, None, None);
-        assert!(!record.success, "success should be false when plaintext is None");
-        assert!(record.file_hash_result.is_none(), "file_hash_result should be None when no plaintext");
+        assert!(
+            !record.success,
+            "success should be false when plaintext is None"
+        );
+        assert!(
+            record.file_hash_result.is_none(),
+            "file_hash_result should be None when no plaintext"
+        );
         assert!(record.file_size_bytes.is_none());
     }
 
@@ -165,8 +180,14 @@ mod tests {
         let key = vec![0u8; 32];
         let plaintext = b"decrypted media content";
         let record = build_acquisition_record("https://example.com", &key, Some(plaintext), None);
-        assert!(record.success, "success should be true when plaintext is provided");
-        assert!(record.file_hash_result.is_some(), "file_hash_result should be set");
+        assert!(
+            record.success,
+            "success should be true when plaintext is provided"
+        );
+        assert!(
+            record.file_hash_result.is_some(),
+            "file_hash_result should be set"
+        );
         assert_eq!(record.file_size_bytes, Some(plaintext.len() as u64));
     }
 
@@ -182,7 +203,8 @@ mod tests {
     #[test]
     fn test_build_acquisition_record_examiner_preserved() {
         let key = vec![0u8; 32];
-        let record = build_acquisition_record("https://example.com", &key, None, Some("examiner_alice"));
+        let record =
+            build_acquisition_record("https://example.com", &key, None, Some("examiner_alice"));
         assert_eq!(record.examiner.as_deref(), Some("examiner_alice"));
     }
 
@@ -190,7 +212,10 @@ mod tests {
     fn test_build_acquisition_record_timestamp_not_empty() {
         let key = vec![0u8; 32];
         let record = build_acquisition_record("https://example.com", &key, None, None);
-        assert!(!record.timestamp_utc.is_empty(), "timestamp_utc must be set");
+        assert!(
+            !record.timestamp_utc.is_empty(),
+            "timestamp_utc must be set"
+        );
     }
 
     // ── append_to_log tests ───────────────────────────────────────────────────
@@ -199,7 +224,10 @@ mod tests {
     fn test_append_to_log_creates_file() {
         let dir = tempdir().unwrap();
         let log_path = dir.path().join("cdn_acquisition.jsonl");
-        assert!(!log_path.exists(), "log file should not exist before append");
+        assert!(
+            !log_path.exists(),
+            "log file should not exist before append"
+        );
 
         let key = vec![0u8; 32];
         let record = build_acquisition_record("https://example.com", &key, None, None);
@@ -222,7 +250,11 @@ mod tests {
 
         let content = std::fs::read_to_string(&log_path).unwrap();
         let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
-        assert_eq!(lines.len(), 2, "should have exactly 2 lines after 2 appends");
+        assert_eq!(
+            lines.len(),
+            2,
+            "should have exactly 2 lines after 2 appends"
+        );
     }
 
     #[test]
@@ -231,7 +263,8 @@ mod tests {
         let log_path = dir.path().join("cdn_acquisition.jsonl");
 
         let key = vec![0u8; 32];
-        let r1 = build_acquisition_record("https://example.com/a", &key, Some(b"content"), Some("ex"));
+        let r1 =
+            build_acquisition_record("https://example.com/a", &key, Some(b"content"), Some("ex"));
         let r2 = build_acquisition_record("https://example.com/b", &key, None, None);
 
         append_to_log(&log_path, &r1).unwrap();
@@ -239,8 +272,8 @@ mod tests {
 
         let content = std::fs::read_to_string(&log_path).unwrap();
         for line in content.lines().filter(|l| !l.is_empty()) {
-            let parsed: serde_json::Value = serde_json::from_str(line)
-                .expect("each line must be valid JSON");
+            let parsed: serde_json::Value =
+                serde_json::from_str(line).expect("each line must be valid JSON");
             assert!(parsed.is_object(), "each line must be a JSON object");
         }
     }
@@ -252,8 +285,10 @@ mod tests {
         let short_key = vec![0u8; 10]; // too short — need 32+
         let blob = vec![0u8; 64];
         let result = decrypt_whatsapp_media(&short_key, &blob);
-        assert!(matches!(result, Err(CdnError::KeyTooShort(_))),
-            "should return KeyTooShort error for short key");
+        assert!(
+            matches!(result, Err(CdnError::KeyTooShort(_))),
+            "should return KeyTooShort error for short key"
+        );
     }
 
     #[test]
@@ -261,22 +296,24 @@ mod tests {
         let key = vec![0u8; 32];
         let short_blob = vec![0u8; 5]; // too short — need at least 17 bytes (IV + 1 block)
         let result = decrypt_whatsapp_media(&key, &short_blob);
-        assert!(matches!(result, Err(CdnError::BlobTooShort(_, _))),
-            "should return BlobTooShort error for short blob");
+        assert!(
+            matches!(result, Err(CdnError::BlobTooShort(_, _))),
+            "should return BlobTooShort error for short blob"
+        );
     }
 
     #[test]
     fn test_decrypt_aes_cbc_basic() {
         // Construct a known AES-256-CBC encrypted payload using the aes+cbc crates
         // to test round-trip decryption.
-        use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+        use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
         type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
 
         // media_key: first 16 bytes = IV, bytes 16..48 = AES key (in simplified MVP mode)
         let iv_bytes = [0x01u8; 16];
         let aes_key_bytes = [0x02u8; 32];
         let mut media_key = Vec::new();
-        media_key.extend_from_slice(&iv_bytes);   // bytes 0..16 = IV
+        media_key.extend_from_slice(&iv_bytes); // bytes 0..16 = IV
         media_key.extend_from_slice(&aes_key_bytes); // bytes 16..48 = AES key
 
         let plaintext = b"Hello, WhatsApp media!";
@@ -287,8 +324,16 @@ mod tests {
             .unwrap();
 
         let result = decrypt_whatsapp_media(&media_key, ciphertext);
-        assert!(result.is_ok(), "decrypt should succeed for valid AES-256-CBC payload: {:?}", result);
-        assert_eq!(result.unwrap(), plaintext, "decrypted bytes should match original plaintext");
+        assert!(
+            result.is_ok(),
+            "decrypt should succeed for valid AES-256-CBC payload: {:?}",
+            result
+        );
+        assert_eq!(
+            result.unwrap(),
+            plaintext,
+            "decrypted bytes should match original plaintext"
+        );
     }
 
     // ── audit: no URL or key in serialized record ─────────────────────────────
@@ -300,17 +345,27 @@ mod tests {
         let record = build_acquisition_record(url, key, None, None);
         let json = serde_json::to_string(&record).unwrap();
 
-        assert!(!json.contains(url), "serialized JSON must NOT contain the original URL");
+        assert!(
+            !json.contains(url),
+            "serialized JSON must NOT contain the original URL"
+        );
         // Also verify the raw key bytes don't appear (hex encoded)
         let key_hex = hex::encode(key);
-        assert!(!json.contains(&key_hex), "serialized JSON must NOT contain the raw key hex");
+        assert!(
+            !json.contains(&key_hex),
+            "serialized JSON must NOT contain the raw key hex"
+        );
     }
 
     #[test]
     fn test_acquisition_record_examiner_preserved_in_json() {
         let key = vec![0u8; 32];
-        let record = build_acquisition_record("https://example.com", &key, None, Some("forensic_lab_01"));
+        let record =
+            build_acquisition_record("https://example.com", &key, None, Some("forensic_lab_01"));
         let json = serde_json::to_string(&record).unwrap();
-        assert!(json.contains("forensic_lab_01"), "examiner should appear in JSON");
+        assert!(
+            json.contains("forensic_lab_01"),
+            "examiner should appear in JSON"
+        );
     }
 }

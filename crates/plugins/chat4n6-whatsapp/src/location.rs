@@ -141,9 +141,15 @@ mod tests {
     #[test]
     fn test_osm_url_format() {
         let url = osm_url(51.5074, -0.1278);
-        assert!(url.starts_with("https://www.openstreetmap.org"), "url: {url}");
+        assert!(
+            url.starts_with("https://www.openstreetmap.org"),
+            "url: {url}"
+        );
         assert!(url.contains("51.5074"), "url: {url}");
-        assert!(url.contains("-0.1278") || url.contains("0.1278"), "url: {url}");
+        assert!(
+            url.contains("-0.1278") || url.contains("0.1278"),
+            "url: {url}"
+        );
     }
 
     #[test]

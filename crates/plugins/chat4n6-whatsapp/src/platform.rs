@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 pub enum SenderPlatform {
     Android,
     IPhone,
-    Companion,      // Web/Desktop linked device
-    AndroidLinked,  // secondary Android device
-    IPhoneLinked,   // secondary iPhone device
-    BusinessApi,    // WhatsApp Business Cloud API bot
-    OldAndroid,     // numeric key_id ≤10 chars
+    Companion,     // Web/Desktop linked device
+    AndroidLinked, // secondary Android device
+    IPhoneLinked,  // secondary iPhone device
+    BusinessApi,   // WhatsApp Business Cloud API bot
+    OldAndroid,    // numeric key_id ≤10 chars
     Unknown,
 }
 
@@ -77,9 +77,7 @@ pub fn classify_key_id(
                     platform: SenderPlatform::IPhone,
                     confidence: 0.95,
                 }
-            } else if upper.starts_with("3F")
-                || upper.starts_with("3E")
-                || upper.starts_with("3B")
+            } else if upper.starts_with("3F") || upper.starts_with("3E") || upper.starts_with("3B")
             {
                 PlatformClassification {
                     platform: SenderPlatform::Companion,
@@ -164,14 +162,20 @@ mod tests {
     fn test_len8_from_me_true_android_085() {
         let (p, c) = classify("ABCD1234", true, None);
         assert_eq!(p, SenderPlatform::Android);
-        assert!((c - 0.85).abs() < 0.001, "confidence should be 0.85, got {c}");
+        assert!(
+            (c - 0.85).abs() < 0.001,
+            "confidence should be 0.85, got {c}"
+        );
     }
 
     #[test]
     fn test_len8_from_me_false_android_075() {
         let (p, c) = classify("ABCD1234", false, None);
         assert_eq!(p, SenderPlatform::Android);
-        assert!((c - 0.75).abs() < 0.001, "confidence should be 0.75, got {c}");
+        assert!(
+            (c - 0.75).abs() < 0.001,
+            "confidence should be 0.75, got {c}"
+        );
     }
 
     // ── len=16 tests ─────────────────────────────────────────────────────────
@@ -187,7 +191,10 @@ mod tests {
     fn test_len16_prefix_ac_lowercase_android_097() {
         let (p, c) = classify("ac1234567890abcd", false, None);
         assert_eq!(p, SenderPlatform::Android);
-        assert!((c - 0.97).abs() < 0.001, "case-insensitive prefix match should give 0.97");
+        assert!(
+            (c - 0.97).abs() < 0.001,
+            "case-insensitive prefix match should give 0.97"
+        );
     }
 
     #[test]
