@@ -1,0 +1,32 @@
+[
+  {
+    "description": "A raw decrypted partition image is an accepted input, so unallocated space can be carved",
+    "steps": [
+      "Accepted inputs today are a plaintext directory, a .dar archive and an iOS backup; a raw decrypted userdata partition image cannot be supplied at all",
+      "Add a raw-image input type to chat4n6-fs that opens an ext4 partition image and exposes it through the ForensicFs trait",
+      "Wire it into the CLI input auto-detection alongside the existing three",
+      "Implement unallocated_regions() for it from the ext4 block bitmap: PlaintextDirFs returns an empty vec by design, which is why layer 8 has nothing to carve on this evidence class",
+      "Build a small synthetic ext4 image as a committed fixture so the path is exercised without a multi-gigabyte artifact, keeping the coverage gate satisfiable from committed bytes alone",
+      "Assert files under data/data/com.whatsapp/databases are readable through the raw-image filesystem",
+      "Assert unallocated_regions() returns non-empty regions for an image with freed blocks, and that layer 8 carving runs over them",
+      "Validate against an independent oracle on a real image: reconcile the carved region list against what The Sleuth Kit reports as unallocated",
+      "Update the 'unallocated carving needs a raw-image input' gap in docs/validation.md",
+      "cargo test -p chat4n6-fs passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "Recovery layers beyond the live btree are mapped into messages by the WhatsApp plugin",
+    "steps": [
+      "extract_from_msgstore consumes recover_layer1 only, so WAL deltas, freelist, journal, intra-page carve and unallocated carve are recovered by the engine but never interpreted as messages",
+      "Feed recover_all() records through the same resolved column maps the live layer uses, so no layer reinvents a column position",
+      "Confirm carvers that pattern-match record shapes against the message schema use the resolved shape rather than a fixture shape",
+      "Assert a message present only in a WAL frame appears in the extraction with source WalHistoric",
+      "Assert a message present only in a freelist page appears with source Freelist",
+      "Assert records recovered from a non-live layer still pass through the schema gate, so a wrong map cannot enter through a side door",
+      "Re-verify WAL parsing against a real database after the column-resolution fix, since the WAL path shared the ordinals that were wrong",
+      "cargo test -p chat4n6-whatsapp passes"
+    ],
+    "passes": false
+  }
+]

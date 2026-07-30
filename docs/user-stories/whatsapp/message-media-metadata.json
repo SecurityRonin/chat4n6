@@ -1,0 +1,29 @@
+[
+  {
+    "description": "Media metadata for the modern schema is read from message_media, which replaced the media columns on the message table",
+    "steps": [
+      "Extend tests/fixtures/real_modern_schema.sql with a message_media table (message_row_id, mime_type, file_path, media_name, file_length, media_duration, file_hash, enc_file_hash, media_key, direct_path) and a row joined to a media message",
+      "Resolve every message_media column by name via columns::TableColumns, as message/jid/chat/call_log already are",
+      "Call extract_from_msgstore on that fixture",
+      "Assert the media message produces MessageContent::Media with the mime_type and file_path from message_media, not None",
+      "Assert file_size, duration_secs, file_hash and encrypted_hash are populated from the joined row",
+      "Assert a modern-schema database with no message_media row for a media message still extracts the message, with media fields absent rather than wrong",
+      "Assert modern_schema.sql (media columns on message) keeps working, so both schema generations are covered",
+      "cargo test -p chat4n6-whatsapp -- message_media passes"
+    ],
+    "passes": false
+  },
+  {
+    "description": "Auxiliary msgstore table column names are confirmed against real device DDL",
+    "steps": [
+      "Record the CREATE TABLE DDL for message_quoted, message_add_on, message_add_on_reaction, message_edit_info, receipt_user, message_forwarded and group_participant_user from a real device (DDL only, no case content)",
+      "Compare each against the names the extractor resolves today, which come from the simplified modern_schema.sql and are unverified",
+      "Where a real schema spells a field differently (for example parent_message_row_id for message_row_id, or message_add_on_type for type), resolve both spellings via TableColumns::first_of",
+      "Add a real-DDL fixture for those tables alongside real_modern_schema.sql",
+      "Assert reactions, edits and receipts extract from the real-DDL fixture rather than resolving to None",
+      "Update the 'auxiliary table column names are unverified' gap in docs/validation.md",
+      "cargo test -p chat4n6-whatsapp -- real_schema passes"
+    ],
+    "passes": false
+  }
+]
