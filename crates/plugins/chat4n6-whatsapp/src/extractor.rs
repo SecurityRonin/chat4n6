@@ -51,6 +51,23 @@ pub fn extract_from_msgstore(
         );
     }
     let schema_cols = SchemaColumns::from_ddl_map(&ddl_map);
+    if schema_cols.table("message").is_empty() {
+        // Reporting zero messages here would be indistinguishable from a clean
+        // device, so name what was actually found instead.
+        if !schema_cols.table("messages").is_empty() {
+            bail!(
+                "msgstore.db declares the legacy `messages` table and no modern `message` \
+                 table; this extractor reads the modern generation (message/jid/chat) only. \
+                 Refusing to report zero messages for a database it cannot read."
+            );
+        }
+        bail!(
+            "msgstore.db declares no `message` table, and no legacy `messages` table \
+             either. Tables found ({} total): [{}]",
+            schema_cols.table_names().len(),
+            summarise_table_names(&schema_cols.table_names())
+        );
+    }
     let msg_cols = MessageColumns::resolve(schema_cols.table("message"));
     let jid_cols = JidColumns::resolve(schema_cols.table("jid"));
     let chat_cols = ChatColumns::resolve(schema_cols.table("chat"));
@@ -385,6 +402,26 @@ fn tbl<'a>(
     name: &str,
 ) -> &'a [&'a RecoveredRecord] {
     by.get(name).map(|v| v.as_slice()).unwrap_or_default()
+}
+
+/// Render a table-name list for a diagnostic.
+///
+/// A real msgstore declares well over a hundred tables, so whole names beyond
+/// the first 20 are omitted — and the omission is stated, with the full count
+/// alongside. Every name shown is verbatim.
+fn summarise_table_names(names: &[&str]) -> String {
+    const SHOWN: usize = 20;
+    let head = names
+        .iter()
+        .take(SHOWN)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > SHOWN {
+        format!("{head}, and {} more", names.len() - SHOWN)
+    } else {
+        head
+    }
 }
 
 /// Read the integer at a resolved column position.

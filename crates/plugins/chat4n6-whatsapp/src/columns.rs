@@ -101,6 +101,13 @@ impl SchemaColumns {
             .unwrap_or(&self.empty)
     }
 
+    /// Every table name, sorted — for diagnostics that must show what was found.
+    pub fn table_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.tables.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
+
     /// Whether any table DDL was resolved at all.
     ///
     /// A database whose schema could not be read is a bootstrap failure, not an
