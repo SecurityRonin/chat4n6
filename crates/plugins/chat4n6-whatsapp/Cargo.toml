@@ -31,6 +31,7 @@ regex = "1"
 base64 = { workspace = true }
 
 [dev-dependencies]
+chat4n6-fs = { path = "../../chat4n6-fs", version = "0.1" }
 tempfile = "3"
 rusqlite = { version = "0.31", features = ["backup"] }
 proptest = "1"

@@ -373,6 +373,7 @@ dependencies = [
  "anyhow",
  "base64",
  "cbc",
+ "chat4n6-fs",
  "chat4n6-plugin-api",
  "chat4n6-sqlite-forensics",
  "chrono",
