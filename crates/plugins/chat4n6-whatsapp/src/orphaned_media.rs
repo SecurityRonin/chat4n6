@@ -7,14 +7,14 @@ pub struct OrphanedMedia {
     pub file_path: PathBuf,
     pub file_size: u64,
     pub extension: String,
-    pub file_hash: Option<String>, // SHA-256 hex, computed lazily
-    pub linked_media_path: Option<String>, // set after rescue pass
+    pub file_hash: Option<String>,          // SHA-256 hex, computed lazily
+    pub linked_media_path: Option<String>,  // set after rescue pass
 }
 
 /// Recognized media file extensions (lowercase).
 const RECOGNIZED_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "mp4", "mov", "avi", "opus", "ogg", "mp3", "aac", "pdf", "doc",
-    "docx", "webp",
+    "jpg", "jpeg", "png", "gif", "mp4", "mov", "avi", "opus", "ogg", "mp3", "aac",
+    "pdf", "doc", "docx", "webp",
 ];
 
 fn is_recognized_extension(ext: &str) -> bool {
@@ -24,7 +24,10 @@ fn is_recognized_extension(ext: &str) -> bool {
 
 /// Walk `media_dir` and find files with recognized extensions that are NOT
 /// in the `known_paths` set. Return them as OrphanedMedia records (file_hash=None initially).
-pub fn scan_orphaned_media(media_dir: &Path, known_paths: &HashSet<String>) -> Vec<OrphanedMedia> {
+pub fn scan_orphaned_media(
+    media_dir: &Path,
+    known_paths: &HashSet<String>,
+) -> Vec<OrphanedMedia> {
     let mut orphans = Vec::new();
     let read_dir = match std::fs::read_dir(media_dir) {
         Ok(rd) => rd,
@@ -146,11 +149,7 @@ mod tests {
         let mut known = HashSet::new();
         known.insert(path.to_string_lossy().to_string());
         let orphans = scan_orphaned_media(dir.path(), &known);
-        assert_eq!(
-            orphans.len(),
-            1,
-            "should find only the orphan, not the known file"
-        );
+        assert_eq!(orphans.len(), 1, "should find only the orphan, not the known file");
         assert!(orphans[0].file_path.file_name().unwrap() == "orphan.png");
     }
 
@@ -186,10 +185,7 @@ mod tests {
         let known: HashSet<String> = HashSet::new();
         let orphans = scan_orphaned_media(dir.path(), &known);
         assert_eq!(orphans.len(), 1);
-        assert!(
-            orphans[0].file_hash.is_none(),
-            "file_hash should be None before hashing"
-        );
+        assert!(orphans[0].file_hash.is_none(), "file_hash should be None before hashing");
     }
 
     // ── hash_orphans tests ────────────────────────────────────────────────────
@@ -224,10 +220,7 @@ mod tests {
         hash_orphans(&mut orphans);
 
         for o in &orphans {
-            assert!(
-                o.file_hash.is_some(),
-                "all orphans should have hashes after hash_orphans"
-            );
+            assert!(o.file_hash.is_some(), "all orphans should have hashes after hash_orphans");
         }
     }
 
@@ -247,21 +240,17 @@ mod tests {
         let hash_hex = hex::encode(Sha256::digest(content));
         // Convert hex to base64 for the missing_media format
         use base64::Engine;
-        let hash_b64 =
-            base64::engine::general_purpose::STANDARD.encode(&hex::decode(&hash_hex).unwrap());
+        let hash_b64 = base64::engine::general_purpose::STANDARD.encode(
+            &hex::decode(&hash_hex).unwrap()
+        );
 
-        let missing = vec![(
-            "expected/path/media.jpg".to_string(),
-            content.len() as u64,
-            Some(hash_b64),
-        )];
+        let missing = vec![
+            ("expected/path/media.jpg".to_string(), content.len() as u64, Some(hash_b64)),
+        ];
 
         let matched = rescue_orphans(&mut orphans, &missing);
         assert_eq!(matched, 1, "should match 1 orphan");
-        assert!(
-            orphans[0].linked_media_path.is_some(),
-            "linked_media_path should be set after rescue"
-        );
+        assert!(orphans[0].linked_media_path.is_some(), "linked_media_path should be set after rescue");
     }
 
     #[test]
@@ -276,17 +265,12 @@ mod tests {
         use base64::Engine;
         let wrong_hash_b64 = base64::engine::general_purpose::STANDARD.encode(b"wrong hash bytes");
 
-        let missing = vec![(
-            "expected/path/media.jpg".to_string(),
-            b"actual content".len() as u64,
-            Some(wrong_hash_b64),
-        )];
+        let missing = vec![
+            ("expected/path/media.jpg".to_string(), b"actual content".len() as u64, Some(wrong_hash_b64)),
+        ];
 
         let matched = rescue_orphans(&mut orphans, &missing);
-        assert_eq!(
-            matched, 0,
-            "should not match when hash differs even if size matches"
-        );
+        assert_eq!(matched, 0, "should not match when hash differs even if size matches");
     }
 
     #[test]
@@ -298,7 +282,9 @@ mod tests {
         let mut orphans = scan_orphaned_media(dir.path(), &known);
         hash_orphans(&mut orphans);
 
-        let missing = vec![("expected/path/media.jpg".to_string(), 99999u64, None)];
+        let missing = vec![
+            ("expected/path/media.jpg".to_string(), 99999u64, None),
+        ];
 
         let matched = rescue_orphans(&mut orphans, &missing);
         assert_eq!(matched, 0, "should not match when size differs");
@@ -316,12 +302,10 @@ mod tests {
         let mut orphans = scan_orphaned_media(dir.path(), &known);
         hash_orphans(&mut orphans);
 
-        use base64::Engine;
         use sha2::{Digest, Sha256};
-        let h1 =
-            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(content1).as_slice());
-        let h2 =
-            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(content2).as_slice());
+        use base64::Engine;
+        let h1 = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(content1).as_slice());
+        let h2 = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(content2).as_slice());
 
         let missing = vec![
             ("path/a.jpg".to_string(), content1.len() as u64, Some(h1)),

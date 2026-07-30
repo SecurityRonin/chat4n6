@@ -320,18 +320,12 @@ pub enum ForensicWarning {
     /// SQLite VACUUM was run — freelist erased, potentially destroying deleted record remnants.
     DatabaseVacuumed { freelist_page_count: u32 },
     /// ROWID gaps concentrate on one JID: possible targeted scrubbing.
-    SelectiveDeletion {
-        suspect_jid: String,
-        deletion_rate_pct: u8,
-    },
+    SelectiveDeletion { suspect_jid: String, deletion_rate_pct: u8 },
     /// Timestamp order violated: a later ROWID has an earlier timestamp.
-    TimestampAnomaly {
-        message_row_id: i64,
-        description: String,
-    },
-    /// The message timestamp distribution is implausible in bulk — a large
-    /// share of messages predate the app's existence.  A property of the whole
-    /// set, which no per-message check can express.
+    TimestampAnomaly { message_row_id: i64, description: String },
+    /// The message timestamp distribution is implausible in bulk — a large share
+    /// of messages predate the app's existence.  A property of the whole set,
+    /// which no per-message check can express.
     TimestampDistributionAnomaly {
         total_messages: u32,
         implausible_count: u32,
@@ -343,15 +337,9 @@ pub enum ForensicWarning {
     /// Backup crypt14/15 HMAC does not match payload — file may have been tampered.
     HmacMismatch,
     /// PRAGMA user_version inconsistent with claimed app version.
-    SchemaVersionMismatch {
-        db_version: u32,
-        app_version: String,
-    },
+    SchemaVersionMismatch { db_version: u32, app_version: String },
     /// SQLite change counter implies writes after acquisition date.
-    HeaderTampered {
-        change_counter: u32,
-        expected_max: u32,
-    },
+    HeaderTampered { change_counter: u32, expected_max: u32 },
     /// iOS CoreData primary-key gap indicates deleted records.
     CoreDataPkGap {
         entity_name: String,
@@ -390,131 +378,58 @@ pub enum ForensicWarning {
     /// Signal sealed-sender message whose sender identity could not be resolved.
     SealedSenderUnresolved { thread_id: i64, count: u32 },
     /// A forwarded message references a source message ID that is not present in any snapshot.
-    UnresolvedForwardSource {
-        message_id: i64,
-        forward_from_id: i64,
-    },
+    UnresolvedForwardSource { message_id: i64, forward_from_id: i64 },
 }
 
 impl fmt::Display for ForensicWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DatabaseVacuumed {
-                freelist_page_count,
-            } => {
-                write!(
-                    f,
-                    "VACUUM detected (freelist pages remaining: {freelist_page_count})"
-                )
+            Self::DatabaseVacuumed { freelist_page_count } => {
+                write!(f, "VACUUM detected (freelist pages remaining: {freelist_page_count})")
             }
-            Self::SelectiveDeletion {
-                suspect_jid,
-                deletion_rate_pct,
-            } => {
-                write!(
-                    f,
-                    "Selective deletion: {suspect_jid} ({deletion_rate_pct}% gap rate)"
-                )
+            Self::SelectiveDeletion { suspect_jid, deletion_rate_pct } => {
+                write!(f, "Selective deletion: {suspect_jid} ({deletion_rate_pct}% gap rate)")
             }
-            Self::TimestampAnomaly {
-                message_row_id,
-                description,
-            } => {
-                write!(
-                    f,
-                    "Timestamp anomaly at row {message_row_id}: {description}"
-                )
+            Self::TimestampAnomaly { message_row_id, description } => {
+                write!(f, "Timestamp anomaly at row {message_row_id}: {description}")
             }
             Self::TimestampDistributionAnomaly {
-                total_messages,
-                implausible_count,
-                ratio_pct,
-                modal_utc,
-                modal_occurrences,
-            } => write!(
-                f,
-                "Implausible timestamp distribution: {implausible_count} of {total_messages} \
-                 messages ({ratio_pct}%) predate 2009-01-01; most frequent is {modal_utc} \
-                 ({modal_occurrences}×)"
-            ),
+                total_messages, implausible_count, ratio_pct, modal_utc, modal_occurrences
+            } => {
+                write!(f, "Implausible timestamp distribution: {implausible_count} of {total_messages} messages ({ratio_pct}%) predate 2009-01-01; most frequent is {modal_utc} ({modal_occurrences}×)")
+            }
             Self::HmacMismatch => write!(f, "HMAC mismatch — backup integrity check FAILED"),
-            Self::SchemaVersionMismatch {
-                db_version,
-                app_version,
-            } => {
-                write!(
-                    f,
-                    "Schema v{db_version} incompatible with app version {app_version}"
-                )
+            Self::SchemaVersionMismatch { db_version, app_version } => {
+                write!(f, "Schema v{db_version} incompatible with app version {app_version}")
             }
-            Self::HeaderTampered {
-                change_counter,
-                expected_max,
-            } => {
-                write!(
-                    f,
-                    "Header tamper: change_counter={change_counter} > expected_max={expected_max}"
-                )
+            Self::HeaderTampered { change_counter, expected_max } => {
+                write!(f, "Header tamper: change_counter={change_counter} > expected_max={expected_max}")
             }
-            Self::CoreDataPkGap {
-                entity_name,
-                recovered_count,
-                ..
-            } => {
-                write!(
-                    f,
-                    "CoreData PK gap in {entity_name}: {recovered_count} potential deleted rows"
-                )
+            Self::CoreDataPkGap { entity_name, recovered_count, .. } => {
+                write!(f, "CoreData PK gap in {entity_name}: {recovered_count} potential deleted rows")
             }
-            Self::ImpossibleTimestamp {
-                message_row_id,
-                reason,
-                ..
-            } => {
-                write!(
-                    f,
-                    "Impossible timestamp at row {message_row_id}: {reason:?}"
-                )
+            Self::ImpossibleTimestamp { message_row_id, reason, .. } => {
+                write!(f, "Impossible timestamp at row {message_row_id}: {reason:?}")
             }
-            Self::DuplicateStanzaId {
-                stanza_id,
-                occurrences,
-            } => {
+            Self::DuplicateStanzaId { stanza_id, occurrences } => {
                 write!(f, "Duplicate stanza ID '{stanza_id}' seen {occurrences}×")
             }
             Self::RowIdReuseDetected { table, rowid, .. } => {
                 write!(f, "ROWID {rowid} reused in table '{table}'")
             }
-            Self::ThumbnailOrphanHigh {
-                orphan_thumbnails,
-                ratio_pct,
-                ..
-            } => {
-                write!(
-                    f,
-                    "High thumbnail orphan rate: {orphan_thumbnails} orphans ({ratio_pct}%)"
-                )
+            Self::ThumbnailOrphanHigh { orphan_thumbnails, ratio_pct, .. } => {
+                write!(f, "High thumbnail orphan rate: {orphan_thumbnails} orphans ({ratio_pct}%)")
             }
             Self::PerFileHmacMismatch { file_name } => {
                 write!(f, "Per-file HMAC mismatch: {file_name}")
             }
-            Self::DisappearingTimerActive {
-                chat_id,
-                timer_seconds,
-                vanished_count,
-            } => {
+            Self::DisappearingTimerActive { chat_id, timer_seconds, vanished_count } => {
                 write!(f, "Disappearing timer on chat {chat_id} ({timer_seconds}s): {vanished_count} messages vanished")
             }
             Self::SealedSenderUnresolved { thread_id, count } => {
-                write!(
-                    f,
-                    "Sealed-sender unresolved: {count} messages in thread {thread_id}"
-                )
+                write!(f, "Sealed-sender unresolved: {count} messages in thread {thread_id}")
             }
-            Self::UnresolvedForwardSource {
-                message_id,
-                forward_from_id,
-            } => {
+            Self::UnresolvedForwardSource { message_id, forward_from_id } => {
                 write!(f, "Forward source missing: message {message_id} references absent ID {forward_from_id}")
             }
         }
@@ -696,14 +611,9 @@ mod new_types_tests {
     // ── ForensicWarning ───────────────────────────────────────────────────
     #[test]
     fn forensic_warning_vacuum_display() {
-        let w = ForensicWarning::DatabaseVacuumed {
-            freelist_page_count: 0,
-        };
+        let w = ForensicWarning::DatabaseVacuumed { freelist_page_count: 0 };
         let s = format!("{}", w);
-        assert!(
-            s.contains("VACUUM") || s.contains("vacuum") || s.contains("Vacuum"),
-            "got: {s}"
-        );
+        assert!(s.contains("VACUUM") || s.contains("vacuum") || s.contains("Vacuum"), "got: {s}");
     }
 
     #[test]
@@ -713,20 +623,14 @@ mod new_types_tests {
             deletion_rate_pct: 87,
         };
         let s = format!("{}", w);
-        assert!(
-            s.contains("87") || s.contains("selective") || s.contains("Selective"),
-            "got: {s}"
-        );
+        assert!(s.contains("87") || s.contains("selective") || s.contains("Selective"), "got: {s}");
     }
 
     #[test]
     fn forensic_warning_hmac_mismatch() {
         let w = ForensicWarning::HmacMismatch;
         let json = serde_json::to_string(&w).unwrap();
-        assert!(
-            json.contains("Hmac") || json.contains("hmac") || json.contains("HMAC"),
-            "got: {json}"
-        );
+        assert!(json.contains("Hmac") || json.contains("hmac") || json.contains("HMAC"), "got: {json}");
     }
 
     #[test]
@@ -847,14 +751,10 @@ mod new_types_tests {
     #[test]
     fn extraction_result_has_acquisition_timestamps() {
         let r = ExtractionResult::default();
-        assert!(
-            r.extraction_started_at.is_none(),
-            "extraction_started_at must default to None"
-        );
-        assert!(
-            r.extraction_finished_at.is_none(),
-            "extraction_finished_at must default to None"
-        );
+        assert!(r.extraction_started_at.is_none(),
+            "extraction_started_at must default to None");
+        assert!(r.extraction_finished_at.is_none(),
+            "extraction_finished_at must default to None");
         // Roundtrip with values set
         let json = r#"{"chats":[],"contacts":[],"calls":[],"wal_deltas":[],
             "extraction_started_at":"2026-05-06T10:00:00Z",
@@ -867,10 +767,7 @@ mod new_types_tests {
     #[test]
     fn extraction_result_has_wal_snapshots() {
         let r = ExtractionResult::default();
-        assert!(
-            r.wal_snapshots.is_empty(),
-            "wal_snapshots must default to empty"
-        );
+        assert!(r.wal_snapshots.is_empty(), "wal_snapshots must default to empty");
         // Build a snapshot and roundtrip
         let snap = WalSnapshot {
             frame_number: 3,
@@ -897,28 +794,18 @@ mod new_types_tests {
             original_timestamp: Some(ts),
         };
         let m = Message {
-            id: 1,
-            chat_id: 1,
-            sender_jid: None,
-            from_me: false,
+            id: 1, chat_id: 1,
+            sender_jid: None, from_me: false,
             timestamp: ForensicTimestamp::from_millis(1_710_513_200_000, 0),
             content: MessageContent::Text("forwarded".to_string()),
-            reactions: vec![],
-            quoted_message: None,
-            source: EvidenceSource::Live,
-            row_offset: 0,
-            starred: false,
-            forward_score: Some(3),
-            is_forwarded: true,
-            edit_history: vec![],
-            receipts: vec![],
+            reactions: vec![], quoted_message: None,
+            source: EvidenceSource::Live, row_offset: 0,
+            starred: false, forward_score: Some(3), is_forwarded: true,
+            edit_history: vec![], receipts: vec![],
             forwarded_from: Some(origin),
         };
         let json = serde_json::to_string(&m).unwrap();
-        assert!(
-            json.contains("Channel"),
-            "ForwardOriginKind::Channel must serialise"
-        );
+        assert!(json.contains("Channel"), "ForwardOriginKind::Channel must serialise");
         let back: Message = serde_json::from_str(&json).unwrap();
         let fo = back.forwarded_from.unwrap();
         assert_eq!(fo.origin_id, "tg-channel://123456");
@@ -942,9 +829,7 @@ mod new_types_tests {
         let warnings: Vec<ForensicWarning> = vec![
             ForensicWarning::CoreDataPkGap {
                 entity_name: "ZWAMESSAGE".to_string(),
-                expected_max: 500,
-                observed_max: 450,
-                recovered_count: 10,
+                expected_max: 500, observed_max: 450, recovered_count: 10,
             },
             ForensicWarning::ImpossibleTimestamp {
                 message_row_id: 42,
@@ -952,34 +837,26 @@ mod new_types_tests {
                 reason: ImpossibleReason::BeforeUnixEpoch,
             },
             ForensicWarning::DuplicateStanzaId {
-                stanza_id: "ABC123".to_string(),
-                occurrences: 2,
+                stanza_id: "ABC123".to_string(), occurrences: 2,
             },
             ForensicWarning::RowIdReuseDetected {
-                table: "messages".to_string(),
-                rowid: 99,
+                table: "messages".to_string(), rowid: 99,
                 conflicting_timestamps: vec![Utc::now(), Utc::now()],
             },
             ForensicWarning::ThumbnailOrphanHigh {
-                orphan_thumbnails: 5,
-                total_messages: 10,
-                ratio_pct: 50,
+                orphan_thumbnails: 5, total_messages: 10, ratio_pct: 50,
             },
             ForensicWarning::PerFileHmacMismatch {
                 file_name: "msgstore.db".to_string(),
             },
             ForensicWarning::DisappearingTimerActive {
-                chat_id: 1,
-                timer_seconds: 86400,
-                vanished_count: 3,
+                chat_id: 1, timer_seconds: 86400, vanished_count: 3,
             },
             ForensicWarning::SealedSenderUnresolved {
-                thread_id: 7,
-                count: 2,
+                thread_id: 7, count: 2,
             },
             ForensicWarning::UnresolvedForwardSource {
-                message_id: 55,
-                forward_from_id: 99999,
+                message_id: 55, forward_from_id: 99999,
             },
         ];
         for w in &warnings {

@@ -2,35 +2,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GroupChangeKind {
-    SubjectChanged {
-        old: Option<String>,
-        new: String,
-    },
-    IconChanged {
-        old_jpeg_b64: Option<String>,
-        new_jpeg_b64: Option<String>,
-    },
-    DescriptionChanged {
-        old: Option<String>,
-        new: String,
-    },
-    AdminOnlyEditChanged {
-        admins_only: bool,
-    },
-    AdminOnlySendChanged {
-        admins_only: bool,
-    },
-    DisappearingTimerChanged {
-        old_secs: Option<u64>,
-        new_secs: Option<u64>,
-    },
+    SubjectChanged { old: Option<String>, new: String },
+    IconChanged { old_jpeg_b64: Option<String>, new_jpeg_b64: Option<String> },
+    DescriptionChanged { old: Option<String>, new: String },
+    AdminOnlyEditChanged { admins_only: bool },
+    AdminOnlySendChanged { admins_only: bool },
+    DisappearingTimerChanged { old_secs: Option<u64>, new_secs: Option<u64> },
     InviteLinkReset,
-    ApprovalModeChanged {
-        requires_approval: bool,
-    },
-    MembershipApprovalChanged {
-        requires_approval: bool,
-    },
+    ApprovalModeChanged { requires_approval: bool },
+    MembershipApprovalChanged { requires_approval: bool },
     Unknown(i32),
 }
 
@@ -78,12 +58,8 @@ pub fn parse_group_change(
             new_secs: new_value.and_then(|s| s.parse::<u64>().ok()),
         },
         83 => GroupChangeKind::InviteLinkReset,
-        84 => GroupChangeKind::ApprovalModeChanged {
-            requires_approval: true,
-        },
-        85 => GroupChangeKind::ApprovalModeChanged {
-            requires_approval: false,
-        },
+        84 => GroupChangeKind::ApprovalModeChanged { requires_approval: true },
+        85 => GroupChangeKind::ApprovalModeChanged { requires_approval: false },
         other => GroupChangeKind::Unknown(other),
     };
 
@@ -128,11 +104,7 @@ mod tests {
     fn test_icon_changed_jpeg_b64_preserved() {
         let fake_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ";
         let c = parse(6, Some(fake_b64), Some(fake_b64));
-        if let GroupChangeKind::IconChanged {
-            old_jpeg_b64,
-            new_jpeg_b64,
-        } = c
-        {
+        if let GroupChangeKind::IconChanged { old_jpeg_b64, new_jpeg_b64 } = c {
             assert_eq!(old_jpeg_b64, Some(fake_b64.to_string()));
             assert_eq!(new_jpeg_b64, Some(fake_b64.to_string()));
         } else {
@@ -149,37 +121,25 @@ mod tests {
     #[test]
     fn test_admin_only_edit_on() {
         let c = parse(29, None, None);
-        assert_eq!(
-            c,
-            GroupChangeKind::AdminOnlyEditChanged { admins_only: true }
-        );
+        assert_eq!(c, GroupChangeKind::AdminOnlyEditChanged { admins_only: true });
     }
 
     #[test]
     fn test_admin_only_edit_off() {
         let c = parse(30, None, None);
-        assert_eq!(
-            c,
-            GroupChangeKind::AdminOnlyEditChanged { admins_only: false }
-        );
+        assert_eq!(c, GroupChangeKind::AdminOnlyEditChanged { admins_only: false });
     }
 
     #[test]
     fn test_admin_only_send_on() {
         let c = parse(31, None, None);
-        assert_eq!(
-            c,
-            GroupChangeKind::AdminOnlySendChanged { admins_only: true }
-        );
+        assert_eq!(c, GroupChangeKind::AdminOnlySendChanged { admins_only: true });
     }
 
     #[test]
     fn test_admin_only_send_off() {
         let c = parse(32, None, None);
-        assert_eq!(
-            c,
-            GroupChangeKind::AdminOnlySendChanged { admins_only: false }
-        );
+        assert_eq!(c, GroupChangeKind::AdminOnlySendChanged { admins_only: false });
     }
 
     #[test]
@@ -202,12 +162,7 @@ mod tests {
     #[test]
     fn test_approval_on() {
         let c = parse(84, None, None);
-        assert_eq!(
-            c,
-            GroupChangeKind::ApprovalModeChanged {
-                requires_approval: true
-            }
-        );
+        assert_eq!(c, GroupChangeKind::ApprovalModeChanged { requires_approval: true });
     }
 
     #[test]

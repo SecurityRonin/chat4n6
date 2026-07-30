@@ -75,10 +75,7 @@ mod tests {
             note.contains("WhatsApp expected"),
             "note format: got {note}"
         );
-        assert!(
-            note.contains("possible evidence gap"),
-            "note format: got {note}"
-        );
+        assert!(note.contains("possible evidence gap"), "note format: got {note}");
     }
 
     #[test]

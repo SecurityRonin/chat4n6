@@ -3,48 +3,48 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SystemEventType {
     // Group admin events
-    GroupSubjectChanged,     // 1
-    GroupIconChanged,        // 6
-    GroupDescriptionChanged, // 19
-    GroupInviteLinkReset,    // 83 (same int — use context)
+    GroupSubjectChanged,          // 1
+    GroupIconChanged,             // 6
+    GroupDescriptionChanged,      // 19
+    GroupInviteLinkReset,         // 83 (same int — use context)
 
     // Participant events
-    ParticipantAdded,         // 12
-    ParticipantLeft,          // 5
-    ParticipantRemoved,       // 14
-    ParticipantJoinedViaLink, // 20
-    ApprovalRequest,          // 83
+    ParticipantAdded,             // 12
+    ParticipantLeft,              // 5
+    ParticipantRemoved,           // 14
+    ParticipantJoinedViaLink,     // 20
+    ApprovalRequest,              // 83
 
     // Security/E2E
-    SecurityCodeChanged,      // 18
-    E2EEncryptedNotification, // 67
+    SecurityCodeChanged,          // 18
+    E2EEncryptedNotification,     // 67
 
     // Admin role changes
-    ParticipantPromotedToAdmin,  // 84
-    ParticipantDemotedFromAdmin, // 84 (need context)
+    ParticipantPromotedToAdmin,   // 84
+    ParticipantDemotedFromAdmin,  // 84 (need context)
 
     // Number change
-    NumberChanged, // 46
+    NumberChanged,                // 46
 
     // Disappearing messages
-    DisappearingTimerChanged, // 56
+    DisappearingTimerChanged,     // 56
 
     // Message pinned/unpinned
-    MessagePinned,   // 79
-    MessageUnpinned, // 79 (need context)
+    MessagePinned,                // 79
+    MessageUnpinned,              // 79 (need context)
 
     // Community events
-    CommunityCreated,          // 97
-    CommunityJoined,           // 98
-    CommunitySubgroupAdded,    // 99
-    CommunitySubgroupRemoved,  // 100
-    CommunitySubgroupUnlinked, // 101
-    CommunityOwnerChanged,     // 102
+    CommunityCreated,             // 97
+    CommunityJoined,              // 98
+    CommunitySubgroupAdded,       // 99
+    CommunitySubgroupRemoved,     // 100
+    CommunitySubgroupUnlinked,    // 101
+    CommunityOwnerChanged,        // 102
 
     // Channel events
-    ChannelCreated,       // 134
-    ChannelDeleted,       // 135
-    ChannelPrivacyNotice, // 136
+    ChannelCreated,               // 134
+    ChannelDeleted,               // 135
+    ChannelPrivacyNotice,         // 136
 
     // Permission changes
     PermissionAddMemberChanged,   // 77
@@ -54,8 +54,8 @@ pub enum SystemEventType {
     PermissionJoinChanged,        // 106
 
     // Business
-    MetaAiDisclaimer,    // 117
-    BusinessMetaManaged, // 118
+    MetaAiDisclaimer,             // 117
+    BusinessMetaManaged,          // 118
 
     // Unknown (preserves the raw integer)
     Unknown(i32),
@@ -64,7 +64,7 @@ pub enum SystemEventType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemEvent {
     pub event_type: SystemEventType,
-    pub label: String, // human-readable display string
+    pub label: String,                // human-readable display string
     pub actor_jid: Option<String>,
     pub target_jid: Option<String>,
 }
@@ -89,135 +89,52 @@ pub fn parse_system_event(
 
 fn decode_event(msg_type: i32, text_data: Option<&str>) -> (SystemEventType, String) {
     match msg_type {
-        1 => (
-            SystemEventType::GroupSubjectChanged,
-            "Group subject changed".to_string(),
-        ),
-        5 => (
-            SystemEventType::ParticipantLeft,
-            "Participant left group".to_string(),
-        ),
-        6 => (
-            SystemEventType::GroupIconChanged,
-            "Group icon changed".to_string(),
-        ),
-        12 => (
-            SystemEventType::ParticipantAdded,
-            "Participant added to group".to_string(),
-        ),
-        14 => (
-            SystemEventType::ParticipantRemoved,
-            "Participant removed from group".to_string(),
-        ),
-        18 => (
-            SystemEventType::SecurityCodeChanged,
-            "Security code changed".to_string(),
-        ),
-        19 => (
-            SystemEventType::GroupDescriptionChanged,
-            "Group description changed".to_string(),
-        ),
-        20 => (
-            SystemEventType::ParticipantJoinedViaLink,
-            "Participant joined via link".to_string(),
-        ),
+        1 => (SystemEventType::GroupSubjectChanged, "Group subject changed".to_string()),
+        5 => (SystemEventType::ParticipantLeft, "Participant left group".to_string()),
+        6 => (SystemEventType::GroupIconChanged, "Group icon changed".to_string()),
+        12 => (SystemEventType::ParticipantAdded, "Participant added to group".to_string()),
+        14 => (SystemEventType::ParticipantRemoved, "Participant removed from group".to_string()),
+        18 => (SystemEventType::SecurityCodeChanged, "Security code changed".to_string()),
+        19 => (SystemEventType::GroupDescriptionChanged, "Group description changed".to_string()),
+        20 => (SystemEventType::ParticipantJoinedViaLink, "Participant joined via link".to_string()),
         46 => {
             let label = decode_number_change(text_data);
             (SystemEventType::NumberChanged, label)
         }
-        56 => (
-            SystemEventType::DisappearingTimerChanged,
-            "Disappearing timer changed".to_string(),
-        ),
-        67 => (
-            SystemEventType::E2EEncryptedNotification,
-            "End-to-end encryption enabled".to_string(),
-        ),
-        77 => (
-            SystemEventType::PermissionAddMemberChanged,
-            "Permission to add members changed".to_string(),
-        ),
-        78 => (
-            SystemEventType::PermissionEditChanged,
-            "Permission to edit group changed".to_string(),
-        ),
+        56 => (SystemEventType::DisappearingTimerChanged, "Disappearing timer changed".to_string()),
+        67 => (SystemEventType::E2EEncryptedNotification, "End-to-end encryption enabled".to_string()),
+        77 => (SystemEventType::PermissionAddMemberChanged, "Permission to add members changed".to_string()),
+        78 => (SystemEventType::PermissionEditChanged, "Permission to edit group changed".to_string()),
         79 => (SystemEventType::MessagePinned, "Message pinned".to_string()),
-        83 => (
-            SystemEventType::GroupInviteLinkReset,
-            "Group invite link reset".to_string(),
-        ),
-        84 => (
-            SystemEventType::ParticipantPromotedToAdmin,
-            "Participant promoted to admin".to_string(),
-        ),
-        97 => (
-            SystemEventType::CommunityCreated,
-            "Community created".to_string(),
-        ),
-        98 => (
-            SystemEventType::CommunityJoined,
-            "Joined community".to_string(),
-        ),
-        99 => (
-            SystemEventType::CommunitySubgroupAdded,
-            "Community subgroup added".to_string(),
-        ),
-        100 => (
-            SystemEventType::CommunitySubgroupRemoved,
-            "Community subgroup removed".to_string(),
-        ),
-        101 => (
-            SystemEventType::CommunitySubgroupUnlinked,
-            "Community subgroup unlinked".to_string(),
-        ),
-        102 => (
-            SystemEventType::CommunityOwnerChanged,
-            "Community owner changed".to_string(),
-        ),
-        104 => (
-            SystemEventType::PermissionSendMessageChanged,
-            "Permission to send messages changed".to_string(),
-        ),
-        105 => (
-            SystemEventType::PermissionInviteChanged,
-            "Permission to invite members changed".to_string(),
-        ),
-        106 => (
-            SystemEventType::PermissionJoinChanged,
-            "Permission to join changed".to_string(),
-        ),
-        117 => (
-            SystemEventType::MetaAiDisclaimer,
-            "Meta AI disclaimer".to_string(),
-        ),
-        118 => (
-            SystemEventType::BusinessMetaManaged,
-            "Business managed by Meta".to_string(),
-        ),
-        134 => (
-            SystemEventType::ChannelCreated,
-            "Channel created".to_string(),
-        ),
-        135 => (
-            SystemEventType::ChannelDeleted,
-            "Channel deleted".to_string(),
-        ),
-        136 => (
-            SystemEventType::ChannelPrivacyNotice,
-            "Channel privacy notice".to_string(),
-        ),
-        other => (
-            SystemEventType::Unknown(other),
-            format!("Unknown system event (type={other})"),
-        ),
+        83 => (SystemEventType::GroupInviteLinkReset, "Group invite link reset".to_string()),
+        84 => (SystemEventType::ParticipantPromotedToAdmin, "Participant promoted to admin".to_string()),
+        97 => (SystemEventType::CommunityCreated, "Community created".to_string()),
+        98 => (SystemEventType::CommunityJoined, "Joined community".to_string()),
+        99 => (SystemEventType::CommunitySubgroupAdded, "Community subgroup added".to_string()),
+        100 => (SystemEventType::CommunitySubgroupRemoved, "Community subgroup removed".to_string()),
+        101 => (SystemEventType::CommunitySubgroupUnlinked, "Community subgroup unlinked".to_string()),
+        102 => (SystemEventType::CommunityOwnerChanged, "Community owner changed".to_string()),
+        104 => (SystemEventType::PermissionSendMessageChanged, "Permission to send messages changed".to_string()),
+        105 => (SystemEventType::PermissionInviteChanged, "Permission to invite members changed".to_string()),
+        106 => (SystemEventType::PermissionJoinChanged, "Permission to join changed".to_string()),
+        117 => (SystemEventType::MetaAiDisclaimer, "Meta AI disclaimer".to_string()),
+        118 => (SystemEventType::BusinessMetaManaged, "Business managed by Meta".to_string()),
+        134 => (SystemEventType::ChannelCreated, "Channel created".to_string()),
+        135 => (SystemEventType::ChannelDeleted, "Channel deleted".to_string()),
+        136 => (SystemEventType::ChannelPrivacyNotice, "Channel privacy notice".to_string()),
+        other => (SystemEventType::Unknown(other), format!("Unknown system event (type={other})")),
     }
 }
 
 fn decode_number_change(text_data: Option<&str>) -> String {
     if let Some(text) = text_data {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
-            let old = v.get("nc_old_phone").and_then(|p| p.as_str()).unwrap_or("");
-            let new = v.get("nc_new_phone").and_then(|p| p.as_str()).unwrap_or("");
+            let old = v.get("nc_old_phone")
+                .and_then(|p| p.as_str())
+                .unwrap_or("");
+            let new = v.get("nc_new_phone")
+                .and_then(|p| p.as_str())
+                .unwrap_or("");
             if !old.is_empty() || !new.is_empty() {
                 return format!("Phone number changed: {} → {}", old, new);
             }
@@ -331,11 +248,8 @@ mod tests {
         let e = parse_with_text(46, json);
         assert_eq!(e.event_type, SystemEventType::NumberChanged);
         // Label should include phone numbers when JSON is parseable
-        assert!(
-            e.label.contains("15551234567") || e.label.contains("number"),
-            "label should reference the number change, got: {}",
-            e.label
-        );
+        assert!(e.label.contains("15551234567") || e.label.contains("number"),
+            "label should reference the number change, got: {}", e.label);
     }
 
     #[test]
@@ -451,12 +365,7 @@ mod tests {
 
     #[test]
     fn test_actor_target_jid_preserved() {
-        let e = parse_system_event(
-            12,
-            None,
-            Some("actor@s.whatsapp.net"),
-            Some("target@s.whatsapp.net"),
-        );
+        let e = parse_system_event(12, None, Some("actor@s.whatsapp.net"), Some("target@s.whatsapp.net"));
         assert_eq!(e.actor_jid.as_deref(), Some("actor@s.whatsapp.net"));
         assert_eq!(e.target_jid.as_deref(), Some("target@s.whatsapp.net"));
     }
