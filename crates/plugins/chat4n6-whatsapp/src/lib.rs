@@ -17,6 +17,7 @@ pub mod pin;
 pub mod platform;
 pub mod poll;
 pub mod schema;
+pub mod schema_gate;
 pub mod status;
 pub mod system_event;
 pub mod timezone;

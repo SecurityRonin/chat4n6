@@ -2299,6 +2299,65 @@ mod real_schema_tests {
         assert_eq!(voice.duration_secs, 137);
     }
 
+    /// A database whose `message.timestamp` column does not hold epoch
+    /// milliseconds is a bootstrap failure: extraction must stop rather than
+    /// emit a report whose every date is wrong.
+    #[test]
+    fn implausible_timestamps_abort_extraction_naming_the_values() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+             CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL,
+                 sender_jid_row_id INTEGER, from_me INTEGER, timestamp INTEGER,
+                 text_data TEXT, message_type INTEGER);
+             INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+             INSERT INTO chat VALUES (1, 1, NULL);
+             INSERT INTO message VALUES (1, 1, NULL, 1, 5243, 'a', 0);
+             INSERT INTO message VALUES (2, 1, NULL, 1, 5244, 'b', 0);
+             INSERT INTO message VALUES (3, 1, NULL, 1, 5245, 'c', 0);",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let err = extract_from_msgstore(&db, 0, SchemaVersion::Modern)
+            .expect_err("must refuse to report on timestamps that are not epoch millis");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("timestamp"), "must name the column: {msg}");
+        assert!(msg.contains("5243"), "must quote an offending value: {msg}");
+    }
+
+    /// A schema that declares no `timestamp` at all must be named, not silently
+    /// treated as a database with no messages.
+    #[test]
+    fn message_table_without_a_timestamp_column_aborts_extraction() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+             CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL,
+                 text_data TEXT);
+             INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
+             INSERT INTO chat VALUES (1, 1, NULL);
+             INSERT INTO message VALUES (1, 1, 'orphan');",
+        )
+        .unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        let db = std::fs::read(tmp.path()).unwrap();
+
+        let err = extract_from_msgstore(&db, 0, SchemaVersion::Modern)
+            .expect_err("an unrecognisable message schema must be reported");
+        assert!(
+            format!("{err:#}").contains("timestamp"),
+            "error must name the missing column: {err:#}"
+        );
+    }
+
     /// The invariant every resolved ordinal rests on: SQLite writes the
     /// `INTEGER PRIMARY KEY` column as a NULL **at its declared position**, so
     /// `values[i]` is the column at DDL position `i` — even when the rowid
