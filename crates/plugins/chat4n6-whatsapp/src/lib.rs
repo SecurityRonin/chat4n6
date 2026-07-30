@@ -111,13 +111,20 @@ impl ForensicPlugin for WhatsAppPlugin {
 
         let tz = local_offset_seconds.unwrap_or_else(|| detect_timezone(fs));
 
-        // Detect schema version
+        // Detect the schema generation from the tables the database actually
+        // declares.  PRAGMA user_version is app-defined (a real 2023-era device
+        // reports 1), so it cannot stand in for the table list.
         let user_version = if db_bytes.len() >= 64 {
             u32::from_be_bytes([db_bytes[60], db_bytes[61], db_bytes[62], db_bytes[63]])
         } else {
             0
         };
-        let schema = detect_schema_version(user_version, &[]);
+        let table_names: Vec<String> =
+            chat4n6_sqlite_forensics::db::ForensicEngine::new(&db_bytes, None)
+                .map(|e| e.table_ddl().into_keys().collect())
+                .unwrap_or_default();
+        let table_refs: Vec<&str> = table_names.iter().map(String::as_str).collect();
+        let schema = detect_schema_version(user_version, &table_refs);
 
         let mut result = extract_from_msgstore(&db_bytes, tz, schema)?;
 

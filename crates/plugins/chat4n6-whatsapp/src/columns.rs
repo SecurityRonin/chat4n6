@@ -33,22 +33,33 @@ impl TableColumns {
     /// Table-level constraints (`PRIMARY KEY (…)`, `UNIQUE (…)`, `CHECK (…)`,
     /// `FOREIGN KEY (…)`, `CONSTRAINT …`) do not occupy a column position and
     /// are skipped.  Malformed input yields an empty map rather than a panic.
-    pub fn from_ddl(_ddl: &str) -> Self {
-        // RED stub — resolution is implemented in the GREEN commit.
-        Self::default()
+    pub fn from_ddl(ddl: &str) -> Self {
+        let Some(body) = column_body(ddl) else {
+            return Self::default();
+        };
+        let mut by_name = HashMap::new();
+        let mut position = 0usize;
+        for part in split_top_level(body) {
+            let Some(name) = column_name(part) else {
+                continue; // table-level constraint: occupies no column position
+            };
+            by_name.entry(name).or_insert(position);
+            position += 1;
+        }
+        Self { by_name }
     }
 
     /// Zero-based position of `name`, or `None` when the table has no such column.
-    pub fn get(&self, _name: &str) -> Option<usize> {
-        None
+    pub fn get(&self, name: &str) -> Option<usize> {
+        self.by_name.get(&name.to_ascii_lowercase()).copied()
     }
 
     /// Position of the first of `names` that the table declares.
     ///
     /// Used where one logical field is spelled differently across schema
     /// generations; the order of `names` is the preference order.
-    pub fn first_of(&self, _names: &[&str]) -> Option<usize> {
-        None
+    pub fn first_of(&self, names: &[&str]) -> Option<usize> {
+        names.iter().find_map(|n| self.get(n))
     }
 
     /// Number of declared columns.
@@ -70,9 +81,14 @@ pub struct SchemaColumns {
 
 impl SchemaColumns {
     /// Build from a `table name → CREATE TABLE SQL` map.
-    pub fn from_ddl_map(_ddl: &HashMap<String, String>) -> Self {
-        // RED stub — resolution is implemented in the GREEN commit.
-        Self::default()
+    pub fn from_ddl_map(ddl: &HashMap<String, String>) -> Self {
+        Self {
+            tables: ddl
+                .iter()
+                .map(|(name, sql)| (name.to_ascii_lowercase(), TableColumns::from_ddl(sql)))
+                .collect(),
+            empty: TableColumns::default(),
+        }
     }
 
     /// Columns of `table`; an empty map when the database has no such table.
@@ -92,6 +108,102 @@ impl SchemaColumns {
     pub fn is_empty(&self) -> bool {
         self.tables.is_empty()
     }
+}
+
+// ── DDL parsing ──────────────────────────────────────────────────────────────
+
+/// Closing delimiter for an opening quote/bracket, or `None` if `b` doesn't open one.
+fn closing_delimiter(b: u8) -> Option<u8> {
+    match b {
+        b'\'' | b'"' | b'`' => Some(b),
+        b'[' => Some(b']'),
+        _ => None,
+    }
+}
+
+/// The text between a `CREATE TABLE`'s outermost parentheses.
+///
+/// Returns `None` when the statement has no balanced parenthesised body.
+fn column_body(ddl: &str) -> Option<&str> {
+    let start = ddl.find('(')?;
+    let mut depth = 0usize;
+    let mut closing: Option<u8> = None;
+    for (i, &b) in ddl.as_bytes().iter().enumerate().skip(start) {
+        if let Some(c) = closing {
+            if b == c {
+                closing = None;
+            }
+            continue;
+        }
+        if let Some(c) = closing_delimiter(b) {
+            closing = Some(c);
+        } else if b == b'(' {
+            depth += 1;
+        } else if b == b')' {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                // Both delimiters are ASCII, so these are char boundaries.
+                return Some(&ddl[start + 1..i]);
+            }
+        }
+    }
+    None
+}
+
+/// Split a column body on commas that are neither nested nor quoted.
+fn split_top_level(body: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut closing: Option<u8> = None;
+    let mut start = 0usize;
+    for (i, &b) in body.as_bytes().iter().enumerate() {
+        if let Some(c) = closing {
+            if b == c {
+                closing = None;
+            }
+            continue;
+        }
+        if let Some(c) = closing_delimiter(b) {
+            closing = Some(c);
+        } else if b == b'(' {
+            depth += 1;
+        } else if b == b')' {
+            depth = depth.saturating_sub(1);
+        } else if b == b',' && depth == 0 {
+            parts.push(&body[start..i]);
+            start = i + 1;
+        }
+    }
+    parts.push(&body[start..]);
+    parts
+}
+
+/// The lowercased column name a body part declares, or `None` when the part is
+/// a table-level constraint.
+///
+/// SQLite reserves `PRIMARY`, `UNIQUE`, `CHECK`, `FOREIGN` and `CONSTRAINT`, so
+/// a column that really carries one of those names has to be quoted — and a
+/// quoted name skips the keyword test.
+fn column_name(part: &str) -> Option<String> {
+    const CONSTRAINT_KEYWORDS: [&str; 5] = ["primary", "unique", "check", "foreign", "constraint"];
+
+    let s = part.trim();
+    let first = s.chars().next()?;
+    if let Some(close) = closing_delimiter(first as u8) {
+        let rest = s.get(first.len_utf8()..)?;
+        let end = rest.find(close as char)?;
+        let name = rest.get(..end)?;
+        return (!name.is_empty()).then(|| name.to_ascii_lowercase());
+    }
+
+    let end = s
+        .find(|c: char| c.is_whitespace() || c == '(' || c == ',')
+        .unwrap_or(s.len());
+    let name = s.get(..end)?.to_ascii_lowercase();
+    if name.is_empty() || CONSTRAINT_KEYWORDS.contains(&name.as_str()) {
+        return None;
+    }
+    Some(name)
 }
 
 /// Resolved `message` column positions.

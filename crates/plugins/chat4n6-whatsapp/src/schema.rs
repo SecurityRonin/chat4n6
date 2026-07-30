@@ -4,12 +4,15 @@ pub enum SchemaVersion {
     Modern,
 }
 
-/// Detect the WhatsApp msgstore.db schema version.
-/// - Modern: user_version >= 100 OR has both "message" and "jid" tables
+/// Detect the WhatsApp msgstore.db schema version from the tables present.
+/// - Modern: has both "message" and "jid" tables
 /// - Legacy: otherwise ("messages" + "wa_contacts" era)
-pub fn detect_schema_version(user_version: u32, tables: &[&str]) -> SchemaVersion {
-    let has_modern = tables.contains(&"message") && tables.contains(&"jid");
-    if has_modern || user_version >= 100 {
+///
+/// `user_version` carries no schema-generation signal: a real 2023-era device
+/// reports 1, so a `>= 100` test classified legacy databases as modern and
+/// modern ones as legacy depending on nothing but the app's own counter.
+pub fn detect_schema_version(_user_version: u32, tables: &[&str]) -> SchemaVersion {
+    if tables.contains(&"message") && tables.contains(&"jid") {
         SchemaVersion::Modern
     } else {
         SchemaVersion::Legacy
@@ -65,50 +68,6 @@ pub fn default_mime_for_type(msg_type: i32) -> &'static str {
         20 => "image/webp",
         64 => "text/vcard",
         _ => "application/octet-stream",
-    }
-}
-
-/// Named column index constants for msgstore.db tables.
-///
-/// The btree walker stores INTEGER PRIMARY KEY as SqlValue::Null at values[0].
-/// Real column data starts at values[1] (matching the DDL column order after _id).
-pub mod cols {
-    /// message table (modern schema, post-2021)
-    pub mod message {
-        pub const CHAT_ROW_ID: usize = 1;
-        pub const SENDER_JID_ROW_ID: usize = 2;
-        pub const FROM_ME: usize = 3;
-        pub const TIMESTAMP: usize = 4;
-        pub const TEXT_DATA: usize = 5;
-        pub const MESSAGE_TYPE: usize = 6;
-        pub const MEDIA_MIME_TYPE: usize = 7;
-        pub const MEDIA_NAME: usize = 8;
-        pub const STARRED: usize = 9;
-        pub const EDIT_VERSION: usize = 10;
-    }
-
-    /// jid table
-    pub mod jid {
-        pub const RAW_STRING: usize = 1;
-    }
-
-    /// chat table
-    pub mod chat {
-        pub const JID_ROW_ID: usize = 1;
-        pub const SUBJECT: usize = 2;
-        pub const ARCHIVED: usize = 3;
-    }
-
-    /// call_log table
-    pub mod call_log {
-        pub const JID_ROW_ID: usize = 1;
-        pub const FROM_ME: usize = 2;
-        pub const VIDEO_CALL: usize = 3;
-        pub const DURATION: usize = 4;
-        pub const TIMESTAMP: usize = 5;
-        pub const CALL_RESULT: usize = 6;
-        pub const CALL_ROW_ID: usize = 7;
-        pub const CALL_CREATOR_DEVICE_JID_ROW_ID: usize = 8;
     }
 }
 
