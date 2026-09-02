@@ -1272,6 +1272,94 @@ mod tests {
         );
     }
 
+    // ── Real-schema column resolution (name-based, not hardcoded ordinals) ──
+    //
+    // Fixture built from the REAL modern msgstore.db DDL (2023-era Android device),
+    // NOT the simplified schema the other fixtures share. The real `message` table
+    // carries timestamp at values[11] (not 4), the real `jid` table carries
+    // raw_string at values[5] (not 1), the real `chat` table carries subject at
+    // values[3] (not 2), and the real `call_log` carries video_call/duration at
+    // values[6]/[7] (not 3/4). Extraction must resolve columns BY NAME from the DDL,
+    // so these tests fail against the current hardcoded `cols::*` ordinals by
+    // construction (the circular-validation failure the simplified fixtures hid).
+    fn make_real_schema_msgstore() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 1;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, user TEXT, server TEXT, agent INTEGER, type INTEGER, raw_string TEXT, device INTEGER);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, hidden INTEGER, subject TEXT, created_timestamp INTEGER, display_message_row_id INTEGER, last_message_row_id INTEGER, last_read_message_row_id INTEGER, last_read_receipt_sent_message_row_id INTEGER, last_important_message_row_id INTEGER, archived INTEGER);
+            CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL, from_me INTEGER NOT NULL, key_id TEXT, sender_jid_row_id INTEGER, status INTEGER, broadcast INTEGER, recipient_count INTEGER, participant_hash TEXT, origination_flags INTEGER, origin INTEGER, timestamp INTEGER, received_timestamp INTEGER, receipt_server_timestamp INTEGER, message_type INTEGER, text_data TEXT, starred INTEGER, lookup_tables INTEGER, sort_id INTEGER, message_add_on_flags INTEGER, view_mode INTEGER);
+            CREATE TABLE call_log (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, from_me INTEGER, call_id TEXT, transaction_id INTEGER, timestamp INTEGER, video_call INTEGER, duration INTEGER, call_result INTEGER);
+            INSERT INTO jid VALUES (1, '10000000001', 's.whatsapp.net', 0, 0, 'me@s.whatsapp.net', 0);
+            INSERT INTO jid VALUES (2, '10000000002', 's.whatsapp.net', 0, 0, 'alice@s.whatsapp.net', 0);
+            INSERT INTO chat VALUES (1, 2, 0, 'Secret Subject', 0, 0, 0, 0, 0, 0, 0);
+            -- timestamp 1660000000000 ms = 2022-08-08 UTC
+            INSERT INTO message VALUES (10, 1, 0, 'KEY1', 2, 0, 0, 0, '', 0, 0, 1660000000000, 1660000000001, 0, 0, 'hi 2022', 0, 0, 0, 0, 0);
+            INSERT INTO call_log VALUES (1, 2, 0, '999', 888, 1660000000000, 1, 90, 1);
+        "#).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn test_real_schema_message_timestamp_resolved_by_name() {
+        let db = make_real_schema_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 10).expect("msg 10");
+        // Real timestamp is at values[11]; hardcoded ordinal reads values[4]
+        // (sender_jid_row_id = 2) as epoch-millis → 1970. Must be 2022.
+        assert_eq!(
+            msg.timestamp.utc.format("%Y").to_string(),
+            "2022",
+            "message timestamp must resolve to 2022 (real column at values[11]), not epoch-0"
+        );
+    }
+
+    #[test]
+    fn test_real_schema_sender_resolved_by_name() {
+        let db = make_real_schema_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 10).expect("msg 10");
+        // jid.raw_string is at values[5]; hardcoded ordinal reads values[1] (user).
+        assert_eq!(
+            msg.sender_jid.as_deref(),
+            Some("alice@s.whatsapp.net"),
+            "sender must resolve via jid.raw_string (values[5]), not the bare `user` column"
+        );
+    }
+
+    #[test]
+    fn test_real_schema_chat_subject_resolved_by_name() {
+        let db = make_real_schema_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        // chat.subject is at values[3]; hardcoded ordinal reads values[2] (hidden).
+        assert_eq!(
+            chat.name.as_deref(),
+            Some("Secret Subject"),
+            "chat name must resolve via chat.subject (values[3]), not the `hidden` column"
+        );
+    }
+
+    #[test]
+    fn test_real_schema_call_fields_resolved_by_name() {
+        let db = make_real_schema_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        assert_eq!(result.calls.len(), 1, "one call_log row");
+        let call = &result.calls[0];
+        // video_call is at values[6], duration at values[7]; hardcoded ordinals
+        // read call_id (values[3]) as video and transaction_id (values[4]) as duration.
+        assert!(call.video, "video_call must resolve via values[6]");
+        assert_eq!(
+            call.duration_secs, 90,
+            "duration must resolve via values[7], not transaction_id"
+        );
+    }
+
     // ── F21: multi-signal group call detection ───────────────────────────
 
     fn make_msgstore_with_group_call() -> Vec<u8> {
