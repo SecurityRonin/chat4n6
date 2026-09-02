@@ -68,49 +68,13 @@ pub fn default_mime_for_type(msg_type: i32) -> &'static str {
     }
 }
 
-/// Named column index constants for msgstore.db tables.
-///
-/// The btree walker stores INTEGER PRIMARY KEY as SqlValue::Null at values[0].
-/// Real column data starts at values[1] (matching the DDL column order after _id).
-pub mod cols {
-    /// message table (modern schema, post-2021)
-    pub mod message {
-        pub const CHAT_ROW_ID: usize = 1;
-        pub const SENDER_JID_ROW_ID: usize = 2;
-        pub const FROM_ME: usize = 3;
-        pub const TIMESTAMP: usize = 4;
-        pub const TEXT_DATA: usize = 5;
-        pub const MESSAGE_TYPE: usize = 6;
-        pub const MEDIA_MIME_TYPE: usize = 7;
-        pub const MEDIA_NAME: usize = 8;
-        pub const STARRED: usize = 9;
-        pub const EDIT_VERSION: usize = 10;
-    }
-
-    /// jid table
-    pub mod jid {
-        pub const RAW_STRING: usize = 1;
-    }
-
-    /// chat table
-    pub mod chat {
-        pub const JID_ROW_ID: usize = 1;
-        pub const SUBJECT: usize = 2;
-        pub const ARCHIVED: usize = 3;
-    }
-
-    /// call_log table
-    pub mod call_log {
-        pub const JID_ROW_ID: usize = 1;
-        pub const FROM_ME: usize = 2;
-        pub const VIDEO_CALL: usize = 3;
-        pub const DURATION: usize = 4;
-        pub const TIMESTAMP: usize = 5;
-        pub const CALL_RESULT: usize = 6;
-        pub const CALL_ROW_ID: usize = 7;
-        pub const CALL_CREATOR_DEVICE_JID_ROW_ID: usize = 8;
-    }
-}
+// Column positions for msgstore.db tables are resolved BY NAME at runtime from
+// each table's `CREATE TABLE` DDL (see `ddl_column_indices` / `cols_of` in
+// extractor.rs), not hardcoded here. The real modern schema orders columns very
+// differently from the legacy one (e.g. message.timestamp is values[11], not [4];
+// jid.raw_string is values[5], not [1]), so fixed ordinals silently misread every
+// real database. Name resolution keeps the same map correct across schema versions
+// and degrades to `None` (omit) for columns a given schema lacks.
 
 #[cfg(test)]
 mod tests {
