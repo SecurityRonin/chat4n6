@@ -89,7 +89,7 @@ pub fn classify_wal_frames(wal: &[u8], page_size: u32) -> Vec<ClassifiedFrame> {
         .enumerate()
         .filter(|(_, (_, _, is_commit, _))| *is_commit)
         .map(|(i, _)| i)
-        .last();
+        .next_back();
 
     // txn_id_for[i] = Some(txn_id) if committed, None if uncommitted
     let mut txn_id_for: Vec<Option<u32>> = vec![None; total];
@@ -97,7 +97,7 @@ pub fn classify_wal_frames(wal: &[u8], page_size: u32) -> Vec<ClassifiedFrame> {
         let mut current_txn = 1u32;
         for i in 0..total {
             let (_, _, is_commit, _) = raw[i];
-            let committed_up_to = last_commit_pos.map_or(false, |lcp| i <= lcp);
+            let committed_up_to = last_commit_pos.is_some_and(|lcp| i <= lcp);
             if committed_up_to {
                 txn_id_for[i] = Some(current_txn);
                 if is_commit {
@@ -200,13 +200,12 @@ pub fn detect_wal_only_tables(ctx: &RecoveryContext<'_>, wal: &[u8]) -> Vec<WalO
         //   db (for overflow resolution — empty here is fine for schema pages),
         //   page_data, bhdr, page_number, page_size, table name.
         let bhdr = 100usize;
-        let records =
-            parse_table_leaf_page(&[], page_data, bhdr, 1, page_size, "sqlite_master");
+        let records = parse_table_leaf_page(&[], page_data, bhdr, 1, page_size, "sqlite_master");
 
         for record in &records {
             // sqlite_master row: (type, name, tbl_name, rootpage, sql)
             // indices:             0      1     2         3         4
-            let obj_type = match record.values.get(0) {
+            let obj_type = match record.values.first() {
                 Some(SqlValue::Text(s)) => s.as_str(),
                 _ => continue,
             };
@@ -529,7 +528,12 @@ mod tests {
         // Build all cells and place them at the end of the page
         let mut cells: Vec<Vec<u8>> = Vec::new();
         for (i, (name, rootpage, sql)) in tables.iter().enumerate() {
-            cells.push(make_sqlite_master_cell((i + 1) as u64, name, *rootpage, sql));
+            cells.push(make_sqlite_master_cell(
+                (i + 1) as u64,
+                name,
+                *rootpage,
+                sql,
+            ));
         }
 
         // Place cells from the end of the page backwards
@@ -544,7 +548,7 @@ mod tests {
         // B-tree header at offset 100 (for page 1)
         let bhdr = 100usize;
         page[bhdr] = 0x0D; // table leaf page
-        // freeblock offset = 0 (no freeblocks)
+                           // freeblock offset = 0 (no freeblocks)
         page[bhdr + 1] = 0;
         page[bhdr + 2] = 0;
         // cell count
@@ -609,7 +613,10 @@ mod tests {
 
         // Frame 0: committed
         assert!(
-            matches!(frames[0].status, WalFrameStatus::Committed { transaction_id: 1 }),
+            matches!(
+                frames[0].status,
+                WalFrameStatus::Committed { transaction_id: 1 }
+            ),
             "frame 0 should be committed txn 1, got {:?}",
             frames[0].status
         );
@@ -635,7 +642,9 @@ mod tests {
         assert!(
             matches!(
                 frames[0].status,
-                WalFrameStatus::Superseded { superseded_by_frame: 1 }
+                WalFrameStatus::Superseded {
+                    superseded_by_frame: 1
+                }
             ),
             "expected Superseded by 1, got {:?}",
             frames[0].status
@@ -661,7 +670,9 @@ mod tests {
         assert_eq!(frames.len(), 2);
         assert!(matches!(
             frames[0].status,
-            WalFrameStatus::Superseded { superseded_by_frame: 1 }
+            WalFrameStatus::Superseded {
+                superseded_by_frame: 1
+            }
         ));
         assert_eq!(frames[1].status, WalFrameStatus::Uncommitted);
     }
@@ -850,10 +861,13 @@ mod tests {
         // Build page 1 with two table rows:
         // 1. "wal_tbl" (rootpage=5) — NOT in table_roots → WAL-only
         // 2. "known_tbl" (rootpage=3) — IS in table_roots → filtered out
-        let page1 = make_page1_with_tables(page_size, &[
-            ("wal_tbl", 5, "CREATE TABLE wal_tbl (id INTEGER)"),
-            ("known_tbl", 3, "CREATE TABLE known_tbl (x TEXT)"),
-        ]);
+        let page1 = make_page1_with_tables(
+            page_size,
+            &[
+                ("wal_tbl", 5, "CREATE TABLE wal_tbl (id INTEGER)"),
+                ("known_tbl", 3, "CREATE TABLE known_tbl (x TEXT)"),
+            ],
+        );
 
         // Build WAL: header + page-1 commit frame
         let mut wal = make_wal_header(page_size, 1, 2);
@@ -908,9 +922,8 @@ mod tests {
             pragma_info,
         };
 
-        let page1 = make_page1_with_tables(page_size, &[
-            ("dup_tbl", 2, "CREATE TABLE dup_tbl (a INT)"),
-        ]);
+        let page1 =
+            make_page1_with_tables(page_size, &[("dup_tbl", 2, "CREATE TABLE dup_tbl (a INT)")]);
 
         // Two page-1 frames, both committed
         let mut wal = make_wal_header(page_size, 1, 2);
@@ -921,7 +934,11 @@ mod tests {
 
         let wal_only = detect_wal_only_tables(&ctx, &wal);
         let dup_count = wal_only.iter().filter(|t| t.name == "dup_tbl").count();
-        assert_eq!(dup_count, 1, "dup_tbl should appear exactly once, got {}", dup_count);
+        assert_eq!(
+            dup_count, 1,
+            "dup_tbl should appear exactly once, got {}",
+            dup_count
+        );
     }
 
     #[test]
@@ -987,7 +1004,8 @@ mod tests {
         // Build a page 1 with an "index" row instead of "table".
         // We need a custom cell since make_sqlite_master_cell always uses "table".
         // Build a cell manually with type="index".
-        let page1 = make_page1_with_index_row(page_size, "my_index", 4, "CREATE INDEX my_index ON t(x)");
+        let page1 =
+            make_page1_with_index_row(page_size, "my_index", 4, "CREATE INDEX my_index ON t(x)");
 
         let mut wal = make_wal_header(page_size, 1, 2);
         wal.extend(make_frame_header(1, 1, 1, 2));
@@ -1090,11 +1108,15 @@ mod tests {
         // Frames 0 and 1 superseded by frame 2
         assert!(matches!(
             frames[0].status,
-            WalFrameStatus::Superseded { superseded_by_frame: 2 }
+            WalFrameStatus::Superseded {
+                superseded_by_frame: 2
+            }
         ));
         assert!(matches!(
             frames[1].status,
-            WalFrameStatus::Superseded { superseded_by_frame: 2 }
+            WalFrameStatus::Superseded {
+                superseded_by_frame: 2
+            }
         ));
         // Frame 2 committed
         assert!(matches!(
@@ -1155,9 +1177,14 @@ mod tests {
             pragma_info,
         };
 
-        let page1 = make_page1_with_tables(page_size, &[
-            ("field_test", 7, "CREATE TABLE field_test (a INTEGER PRIMARY KEY, b TEXT NOT NULL)"),
-        ]);
+        let page1 = make_page1_with_tables(
+            page_size,
+            &[(
+                "field_test",
+                7,
+                "CREATE TABLE field_test (a INTEGER PRIMARY KEY, b TEXT NOT NULL)",
+            )],
+        );
 
         let mut wal = make_wal_header(page_size, 1, 2);
         wal.extend(make_frame_header(1, 1, 1, 2));
@@ -1166,8 +1193,11 @@ mod tests {
         let wal_only = detect_wal_only_tables(&ctx, &wal);
 
         let ft = wal_only.iter().find(|t| t.name == "field_test");
-        assert!(ft.is_some(), "field_test should be in WAL-only tables, got: {:?}",
-            wal_only.iter().map(|t| &t.name).collect::<Vec<_>>());
+        assert!(
+            ft.is_some(),
+            "field_test should be in WAL-only tables, got: {:?}",
+            wal_only.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
         let ft = ft.unwrap();
         assert!(
             ft.create_sql.contains("field_test"),
@@ -1205,9 +1235,14 @@ mod tests {
 
         // Build a valid page1 with a table that has rootpage=0
         // (like a virtual table placeholder)
-        let page1 = make_page1_with_tables(page_size, &[
-            ("virt_tbl", 0, "CREATE VIRTUAL TABLE virt_tbl USING fts5(body)"),
-        ]);
+        let page1 = make_page1_with_tables(
+            page_size,
+            &[(
+                "virt_tbl",
+                0,
+                "CREATE VIRTUAL TABLE virt_tbl USING fts5(body)",
+            )],
+        );
 
         let mut wal = make_wal_header(page_size, 1, 2);
         wal.extend(make_frame_header(1, 1, 1, 2));
@@ -1262,7 +1297,11 @@ mod tests {
         // Cell 4 has name="y", rootpage=Int(5), sql=Null→String::new(),
         // and "y" is not in table_roots, so it should appear as WAL-only.
         let names: Vec<&str> = wal_only.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"y"), "expected 'y' in WAL-only tables, got: {:?}", names);
+        assert!(
+            names.contains(&"y"),
+            "expected 'y' in WAL-only tables, got: {:?}",
+            names
+        );
         // Verify the sql field is empty for this entry
         let y_entry = wal_only.iter().find(|t| t.name == "y").unwrap();
         assert_eq!(y_entry.create_sql, "");
@@ -1273,13 +1312,29 @@ mod tests {
     fn build_unusual_cells_for_detect() -> Vec<Vec<u8>> {
         vec![
             // Cell 1: values[0] = Int (serial type 1) instead of Text → line 211
-            make_cell_raw(1, &[1, 23, 23, 1, 23], &[&[42], b"hello", b"hello", &[2], b"hello"]),
+            make_cell_raw(
+                1,
+                &[1, 23, 23, 1, 23],
+                &[&[42], b"hello", b"hello", &[2], b"hello"],
+            ),
             // Cell 2: values[0] = "table", values[1] = Null → line 219
-            make_cell_raw(2, &[2*5+13, 0, 0, 1, 2*5+13], &[b"table", &[], &[], &[2], b"hello"]),
+            make_cell_raw(
+                2,
+                &[2 * 5 + 13, 0, 0, 1, 2 * 5 + 13],
+                &[b"table", &[], &[], &[2], b"hello"],
+            ),
             // Cell 3: values[0] = "table", values[1] = "x", values[3] = Null → line 224
-            make_cell_raw(3, &[2*5+13, 2*1+13, 2*1+13, 0, 2*5+13], &[b"table", b"x", b"x", &[], b"hello"]),
+            make_cell_raw(
+                3,
+                &[2 * 5 + 13, 2 + 13, 2 + 13, 0, 2 * 5 + 13],
+                &[b"table", b"x", b"x", &[], b"hello"],
+            ),
             // Cell 4: values[0] = "table", values[1] = "y", values[3] = Int(5), values[4] = Null → line 229
-            make_cell_raw(4, &[2*5+13, 2*1+13, 2*1+13, 1, 0], &[b"table", b"y", b"y", &[5], &[]]),
+            make_cell_raw(
+                4,
+                &[2 * 5 + 13, 2 + 13, 2 + 13, 1, 0],
+                &[b"table", b"y", b"y", &[5], &[]],
+            ),
         ]
     }
 
@@ -1359,11 +1414,14 @@ mod tests {
             pragma_info,
         };
 
-        let page1 = make_page1_with_tables(page_size, &[
-            ("tbl_a", 3, "CREATE TABLE tbl_a (x INT)"),
-            ("existing", 2, "CREATE TABLE existing (y INT)"),
-            ("tbl_b", 4, "CREATE TABLE tbl_b (z TEXT)"),
-        ]);
+        let page1 = make_page1_with_tables(
+            page_size,
+            &[
+                ("tbl_a", 3, "CREATE TABLE tbl_a (x INT)"),
+                ("existing", 2, "CREATE TABLE existing (y INT)"),
+                ("tbl_b", 4, "CREATE TABLE tbl_b (z TEXT)"),
+            ],
+        );
 
         let mut wal = make_wal_header(page_size, 1, 2);
         wal.extend(make_frame_header(1, 1, 1, 2));

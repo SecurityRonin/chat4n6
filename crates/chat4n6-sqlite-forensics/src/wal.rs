@@ -306,7 +306,14 @@ pub fn recover_layer2_enhanced(
     // WalMode::Both — differential analysis.
     let mut raw_view = Vec::new();
     for (table, root) in table_roots {
-        walk_table_btree(db, page_size, *root, table, EvidenceSource::Live, &mut raw_view);
+        walk_table_btree(
+            db,
+            page_size,
+            *root,
+            table,
+            EvidenceSource::Live,
+            &mut raw_view,
+        );
     }
 
     let wal_hashes: HashSet<[u8; 32]> = wal_view.iter().map(record_hash).collect();
@@ -469,8 +476,7 @@ mod integration_tests {
         let page_data = vec![0u8; page_size as usize];
         let wal = make_wal_bytes(page_size, &[(1, 1, 42, &page_data)]);
         let table_roots = std::collections::HashMap::new();
-        let results =
-            recover_layer2_enhanced(&[], &wal, page_size, WalMode::Ignore, &table_roots);
+        let results = recover_layer2_enhanced(&[], &wal, page_size, WalMode::Ignore, &table_roots);
         assert!(results.is_empty());
     }
 
@@ -478,13 +484,7 @@ mod integration_tests {
     fn test_recover_layer2_enhanced_empty_overlay() {
         // No WAL header → empty overlay → should return empty
         let table_roots = std::collections::HashMap::new();
-        let results = recover_layer2_enhanced(
-            &[],
-            &[],
-            4096,
-            WalMode::Both,
-            &table_roots,
-        );
+        let results = recover_layer2_enhanced(&[], &[], 4096, WalMode::Both, &table_roots);
         assert!(results.is_empty());
     }
 
@@ -494,7 +494,10 @@ mod integration_tests {
         let page_size = 4096u32;
         let wal = make_wal_bytes(page_size, &[]);
         let frames = parse_wal_frames(&wal, page_size);
-        assert!(frames.is_empty(), "zero frames should yield empty frame map");
+        assert!(
+            frames.is_empty(),
+            "zero frames should yield empty frame map"
+        );
     }
 
     #[test]
@@ -522,7 +525,7 @@ mod integration_tests {
     fn make_table_leaf_page(page_size: usize, row_id: u8, int_value: u8) -> Vec<u8> {
         let mut page = vec![0u8; page_size];
         page[0] = 0x0D; // table leaf
-        // cell count = 1 (bytes 3-4, big-endian)
+                        // cell count = 1 (bytes 3-4, big-endian)
         page[3] = 0x00;
         page[4] = 0x01;
         // cell content area start (bytes 5-6)
@@ -537,7 +540,7 @@ mod integration_tests {
         //   rowid(varint) = row_id
         //   record header: header_len=3, serial_type=1 (1-byte int), serial_type=13 (0-len text)
         //   data: int_value
-        page[cell_start as usize] = 0x04;     // payload_len = 4
+        page[cell_start as usize] = 0x04; // payload_len = 4
         page[cell_start as usize + 1] = row_id; // rowid
         page[cell_start as usize + 2] = 0x03; // header_len = 3
         page[cell_start as usize + 3] = 0x01; // serial_type 1 (1-byte signed int)
@@ -595,7 +598,10 @@ mod integration_tests {
         wal.extend_from_slice(&vec![0u8; page_size as usize]); // page data
 
         let frames = parse_wal_frames(&wal, page_size);
-        assert!(frames.is_empty(), "page_number=0 should break parsing, yielding no frames");
+        assert!(
+            frames.is_empty(),
+            "page_number=0 should break parsing, yielding no frames"
+        );
     }
 
     #[test]
@@ -611,10 +617,13 @@ mod integration_tests {
         fh[8..12].copy_from_slice(&42u32.to_be_bytes());
         wal.extend_from_slice(&fh);
         // Only add 100 bytes of page data instead of 4096
-        wal.extend_from_slice(&vec![0u8; 100]);
+        wal.extend_from_slice(&[0u8; 100]);
 
         let frames = parse_wal_frames(&wal, page_size);
-        assert!(frames.is_empty(), "truncated page data should break parsing");
+        assert!(
+            frames.is_empty(),
+            "truncated page data should break parsing"
+        );
     }
 
     #[test]
@@ -656,9 +665,14 @@ mod integration_tests {
         let wal = make_wal_bytes(page_size, &[(2, 2, 100, &leaf)]);
 
         let records = recover_layer2(&wal, &db, page_size, "test_table");
-        assert!(!records.is_empty(), "should recover records from WAL page differing from DB");
         assert!(
-            records.iter().all(|r| r.source == EvidenceSource::WalPending),
+            !records.is_empty(),
+            "should recover records from WAL page differing from DB"
+        );
+        assert!(
+            records
+                .iter()
+                .all(|r| r.source == EvidenceSource::WalPending),
             "all records should be tagged WalPending"
         );
         assert!(
@@ -680,7 +694,10 @@ mod integration_tests {
         let wal = make_wal_bytes(page_size, &[(2, 2, 100, &leaf)]);
 
         let records = recover_layer2(&wal, &db, page_size, "test_table");
-        assert!(records.is_empty(), "identical WAL and DB page should be skipped (already checkpointed)");
+        assert!(
+            records.is_empty(),
+            "identical WAL and DB page should be skipped (already checkpointed)"
+        );
     }
 
     #[test]
@@ -690,13 +707,14 @@ mod integration_tests {
         let mut leaf = vec![0u8; page_size as usize];
         // For page 1, the B-tree header starts at offset 100
         leaf[100] = 0x0D; // table leaf marker at bhdr=100
-        leaf[103] = 0x00; leaf[104] = 0x01; // cell count = 1
+        leaf[103] = 0x00;
+        leaf[104] = 0x01; // cell count = 1
         let cell_start: u16 = 200;
         leaf[105] = (cell_start >> 8) as u8;
         leaf[106] = (cell_start & 0xFF) as u8;
         leaf[108] = (cell_start >> 8) as u8;
         leaf[109] = (cell_start & 0xFF) as u8;
-        leaf[cell_start as usize] = 0x04;     // payload_len
+        leaf[cell_start as usize] = 0x04; // payload_len
         leaf[cell_start as usize + 1] = 0x01; // rowid=1
         leaf[cell_start as usize + 2] = 0x03; // header_len=3
         leaf[cell_start as usize + 3] = 0x01; // serial 1 (1-byte int)
@@ -707,8 +725,13 @@ mod integration_tests {
         let wal = make_wal_bytes(page_size, &[(1, 1, 50, &leaf)]);
 
         let records = recover_layer2(&wal, &db, page_size, "pg1_table");
-        assert!(!records.is_empty(), "page 1 with bhdr=100 should yield records");
-        assert!(records.iter().all(|r| r.source == EvidenceSource::WalPending));
+        assert!(
+            !records.is_empty(),
+            "page 1 with bhdr=100 should yield records"
+        );
+        assert!(records
+            .iter()
+            .all(|r| r.source == EvidenceSource::WalPending));
     }
 
     #[test]
@@ -726,14 +749,14 @@ mod integration_tests {
         let leaf1 = make_table_leaf_page(page_size as usize, 1, 10);
         let leaf2 = make_table_leaf_page(page_size as usize, 2, 20);
         // Two frames with different salt1 values (different WAL sessions)
-        let wal = make_wal_bytes(page_size, &[
-            (2, 2, 100, &leaf1),
-            (3, 3, 200, &leaf2),
-        ]);
+        let wal = make_wal_bytes(page_size, &[(2, 2, 100, &leaf1), (3, 3, 200, &leaf2)]);
 
         let records = recover_layer2(&wal, &db, page_size, "multi");
         // Should recover from both salt groups
-        assert!(records.len() >= 2, "should recover records from both WAL sessions");
+        assert!(
+            records.len() >= 2,
+            "should recover records from both WAL sessions"
+        );
         assert!(records.iter().any(|r| r.row_id == Some(1)));
         assert!(records.iter().any(|r| r.row_id == Some(2)));
     }
@@ -766,8 +789,13 @@ mod integration_tests {
         // DB only has 2 pages, but WAL references page 10
         let records = recover_layer2(&wal, &db, page_size, "oob");
         // db_page is None, which != Some(wal_page), so it proceeds to parse
-        assert!(!records.is_empty(), "WAL page beyond DB should still be parsed as pending");
-        assert!(records.iter().all(|r| r.source == EvidenceSource::WalPending));
+        assert!(
+            !records.is_empty(),
+            "WAL page beyond DB should still be parsed as pending"
+        );
+        assert!(records
+            .iter()
+            .all(|r| r.source == EvidenceSource::WalPending));
     }
 
     // -----------------------------------------------------------------------
@@ -785,7 +813,9 @@ mod integration_tests {
 
         let deltas = recover_layer3_deltas(&wal, &db, page_size, "added_test");
         assert!(!deltas.is_empty(), "should detect added rows");
-        assert!(deltas.iter().any(|d| d.status == WalDeltaStatus::AddedInWal && d.row_id == 5));
+        assert!(deltas
+            .iter()
+            .any(|d| d.status == WalDeltaStatus::AddedInWal && d.row_id == 5));
         assert!(deltas.iter().all(|d| d.table == "added_test"));
     }
 
@@ -801,13 +831,15 @@ mod integration_tests {
         // WAL page 2 is a valid leaf but with 0 cells (empty)
         let mut wal_leaf = vec![0u8; page_size as usize];
         wal_leaf[0] = 0x0D; // table leaf
-        // cell count = 0 (bytes 3-4 already zero)
+                            // cell count = 0 (bytes 3-4 already zero)
         let wal = make_wal_bytes(page_size, &[(2, 2, 42, &wal_leaf)]);
 
         let deltas = recover_layer3_deltas(&wal, &db, page_size, "del_test");
         assert!(!deltas.is_empty(), "should detect deleted rows");
         assert!(
-            deltas.iter().any(|d| d.status == WalDeltaStatus::DeletedInWal && d.row_id == 3),
+            deltas
+                .iter()
+                .any(|d| d.status == WalDeltaStatus::DeletedInWal && d.row_id == 3),
             "row 3 from DB should be detected as deleted in WAL"
         );
     }
@@ -826,7 +858,9 @@ mod integration_tests {
         let deltas = recover_layer3_deltas(&wal, &db, page_size, "mod_test");
         assert!(!deltas.is_empty(), "should detect modified rows");
         assert!(
-            deltas.iter().any(|d| d.status == WalDeltaStatus::ModifiedInWal && d.row_id == 7),
+            deltas
+                .iter()
+                .any(|d| d.status == WalDeltaStatus::ModifiedInWal && d.row_id == 7),
             "row 7 should be detected as modified"
         );
     }
@@ -841,7 +875,10 @@ mod integration_tests {
         let wal = make_wal_bytes(page_size, &[(2, 2, 42, &leaf)]);
 
         let deltas = recover_layer3_deltas(&wal, &db, page_size, "same_test");
-        assert!(deltas.is_empty(), "identical pages should produce no deltas");
+        assert!(
+            deltas.is_empty(),
+            "identical pages should produce no deltas"
+        );
     }
 
     #[test]
@@ -860,13 +897,17 @@ mod integration_tests {
         // DB page 2: rows 1 (val=10), 2 (val=20)
         let mut db_page = vec![0u8; page_size as usize];
         db_page[0] = 0x0D; // table leaf
-        db_page[3] = 0x00; db_page[4] = 0x02; // 2 cells
+        db_page[3] = 0x00;
+        db_page[4] = 0x02; // 2 cells
         let cell1_start: u16 = 100;
         let cell2_start: u16 = 110;
-        db_page[5] = 0x00; db_page[6] = cell1_start as u8; // content area start
-        // Cell pointer array
-        db_page[8] = (cell1_start >> 8) as u8; db_page[9] = cell1_start as u8;
-        db_page[10] = (cell2_start >> 8) as u8; db_page[11] = cell2_start as u8;
+        db_page[5] = 0x00;
+        db_page[6] = cell1_start as u8; // content area start
+                                        // Cell pointer array
+        db_page[8] = (cell1_start >> 8) as u8;
+        db_page[9] = cell1_start as u8;
+        db_page[10] = (cell2_start >> 8) as u8;
+        db_page[11] = cell2_start as u8;
         // Cell 1: row_id=1, value=10
         db_page[cell1_start as usize] = 0x04;
         db_page[cell1_start as usize + 1] = 0x01; // rowid=1
@@ -888,12 +929,16 @@ mod integration_tests {
         // WAL page 2: rows 1 (val=99, modified), 3 (val=30, added) — row 2 is deleted
         let mut wal_page = vec![0u8; page_size as usize];
         wal_page[0] = 0x0D;
-        wal_page[3] = 0x00; wal_page[4] = 0x02; // 2 cells
+        wal_page[3] = 0x00;
+        wal_page[4] = 0x02; // 2 cells
         let wc1: u16 = 100;
         let wc2: u16 = 110;
-        wal_page[5] = 0x00; wal_page[6] = wc1 as u8;
-        wal_page[8] = (wc1 >> 8) as u8; wal_page[9] = wc1 as u8;
-        wal_page[10] = (wc2 >> 8) as u8; wal_page[11] = wc2 as u8;
+        wal_page[5] = 0x00;
+        wal_page[6] = wc1 as u8;
+        wal_page[8] = (wc1 >> 8) as u8;
+        wal_page[9] = wc1 as u8;
+        wal_page[10] = (wc2 >> 8) as u8;
+        wal_page[11] = wc2 as u8;
         // Cell 1: row_id=1, value=99 (modified from 10)
         wal_page[wc1 as usize] = 0x04;
         wal_page[wc1 as usize + 1] = 0x01;
@@ -912,12 +957,24 @@ mod integration_tests {
         let wal = make_wal_bytes(page_size, &[(2, 2, 42, &wal_page)]);
         let deltas = recover_layer3_deltas(&wal, &db, page_size, "complex");
 
-        assert!(deltas.iter().any(|d| d.row_id == 1 && d.status == WalDeltaStatus::ModifiedInWal),
-            "row 1 should be modified");
-        assert!(deltas.iter().any(|d| d.row_id == 2 && d.status == WalDeltaStatus::DeletedInWal),
-            "row 2 should be deleted");
-        assert!(deltas.iter().any(|d| d.row_id == 3 && d.status == WalDeltaStatus::AddedInWal),
-            "row 3 should be added");
+        assert!(
+            deltas
+                .iter()
+                .any(|d| d.row_id == 1 && d.status == WalDeltaStatus::ModifiedInWal),
+            "row 1 should be modified"
+        );
+        assert!(
+            deltas
+                .iter()
+                .any(|d| d.row_id == 2 && d.status == WalDeltaStatus::DeletedInWal),
+            "row 2 should be deleted"
+        );
+        assert!(
+            deltas
+                .iter()
+                .any(|d| d.row_id == 3 && d.status == WalDeltaStatus::AddedInWal),
+            "row 3 should be added"
+        );
     }
 
     #[test]
@@ -928,10 +985,13 @@ mod integration_tests {
         // Build a page-1 leaf at bhdr=100
         let mut leaf = vec![0u8; page_size as usize];
         leaf[100] = 0x0D;
-        leaf[103] = 0x00; leaf[104] = 0x01;
+        leaf[103] = 0x00;
+        leaf[104] = 0x01;
         let cs: u16 = 200;
-        leaf[105] = (cs >> 8) as u8; leaf[106] = (cs & 0xFF) as u8;
-        leaf[108] = (cs >> 8) as u8; leaf[109] = (cs & 0xFF) as u8;
+        leaf[105] = (cs >> 8) as u8;
+        leaf[106] = (cs & 0xFF) as u8;
+        leaf[108] = (cs >> 8) as u8;
+        leaf[109] = (cs & 0xFF) as u8;
         leaf[cs as usize] = 0x04;
         leaf[cs as usize + 1] = 0x01;
         leaf[cs as usize + 2] = 0x03;
@@ -946,7 +1006,9 @@ mod integration_tests {
         let deltas = recover_layer3_deltas(&wal, &db, page_size, "pg1");
         // Page 1 with empty DB → db.get returns None → AddedInWal
         assert!(!deltas.is_empty());
-        assert!(deltas.iter().any(|d| d.status == WalDeltaStatus::AddedInWal));
+        assert!(deltas
+            .iter()
+            .any(|d| d.status == WalDeltaStatus::AddedInWal));
     }
 
     #[test]
@@ -979,9 +1041,14 @@ mod integration_tests {
         roots.insert("apply_table".to_string(), 2u32);
 
         let results = recover_layer2_enhanced(&db, &wal, page_size, WalMode::Apply, &roots);
-        assert!(!results.is_empty(), "Apply mode should return records from WAL overlay");
         assert!(
-            results.iter().all(|r| r.source == EvidenceSource::WalPending),
+            !results.is_empty(),
+            "Apply mode should return records from WAL overlay"
+        );
+        assert!(
+            results
+                .iter()
+                .all(|r| r.source == EvidenceSource::WalPending),
             "all records in Apply mode should be tagged WalPending"
         );
         assert!(results.iter().any(|r| r.row_id == Some(1)));
@@ -994,10 +1061,7 @@ mod integration_tests {
 
         let leaf2 = make_table_leaf_page(page_size as usize, 1, 10);
         let leaf3 = make_table_leaf_page(page_size as usize, 2, 20);
-        let wal = make_wal_bytes(page_size, &[
-            (2, 2, 100, &leaf2),
-            (3, 3, 100, &leaf3),
-        ]);
+        let wal = make_wal_bytes(page_size, &[(2, 2, 100, &leaf2), (3, 3, 100, &leaf3)]);
 
         let mut roots = HashMap::new();
         roots.insert("t1".to_string(), 2u32);
@@ -1005,7 +1069,9 @@ mod integration_tests {
 
         let results = recover_layer2_enhanced(&db, &wal, page_size, WalMode::Apply, &roots);
         assert!(results.len() >= 2, "should find records from both tables");
-        assert!(results.iter().all(|r| r.source == EvidenceSource::WalPending));
+        assert!(results
+            .iter()
+            .all(|r| r.source == EvidenceSource::WalPending));
     }
 
     // -----------------------------------------------------------------------
@@ -1028,8 +1094,14 @@ mod integration_tests {
         let results = recover_layer2_enhanced(&db, &wal, page_size, WalMode::Both, &roots);
         // WAL view has records, raw DB view (page 2 = zeros) has none
         // → records only in WAL view → WalPending
-        let wal_pending: Vec<_> = results.iter().filter(|r| r.source == EvidenceSource::WalPending).collect();
-        assert!(!wal_pending.is_empty(), "records only in WAL view should be WalPending");
+        let wal_pending: Vec<_> = results
+            .iter()
+            .filter(|r| r.source == EvidenceSource::WalPending)
+            .collect();
+        assert!(
+            !wal_pending.is_empty(),
+            "records only in WAL view should be WalPending"
+        );
     }
 
     #[test]
@@ -1050,8 +1122,14 @@ mod integration_tests {
         roots.insert("del_t".to_string(), 2u32);
 
         let results = recover_layer2_enhanced(&db, &wal, page_size, WalMode::Both, &roots);
-        let wal_deleted: Vec<_> = results.iter().filter(|r| r.source == EvidenceSource::WalDeleted).collect();
-        assert!(!wal_deleted.is_empty(), "records only in raw DB view should be WalDeleted");
+        let wal_deleted: Vec<_> = results
+            .iter()
+            .filter(|r| r.source == EvidenceSource::WalDeleted)
+            .collect();
+        assert!(
+            !wal_deleted.is_empty(),
+            "records only in raw DB view should be WalDeleted"
+        );
         assert!(wal_deleted.iter().any(|r| r.row_id == Some(5)));
     }
 
@@ -1069,7 +1147,10 @@ mod integration_tests {
         roots.insert("same_t".to_string(), 2u32);
 
         let results = recover_layer2_enhanced(&db, &wal, page_size, WalMode::Both, &roots);
-        assert!(results.is_empty(), "identical WAL and DB content should yield no differential results");
+        assert!(
+            results.is_empty(),
+            "identical WAL and DB content should yield no differential results"
+        );
     }
 
     #[test]
@@ -1088,8 +1169,14 @@ mod integration_tests {
         roots.insert("mod_t".to_string(), 2u32);
 
         let results = recover_layer2_enhanced(&db, &wal, page_size, WalMode::Both, &roots);
-        let pending: Vec<_> = results.iter().filter(|r| r.source == EvidenceSource::WalPending).collect();
-        let deleted: Vec<_> = results.iter().filter(|r| r.source == EvidenceSource::WalDeleted).collect();
+        let pending: Vec<_> = results
+            .iter()
+            .filter(|r| r.source == EvidenceSource::WalPending)
+            .collect();
+        let deleted: Vec<_> = results
+            .iter()
+            .filter(|r| r.source == EvidenceSource::WalDeleted)
+            .collect();
         assert!(!pending.is_empty(), "new WAL version should be WalPending");
         assert!(!deleted.is_empty(), "old DB version should be WalDeleted");
     }

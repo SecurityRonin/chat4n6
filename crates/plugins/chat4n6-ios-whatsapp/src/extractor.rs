@@ -50,8 +50,14 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
     let msg_records = tbl(&by_table, "ZWAMESSAGE");
 
     // Collect ZSORT values per chat for gap-based selective deletion detection.
-    let zsort_idx = msg_col_map.get(schema::col_names::SORT).copied().unwrap_or(11);
-    let chat_id_idx = msg_col_map.get(schema::col_names::CHAT_SESSION).copied().unwrap_or(1);
+    let zsort_idx = msg_col_map
+        .get(schema::col_names::SORT)
+        .copied()
+        .unwrap_or(11);
+    let chat_id_idx = msg_col_map
+        .get(schema::col_names::CHAT_SESSION)
+        .copied()
+        .unwrap_or(1);
     let mut zsort_by_chat: HashMap<i64, Vec<f64>> = HashMap::new();
     for r in msg_records {
         let chat_id = match r.values.get(chat_id_idx) {
@@ -67,7 +73,9 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
     }
 
     for r in msg_records {
-        if let Some(msg) = record_to_message(r, &media_map, &member_map, tz_offset_secs, &msg_col_map) {
+        if let Some(msg) =
+            record_to_message(r, &media_map, &member_map, tz_offset_secs, &msg_col_map)
+        {
             chats
                 .entry(msg.chat_id)
                 .or_insert_with(|| Chat {
@@ -103,7 +111,10 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
 
     // Collect calls from ZWACALLINFO (legacy) and ZWACALLEVENT (modern).
     let mut calls = extract_calls(tbl(&by_table, "ZWACALLINFO"), tz_offset_secs);
-    calls.extend(extract_calls_event(tbl(&by_table, "ZWACALLEVENT"), tz_offset_secs));
+    calls.extend(extract_calls_event(
+        tbl(&by_table, "ZWACALLEVENT"),
+        tz_offset_secs,
+    ));
 
     let mut forensic_warnings = detect_zsort_gaps(&zsort_by_chat, &chats);
 
@@ -139,7 +150,10 @@ pub fn extract_from_chatstorage(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
 
 /// Look up a table name in a `partition_by_table` map and return its records as a slice.
 /// Returns an empty slice when the table is absent.
-fn tbl<'a>(by: &'a HashMap<String, Vec<&'a RecoveredRecord>>, name: &str) -> &'a [&'a RecoveredRecord] {
+fn tbl<'a>(
+    by: &'a HashMap<String, Vec<&'a RecoveredRecord>>,
+    name: &str,
+) -> &'a [&'a RecoveredRecord] {
     by.get(name).map(|v| v.as_slice()).unwrap_or_default()
 }
 
@@ -287,7 +301,15 @@ fn build_media_map(records: &[&RecoveredRecord]) -> HashMap<i64, MediaInfo> {
             Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
             _ => None,
         };
-        map.insert(pk, MediaInfo { mime_type: mime, file_size, local_path, cdn_url });
+        map.insert(
+            pk,
+            MediaInfo {
+                mime_type: mime,
+                file_size,
+                local_path,
+                cdn_url,
+            },
+        );
     }
     map
 }
@@ -311,7 +333,14 @@ fn record_to_chat(r: &RecoveredRecord) -> Option<Chat> {
         Some(SqlValue::Int(n)) => *n != 0,
         _ => false,
     };
-    Some(Chat { id, jid, name, is_group, messages: Vec::new(), archived })
+    Some(Chat {
+        id,
+        jid,
+        name,
+        is_group,
+        messages: Vec::new(),
+        archived,
+    })
 }
 
 /// ZWAMESSAGE → Message using a dynamic column map.
@@ -415,7 +444,10 @@ fn record_to_message(
 }
 
 /// ZWACONTACT → Contact, with push-name override.
-fn extract_contacts(records: &[&RecoveredRecord], pushname_map: &HashMap<String, String>) -> Vec<Contact> {
+fn extract_contacts(
+    records: &[&RecoveredRecord],
+    pushname_map: &HashMap<String, String>,
+) -> Vec<Contact> {
     records
         .iter()
         .filter_map(|r| {
@@ -427,12 +459,13 @@ fn extract_contacts(records: &[&RecoveredRecord], pushname_map: &HashMap<String,
                 Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
                 _ => None,
             };
-            let display_name = pushname_map.get(&jid).cloned().or_else(|| {
-                match r.values.get(3) {
+            let display_name = pushname_map
+                .get(&jid)
+                .cloned()
+                .or_else(|| match r.values.get(3) {
                     Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
                     _ => None,
-                }
-            });
+                });
             Some(Contact {
                 jid,
                 display_name,
@@ -487,6 +520,110 @@ fn detect_coredata_pk_gaps(
     } else {
         Vec::new()
     }
+}
+
+/// ZWAPROFILEPUSHNAME → pushname map (JID → display name).
+fn build_pushname_map(records: &[&RecoveredRecord]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for r in records {
+        let jid = match r.values.get(1) {
+            Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
+            _ => continue,
+        };
+        let pushname = match r.values.get(2) {
+            Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
+            _ => continue,
+        };
+        map.insert(jid, pushname);
+    }
+    map
+}
+
+/// ZWACALLEVENT → CallRecord (modern iOS WA schema).
+fn extract_calls_event(records: &[&RecoveredRecord], tz_offset_secs: i32) -> Vec<CallRecord> {
+    records
+        .iter()
+        .filter_map(|r| {
+            let call_id = r.row_id?;
+            // ZDATE=1, ZDURATION=2, ZINCOMING=3, ZOUTGOING=4, ZMISSED=5, ZVIDEO=6, ZGROUPCALLEVENT=7
+            let ts_ms = match r.values.get(1)? {
+                SqlValue::Real(f) => apple_epoch_to_utc_ms(*f),
+                SqlValue::Int(n) => apple_epoch_to_utc_ms(*n as f64),
+                _ => return None,
+            };
+            let duration_secs = match r.values.get(2) {
+                Some(SqlValue::Int(n)) => *n as u32,
+                _ => 0,
+            };
+            let from_me = match r.values.get(4) {
+                Some(SqlValue::Int(n)) => *n != 0,
+                _ => false,
+            };
+            let missed = match r.values.get(5) {
+                Some(SqlValue::Int(n)) => *n != 0,
+                _ => false,
+            };
+            let video = match r.values.get(6) {
+                Some(SqlValue::Int(n)) => *n != 0,
+                _ => false,
+            };
+            let group_call = match r.values.get(7) {
+                Some(SqlValue::Int(n)) => *n != 0,
+                _ => false,
+            };
+            Some(CallRecord {
+                call_id,
+                participants: Vec::new(),
+                from_me,
+                video,
+                group_call,
+                duration_secs,
+                call_result: if missed {
+                    CallResult::Missed
+                } else {
+                    CallResult::Unknown
+                },
+                timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
+                source: r.source.clone(),
+                call_creator_device_jid: None,
+            })
+        })
+        .collect()
+}
+
+/// ZWACALLINFO → CallRecord
+fn extract_calls(records: &[&RecoveredRecord], tz_offset_secs: i32) -> Vec<CallRecord> {
+    records
+        .iter()
+        .filter_map(|r| {
+            let call_id = r.row_id?;
+            let ts_ms = match r.values.get(1)? {
+                SqlValue::Real(f) => apple_epoch_to_utc_ms(*f),
+                SqlValue::Int(n) => apple_epoch_to_utc_ms(*n as f64),
+                _ => return None,
+            };
+            let duration_secs = match r.values.get(2) {
+                Some(SqlValue::Int(n)) => *n as u32,
+                _ => 0,
+            };
+            let video = match r.values.get(3) {
+                Some(SqlValue::Int(n)) => *n != 0,
+                _ => false,
+            };
+            Some(CallRecord {
+                call_id,
+                participants: Vec::new(),
+                from_me: false,
+                video,
+                group_call: false,
+                duration_secs,
+                call_result: CallResult::Unknown,
+                timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
+                source: EvidenceSource::Live,
+                call_creator_device_jid: None,
+            })
+        })
+        .collect()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -569,7 +706,8 @@ mod tests {
             INSERT INTO ZWAPROFILEPUSHNAME VALUES (1, '4155550100@s.whatsapp.net', 'Alice Smith');
         ").unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -618,7 +756,8 @@ mod tests {
             INSERT INTO ZWACALLEVENT VALUES (1, 600000000.0, 120, 0, 1, 0, 0, 0);
         ").unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -700,7 +839,8 @@ mod tests {
             INSERT INTO ZWAMESSAGE VALUES (1, 1, 600000000.0, 'group hello', 0, NULL, 0, NULL, 0, 0, 0, 1.0, 42, 0);
         ").unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -709,7 +849,11 @@ mod tests {
         let db = make_group_member_db();
         let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
 
-        let chat = result.chats.iter().find(|c| c.jid == "group@g.us").expect("group chat must exist");
+        let chat = result
+            .chats
+            .iter()
+            .find(|c| c.jid == "group@g.us")
+            .expect("group chat must exist");
         assert_eq!(chat.messages.len(), 1, "must have 1 message");
         assert_eq!(
             chat.messages[0].sender_jid.as_deref(),
@@ -723,9 +867,16 @@ mod tests {
         let db = make_callevent_db();
         let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
 
-        assert!(result.calls.len() >= 1, "must have at least 1 call from ZWACALLEVENT");
+        assert!(
+            !result.calls.is_empty(),
+            "must have at least 1 call from ZWACALLEVENT"
+        );
 
-        let call = result.calls.iter().find(|c| c.call_id == 1).expect("call with id=1 must exist");
+        let call = result
+            .calls
+            .iter()
+            .find(|c| c.call_id == 1)
+            .expect("call with id=1 must exist");
         // ZDATE=600000000.0 → unix epoch seconds = 600000000 + 978307200 = 1578307200
         assert_eq!(
             call.timestamp.utc.timestamp(),
@@ -736,104 +887,4 @@ mod tests {
         assert_eq!(call.duration_secs, 120, "ZDURATION=120 must be preserved");
         assert!(!call.video, "ZVIDEO=0 must set video=false");
     }
-}
-
-/// ZWAPROFILEPUSHNAME → pushname map (JID → display name).
-fn build_pushname_map(records: &[&RecoveredRecord]) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for r in records {
-        let jid = match r.values.get(1) {
-            Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
-            _ => continue,
-        };
-        let pushname = match r.values.get(2) {
-            Some(SqlValue::Text(s)) if !s.is_empty() => s.clone(),
-            _ => continue,
-        };
-        map.insert(jid, pushname);
-    }
-    map
-}
-
-/// ZWACALLEVENT → CallRecord (modern iOS WA schema).
-fn extract_calls_event(records: &[&RecoveredRecord], tz_offset_secs: i32) -> Vec<CallRecord> {
-    records
-        .iter()
-        .filter_map(|r| {
-            let call_id = r.row_id?;
-            // ZDATE=1, ZDURATION=2, ZINCOMING=3, ZOUTGOING=4, ZMISSED=5, ZVIDEO=6, ZGROUPCALLEVENT=7
-            let ts_ms = match r.values.get(1)? {
-                SqlValue::Real(f) => apple_epoch_to_utc_ms(*f),
-                SqlValue::Int(n) => apple_epoch_to_utc_ms(*n as f64),
-                _ => return None,
-            };
-            let duration_secs = match r.values.get(2) {
-                Some(SqlValue::Int(n)) => *n as u32,
-                _ => 0,
-            };
-            let from_me = match r.values.get(4) {
-                Some(SqlValue::Int(n)) => *n != 0,
-                _ => false,
-            };
-            let missed = match r.values.get(5) {
-                Some(SqlValue::Int(n)) => *n != 0,
-                _ => false,
-            };
-            let video = match r.values.get(6) {
-                Some(SqlValue::Int(n)) => *n != 0,
-                _ => false,
-            };
-            let group_call = match r.values.get(7) {
-                Some(SqlValue::Int(n)) => *n != 0,
-                _ => false,
-            };
-            Some(CallRecord {
-                call_id,
-                participants: Vec::new(),
-                from_me,
-                video,
-                group_call,
-                duration_secs,
-                call_result: if missed { CallResult::Missed } else { CallResult::Unknown },
-                timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
-                source: r.source.clone(),
-                call_creator_device_jid: None,
-            })
-        })
-        .collect()
-}
-
-/// ZWACALLINFO → CallRecord
-fn extract_calls(records: &[&RecoveredRecord], tz_offset_secs: i32) -> Vec<CallRecord> {
-    records
-        .iter()
-        .filter_map(|r| {
-            let call_id = r.row_id?;
-            let ts_ms = match r.values.get(1)? {
-                SqlValue::Real(f) => apple_epoch_to_utc_ms(*f),
-                SqlValue::Int(n) => apple_epoch_to_utc_ms(*n as f64),
-                _ => return None,
-            };
-            let duration_secs = match r.values.get(2) {
-                Some(SqlValue::Int(n)) => *n as u32,
-                _ => 0,
-            };
-            let video = match r.values.get(3) {
-                Some(SqlValue::Int(n)) => *n != 0,
-                _ => false,
-            };
-            Some(CallRecord {
-                call_id,
-                participants: Vec::new(),
-                from_me: false,
-                video,
-                group_call: false,
-                duration_secs,
-                call_result: CallResult::Unknown,
-                timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
-                source: EvidenceSource::Live,
-                call_creator_device_jid: None,
-            })
-        })
-        .collect()
 }

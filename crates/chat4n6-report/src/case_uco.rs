@@ -1,4 +1,4 @@
-use chat4n6_plugin_api::{EvidenceSource, ExtractionResult, MessageContent};
+use chat4n6_plugin_api::{ExtractionResult, MessageContent};
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -62,7 +62,11 @@ pub fn to_case_uco(result: &ExtractionResult, case_id: &str, tool_version: &str)
 
     // Bundle-level examiner notes from ForensicWarnings
     if !result.forensic_warnings.is_empty() {
-        let notes: Vec<String> = result.forensic_warnings.iter().map(|w| w.to_string()).collect();
+        let notes: Vec<String> = result
+            .forensic_warnings
+            .iter()
+            .map(|w| w.to_string())
+            .collect();
         objects.push(json!({
             "@type": "case-investigation:ExaminerNotes",
             "case-investigation:caseId": case_id,
@@ -161,9 +165,9 @@ mod tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
-        extraction_started_at: None,
-        extraction_finished_at: None,
-        wal_snapshots: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
         }
     }
 
@@ -192,13 +196,39 @@ mod tests {
     #[test]
     fn test_case_uco_message_count_matches() {
         let msgs = vec![
-            make_msg(1, 1, None, true, MessageContent::Text("hi".into()), EvidenceSource::Live, false),
-            make_msg(2, 1, Some("bob@s.whatsapp.net"), false, MessageContent::Text("hello".into()), EvidenceSource::Live, false),
-            make_msg(3, 1, None, true, MessageContent::Text("bye".into()), EvidenceSource::Live, false),
+            make_msg(
+                1,
+                1,
+                None,
+                true,
+                MessageContent::Text("hi".into()),
+                EvidenceSource::Live,
+                false,
+            ),
+            make_msg(
+                2,
+                1,
+                Some("bob@s.whatsapp.net"),
+                false,
+                MessageContent::Text("hello".into()),
+                EvidenceSource::Live,
+                false,
+            ),
+            make_msg(
+                3,
+                1,
+                None,
+                true,
+                MessageContent::Text("bye".into()),
+                EvidenceSource::Live,
+                false,
+            ),
         ];
         let result = make_result_with_msgs(msgs);
         let doc = to_case_uco(&result, "CASE-001", "0.1.2");
-        let objects = doc["uco-core:object"].as_array().expect("uco-core:object must be array");
+        let objects = doc["uco-core:object"]
+            .as_array()
+            .expect("uco-core:object must be array");
         let msg_count = objects
             .iter()
             .filter(|o| o["@type"].as_str() == Some("uco-observable:Message"))
@@ -210,9 +240,13 @@ mod tests {
     #[test]
     fn test_case_uco_message_text_preserved() {
         let msgs = vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("Hello there".into()),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )];
         let result = make_result_with_msgs(msgs);
         let doc = to_case_uco(&result, "CASE-001", "0.1.2");
@@ -231,9 +265,13 @@ mod tests {
     #[test]
     fn test_case_uco_received_message_has_sender() {
         let msgs = vec![make_msg(
-            1, 1, Some("bob@s.whatsapp.net"), false,
+            1,
+            1,
+            Some("bob@s.whatsapp.net"),
+            false,
             MessageContent::Text("yo".into()),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )];
         let result = make_result_with_msgs(msgs);
         let doc = to_case_uco(&result, "CASE-001", "0.1.2");
@@ -258,9 +296,13 @@ mod tests {
     #[test]
     fn test_case_uco_sent_message_no_sender() {
         let msgs = vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("sent by me".into()),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )];
         let result = make_result_with_msgs(msgs);
         let doc = to_case_uco(&result, "CASE-001", "0.1.2");
@@ -284,7 +326,10 @@ mod tests {
     #[test]
     fn test_case_uco_evidence_source_in_output() {
         let msgs = vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("carved".into()),
             EvidenceSource::CarvedUnalloc { confidence_pct: 82 },
             false,
@@ -293,7 +338,9 @@ mod tests {
         let doc = to_case_uco(&result, "CASE-001", "0.1.2");
         let json_str = serde_json::to_string(&doc).unwrap();
         assert!(
-            json_str.contains("CARVED") || json_str.contains("carved") || json_str.contains("ProvenanceRecord"),
+            json_str.contains("CARVED")
+                || json_str.contains("carved")
+                || json_str.contains("ProvenanceRecord"),
             "evidence source should appear in output, got snippet: {}",
             &json_str[..200.min(json_str.len())]
         );
@@ -303,9 +350,13 @@ mod tests {
     #[test]
     fn test_case_uco_starred_message_is_highlighted() {
         let msgs = vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("important".into()),
-            EvidenceSource::Live, true,
+            EvidenceSource::Live,
+            true,
         )];
         let result = make_result_with_msgs(msgs);
         let doc = to_case_uco(&result, "CASE-001", "0.1.2");
@@ -314,9 +365,10 @@ mod tests {
             .iter()
             .find(|o| o["@type"].as_str() == Some("uco-observable:Message"))
             .unwrap();
-        assert_eq!(
-            msg["uco-observable:isHighlighted"].as_bool().unwrap_or(false),
-            true,
+        assert!(
+            msg["uco-observable:isHighlighted"]
+                .as_bool()
+                .unwrap_or(false),
             "starred message must have uco-observable:isHighlighted = true"
         );
     }
@@ -337,9 +389,13 @@ mod tests {
             media_key_b64: None,
         };
         let msgs = vec![make_msg(
-            1, 1, Some("alice@s.whatsapp.net"), false,
+            1,
+            1,
+            Some("alice@s.whatsapp.net"),
+            false,
             MessageContent::Media(media),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )];
         let result = make_result_with_msgs(msgs);
         let doc = to_case_uco(&result, "CASE-001", "0.1.2");
@@ -368,9 +424,13 @@ mod tests {
             media_key_b64: None,
         };
         let msgs = vec![make_msg(
-            1, 1, Some("alice@s.whatsapp.net"), false,
+            1,
+            1,
+            Some("alice@s.whatsapp.net"),
+            false,
             MessageContent::Media(media),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )];
         let result = make_result_with_msgs(msgs);
         let doc = to_case_uco(&result, "CASE-001", "0.1.2");
@@ -389,7 +449,9 @@ mod tests {
         let doc = to_case_uco(&result, "CASE-001", "0.1.2");
         let json_str = serde_json::to_string(&doc).unwrap();
         assert!(
-            json_str.contains("HMAC") || json_str.contains("Hmac") || json_str.contains("ExaminerNote"),
+            json_str.contains("HMAC")
+                || json_str.contains("Hmac")
+                || json_str.contains("ExaminerNote"),
             "forensic warning must appear in bundle output"
         );
     }
@@ -400,12 +462,17 @@ mod tests {
         let result = ExtractionResult::default();
         let doc = to_case_uco(&result, "EMPTY-001", "0.1.2");
         assert_eq!(doc["@type"].as_str().unwrap_or(""), "uco-core:Bundle");
-        let objects = doc["uco-core:object"].as_array().expect("must have uco-core:object");
+        let objects = doc["uco-core:object"]
+            .as_array()
+            .expect("must have uco-core:object");
         let msg_count = objects
             .iter()
             .filter(|o| o["@type"].as_str() == Some("uco-observable:Message"))
             .count();
-        assert_eq!(msg_count, 0, "empty result should produce 0 message objects");
+        assert_eq!(
+            msg_count, 0,
+            "empty result should produce 0 message objects"
+        );
         assert!(serde_json::to_string(&doc).is_ok());
     }
 
@@ -414,9 +481,13 @@ mod tests {
     fn test_write_case_uco_creates_file() {
         let dir = TempDir::new().unwrap();
         let result = make_result_with_msgs(vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("test".into()),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )]);
         write_case_uco(&result, "CASE-WRITE", "0.1.2", dir.path()).unwrap();
         let out_file = dir.path().join("case-uco.json");

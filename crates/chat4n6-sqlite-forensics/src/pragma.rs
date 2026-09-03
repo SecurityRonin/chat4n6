@@ -1,62 +1,42 @@
 use crate::header::DbHeader;
 
 /// Whether SECURE_DELETE is enabled.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum SecureDeleteMode {
+    #[default]
     Off,
     On,
     Fast,
 }
 
-impl Default for SecureDeleteMode {
-    fn default() -> Self {
-        SecureDeleteMode::Off
-    }
-}
-
 /// Auto-vacuum mode.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum AutoVacuumMode {
+    #[default]
     None,
     Full,
     Incremental,
 }
 
-impl Default for AutoVacuumMode {
-    fn default() -> Self {
-        AutoVacuumMode::None
-    }
-}
-
 /// Journal mode relevant to forensics.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum JournalMode {
     Wal,
+    #[default]
     NonWal,
 }
 
-impl Default for JournalMode {
-    fn default() -> Self {
-        JournalMode::NonWal
-    }
-}
-
 /// Text encoding used by the database.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum TextEncoding {
+    #[default]
     Utf8,
     Utf16le,
     Utf16be,
 }
 
-impl Default for TextEncoding {
-    fn default() -> Self {
-        TextEncoding::Utf8
-    }
-}
-
 /// Parsed pragma-equivalent values from the SQLite header.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PragmaInfo {
     pub secure_delete: SecureDeleteMode,
     pub auto_vacuum: AutoVacuumMode,
@@ -64,19 +44,6 @@ pub struct PragmaInfo {
     pub text_encoding: TextEncoding,
     pub schema_format: u32,
     pub user_version: u32,
-}
-
-impl Default for PragmaInfo {
-    fn default() -> Self {
-        PragmaInfo {
-            secure_delete: SecureDeleteMode::default(),
-            auto_vacuum: AutoVacuumMode::default(),
-            journal_mode: JournalMode::default(),
-            text_encoding: TextEncoding::default(),
-            schema_format: 0,
-            user_version: 0,
-        }
-    }
 }
 
 /// A single entry in a viability report.
@@ -239,10 +206,7 @@ mod tests {
 
     #[test]
     fn test_wal_mode_detection() {
-        let buf = make_test_header_bytes(&[
-            (18, &[2u8]),
-            (19, &[2u8]),
-        ]);
+        let buf = make_test_header_bytes(&[(18, &[2u8]), (19, &[2u8])]);
         let hdr = header_from_bytes(&buf);
         let info = parse_pragma_info(&hdr, &buf);
         assert_eq!(info.journal_mode, JournalMode::Wal);
@@ -251,10 +215,7 @@ mod tests {
     #[test]
     fn test_auto_vacuum_full() {
         // offset 52 non-zero (enabled), offset 64 = 0 (Full)
-        let buf = make_test_header_bytes(&[
-            (52, &1u32.to_be_bytes()),
-            (64, &0u32.to_be_bytes()),
-        ]);
+        let buf = make_test_header_bytes(&[(52, &1u32.to_be_bytes()), (64, &0u32.to_be_bytes())]);
         let hdr = header_from_bytes(&buf);
         let info = parse_pragma_info(&hdr, &buf);
         assert_eq!(info.auto_vacuum, AutoVacuumMode::Full);
@@ -263,10 +224,7 @@ mod tests {
     #[test]
     fn test_auto_vacuum_incremental() {
         // offset 52 non-zero (enabled), offset 64 non-zero (Incremental)
-        let buf = make_test_header_bytes(&[
-            (52, &1u32.to_be_bytes()),
-            (64, &1u32.to_be_bytes()),
-        ]);
+        let buf = make_test_header_bytes(&[(52, &1u32.to_be_bytes()), (64, &1u32.to_be_bytes())]);
         let hdr = header_from_bytes(&buf);
         let info = parse_pragma_info(&hdr, &buf);
         assert_eq!(info.auto_vacuum, AutoVacuumMode::Incremental);
@@ -318,8 +276,10 @@ mod tests {
     fn test_viability_default() {
         let info = PragmaInfo::default();
         let report = viability_report(&info);
-        let map: std::collections::HashMap<_, _> =
-            report.iter().map(|e| (e.layer.as_str(), e.viable)).collect();
+        let map: std::collections::HashMap<_, _> = report
+            .iter()
+            .map(|e| (e.layer.as_str(), e.viable))
+            .collect();
         assert!(map["Live B-tree"]);
         assert!(!map["WAL replay"]);
         assert!(map["Freelist content"]);
@@ -336,8 +296,10 @@ mod tests {
             ..Default::default()
         };
         let report = viability_report(&info);
-        let map: std::collections::HashMap<_, _> =
-            report.iter().map(|e| (e.layer.as_str(), e.viable)).collect();
+        let map: std::collections::HashMap<_, _> = report
+            .iter()
+            .map(|e| (e.layer.as_str(), e.viable))
+            .collect();
         assert!(!map["Freelist content"]);
         assert!(map["Freeblock recovery"]);
     }
@@ -349,8 +311,10 @@ mod tests {
             ..Default::default()
         };
         let report = viability_report(&info);
-        let map: std::collections::HashMap<_, _> =
-            report.iter().map(|e| (e.layer.as_str(), e.viable)).collect();
+        let map: std::collections::HashMap<_, _> = report
+            .iter()
+            .map(|e| (e.layer.as_str(), e.viable))
+            .collect();
         assert!(!map["Freeblock recovery"]);
         assert!(!map["Intra-page gap scanning"]);
         assert!(map["Live B-tree"]);
@@ -363,8 +327,10 @@ mod tests {
             ..Default::default()
         };
         let report = viability_report(&info);
-        let map: std::collections::HashMap<_, _> =
-            report.iter().map(|e| (e.layer.as_str(), e.viable)).collect();
+        let map: std::collections::HashMap<_, _> = report
+            .iter()
+            .map(|e| (e.layer.as_str(), e.viable))
+            .collect();
         assert!(map["WAL replay"]);
         assert!(!map["Journal"]);
     }
@@ -378,10 +344,8 @@ mod tests {
         let path = tmp.path().to_path_buf();
         {
             let conn = Connection::open(&path).unwrap();
-            conn.execute_batch(
-                "PRAGMA user_version = 7; CREATE TABLE t (x INTEGER);",
-            )
-            .unwrap();
+            conn.execute_batch("PRAGMA user_version = 7; CREATE TABLE t (x INTEGER);")
+                .unwrap();
         }
         let db_bytes = std::fs::read(&path).unwrap();
         let hdr = DbHeader::parse(&db_bytes).expect("valid db header");

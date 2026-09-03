@@ -7,7 +7,8 @@ fn make_db_with_page_size_pragma(page_size: u32) -> Vec<u8> {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
     let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch(&format!("PRAGMA page_size={page_size};")).unwrap();
+    conn.execute_batch(&format!("PRAGMA page_size={page_size};"))
+        .unwrap();
     conn.execute_batch(
         "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);
          INSERT INTO items VALUES (1, 'test');",
@@ -22,7 +23,10 @@ fn test_page_size_512() {
     let db = make_db_with_page_size_pragma(512);
     let engine = ForensicEngine::new(&db, None).unwrap();
     let result = engine.recover_all().unwrap();
-    assert!(result.stats.live_count > 0, "should recover live records with page_size=512");
+    assert!(
+        result.stats.live_count > 0,
+        "should recover live records with page_size=512"
+    );
 }
 
 #[test]
@@ -30,7 +34,10 @@ fn test_page_size_8192() {
     let db = make_db_with_page_size_pragma(8192);
     let engine = ForensicEngine::new(&db, None).unwrap();
     let result = engine.recover_all().unwrap();
-    assert!(result.stats.live_count > 0, "should recover live records with page_size=8192");
+    assert!(
+        result.stats.live_count > 0,
+        "should recover live records with page_size=8192"
+    );
 }
 
 #[test]
@@ -38,7 +45,10 @@ fn test_page_size_32768() {
     let db = make_db_with_page_size_pragma(32768);
     let engine = ForensicEngine::new(&db, None).unwrap();
     let result = engine.recover_all().unwrap();
-    assert!(result.stats.live_count > 0, "should recover live records with page_size=32768");
+    assert!(
+        result.stats.live_count > 0,
+        "should recover live records with page_size=32768"
+    );
 }
 
 #[test]
@@ -47,7 +57,10 @@ fn test_page_size_65536() {
     let db = make_db_with_page_size_pragma(65536);
     let engine = ForensicEngine::new(&db, None).unwrap();
     let result = engine.recover_all().unwrap();
-    assert!(result.stats.live_count > 0, "should recover live records with page_size=65536");
+    assert!(
+        result.stats.live_count > 0,
+        "should recover live records with page_size=65536"
+    );
 }
 
 #[test]
@@ -66,7 +79,10 @@ fn test_db_only_sqlite_master() {
     let db = std::fs::read(&path).unwrap();
     let engine = ForensicEngine::new(&db, None).unwrap();
     let result = engine.recover_all().unwrap();
-    assert_eq!(result.stats.live_count, 0, "no user tables → live_count must be 0");
+    assert_eq!(
+        result.stats.live_count, 0,
+        "no user tables → live_count must be 0"
+    );
 }
 
 #[test]

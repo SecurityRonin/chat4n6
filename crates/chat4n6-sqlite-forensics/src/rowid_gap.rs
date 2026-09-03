@@ -72,7 +72,11 @@ mod tests {
 
     #[test]
     fn test_no_gaps_contiguous() {
-        let records = vec![make_record("t", 1), make_record("t", 2), make_record("t", 3)];
+        let records = vec![
+            make_record("t", 1),
+            make_record("t", 2),
+            make_record("t", 3),
+        ];
         let mut roots = HashMap::new();
         roots.insert("t".to_string(), 2u32);
         let gaps = detect_rowid_gaps(&records, &roots);
@@ -81,7 +85,11 @@ mod tests {
 
     #[test]
     fn test_single_gap() {
-        let records = vec![make_record("t", 1), make_record("t", 2), make_record("t", 5)];
+        let records = vec![
+            make_record("t", 1),
+            make_record("t", 2),
+            make_record("t", 5),
+        ];
         let mut roots = HashMap::new();
         roots.insert("t".to_string(), 2u32);
         let gaps = detect_rowid_gaps(&records, &roots);

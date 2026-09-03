@@ -25,11 +25,11 @@ pub struct StatusRecord {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StatusType {
-    Image,       // type 1
-    Text,        // type 2
-    Video,       // type 3
-    Gif,         // type 43
-    Audio,       // type 44
+    Image, // type 1
+    Text,  // type 2
+    Video, // type 3
+    Gif,   // type 43
+    Audio, // type 44
     Unknown(i32),
 }
 
@@ -126,7 +126,14 @@ mod tests {
     #[test]
     fn test_view_count_preserved() {
         let mut r = make_record(3);
-        enrich_with_stats(&mut r, Some(StatusStats { view_count: 100, reaction_count: 0, reactions: vec![] }));
+        enrich_with_stats(
+            &mut r,
+            Some(StatusStats {
+                view_count: 100,
+                reaction_count: 0,
+                reactions: vec![],
+            }),
+        );
         assert_eq!(r.stats.unwrap().view_count, 100);
     }
 
@@ -134,10 +141,25 @@ mod tests {
     fn test_reactions_list_preserved() {
         let mut r = make_record(1);
         let reactions = vec![
-            StatusReaction { reactor_jid: "a@s.whatsapp.net".to_string(), emoji: "👍".to_string(), timestamp_ms: None },
-            StatusReaction { reactor_jid: "b@s.whatsapp.net".to_string(), emoji: "🔥".to_string(), timestamp_ms: Some(5000) },
+            StatusReaction {
+                reactor_jid: "a@s.whatsapp.net".to_string(),
+                emoji: "👍".to_string(),
+                timestamp_ms: None,
+            },
+            StatusReaction {
+                reactor_jid: "b@s.whatsapp.net".to_string(),
+                emoji: "🔥".to_string(),
+                timestamp_ms: Some(5000),
+            },
         ];
-        enrich_with_stats(&mut r, Some(StatusStats { view_count: 0, reaction_count: 2, reactions }));
+        enrich_with_stats(
+            &mut r,
+            Some(StatusStats {
+                view_count: 0,
+                reaction_count: 2,
+                reactions,
+            }),
+        );
         assert_eq!(r.stats.unwrap().reactions.len(), 2);
     }
 }

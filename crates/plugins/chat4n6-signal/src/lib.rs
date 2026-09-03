@@ -76,8 +76,8 @@ mod tests {
 
     #[test]
     fn test_detect_modern_path() {
-        let fs = MockFs::new()
-            .with_file("data/data/org.thoughtcrime.securesms/databases/signal.sqlite");
+        let fs =
+            MockFs::new().with_file("data/data/org.thoughtcrime.securesms/databases/signal.sqlite");
         assert!(SignalPlugin.detect(&fs));
     }
 

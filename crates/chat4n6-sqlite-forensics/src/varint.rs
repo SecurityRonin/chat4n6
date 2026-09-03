@@ -202,10 +202,10 @@ mod tests {
         // Example: 9 bytes, offset=9. data[8] (terminal) has MSB=1. data[0] has MSB=0.
         let mut data = [0x80u8; 9];
         data[0] = 0x00; // interior byte without continuation bit
-        // data[8] = 0x80 → MSB=1, so len=1..8 all skipped.
-        // len=9: start=0. all_continuation checks data[0..8].
-        // data[0]=0x00 → MSB=0 → all_continuation=false. len=9 > 1 → continue (line 41).
-        // No more lengths → returns None.
+                        // data[8] = 0x80 → MSB=1, so len=1..8 all skipped.
+                        // len=9: start=0. all_continuation checks data[0..8].
+                        // data[0]=0x00 → MSB=0 → all_continuation=false. len=9 > 1 → continue (line 41).
+                        // No more lengths → returns None.
         assert_eq!(read_varint_reverse(&data, 9), None);
     }
 
@@ -244,6 +244,5 @@ mod tests {
         //
         // Let me just verify lines 41 is now covered. The test above handles it.
         // Lines 21 and 46 are dead code that cannot be covered.
-        ()
     }
 }

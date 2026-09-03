@@ -74,7 +74,9 @@ pub fn compute(result: &ExtractionResult) -> StatsBundle {
     }
 
     let mut source_distribution: Vec<(String, u32)> = source_map.into_iter().collect();
-    source_distribution.sort_by(|a, b| b.1.cmp(&a.1)); // sort descending by count
+    // Descending by count, then by source name to break ties — a total order, so the
+    // output is deterministic despite HashMap collection order.
+    source_distribution.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     StatsBundle {
         hourly_counts,

@@ -17,7 +17,6 @@
 //! and we do not know the local user's `_id` without additional context.
 
 use anyhow::{Context, Result};
-pub use helpers::{is_outgoing_base_type, attachment_table_name};
 use chat4n6_plugin_api::{
     CallRecord, CallResult, Chat, Contact, EvidenceSource, ExtractionResult, ForensicTimestamp,
     ForensicWarning, MediaRef, Message, MessageContent, Reaction,
@@ -27,6 +26,7 @@ use chat4n6_sqlite_forensics::{
     read_schema_version,
     record::{RecoveredRecord, SqlValue},
 };
+pub use helpers::{attachment_table_name, is_outgoing_base_type};
 use std::collections::HashMap;
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -97,11 +97,7 @@ pub fn extract_from_signal_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<Ex
         tbl(&by_table, "sms"),
         &mut forensic_warnings,
     );
-    detect_sealed_sender_unresolved(
-        tbl(&by_table, "sms"),
-        &recipients,
-        &mut forensic_warnings,
-    );
+    detect_sealed_sender_unresolved(tbl(&by_table, "sms"), &recipients, &mut forensic_warnings);
 
     let chats_vec: Vec<Chat> = chats.into_values().collect();
 
@@ -176,7 +172,14 @@ fn build_recipient_map(records: &[RecoveredRecord]) -> HashMap<i64, RecipientInf
         // display_name: prefer profile_joined_name, then system_display_name
         let display_name = joined_name.or(system_name);
 
-        map.insert(id, RecipientInfo { jid, display_name, phone: e164 });
+        map.insert(
+            id,
+            RecipientInfo {
+                jid,
+                display_name,
+                phone: e164,
+            },
+        );
     }
     map
 }
@@ -233,7 +236,10 @@ fn build_thread_map(
 ///   pre-v168 `part`:       _id, mid,        content_type, name,      file_size
 ///   post-v168 `attachment`: _id, message_id, content_type, file_name, data_size
 /// values[]: [0]=Null, [1]=message_id, [2]=content_type, [3]=file_name, [4]=file_size
-fn build_part_map(records: &[RecoveredRecord], _schema_version: Option<u32>) -> HashMap<i64, MediaRef> {
+fn build_part_map(
+    records: &[RecoveredRecord],
+    _schema_version: Option<u32>,
+) -> HashMap<i64, MediaRef> {
     use helpers::cols::attachment as col;
     let mut map = HashMap::new();
     for r in records {
@@ -241,7 +247,9 @@ fn build_part_map(records: &[RecoveredRecord], _schema_version: Option<u32>) -> 
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
-        let mime_type = r.text_val(col::CONTENT_TYPE).unwrap_or_else(|| "application/octet-stream".to_string());
+        let mime_type = r
+            .text_val(col::CONTENT_TYPE)
+            .unwrap_or_else(|| "application/octet-stream".to_string());
         let file_name = r.text_val(col::FILE_NAME);
         let file_size = match r.values.get(col::FILE_SIZE) {
             Some(SqlValue::Int(n)) => *n as u64,
@@ -288,7 +296,7 @@ fn build_reaction_map(
     // pre-v168 had an extra `is_mms` column at index 2; all subsequent columns shift +1.
     // v168+:    author_id=col::AUTHOR_ID(2), emoji=col::EMOJI(3), date_sent=col::DATE_SENT(4)
     // pre-v168: author_id=3, emoji=4, date_sent=5
-    let (author_col, emoji_col, date_sent_col) = if schema_version.map_or(false, |v| v >= 168) {
+    let (author_col, emoji_col, date_sent_col) = if schema_version.is_some_and(|v| v >= 168) {
         (col::AUTHOR_ID, col::EMOJI, col::DATE_SENT)
     } else {
         (col::AUTHOR_ID + 1, col::EMOJI + 1, col::DATE_SENT + 1)
@@ -367,9 +375,7 @@ fn record_to_message(
         _ => None,
     };
     // Priority: date_server > date_received > date_sent
-    let ts_ms = date_server_ms
-        .or(date_received_ms)
-        .unwrap_or(date_sent_ms);
+    let ts_ms = date_server_ms.or(date_received_ms).unwrap_or(date_sent_ms);
 
     let sms_type = match r.values.get(col::TYPE) {
         Some(SqlValue::Int(n)) => *n,
@@ -431,7 +437,10 @@ fn record_to_message(
 /// `direction`: 0=incoming, 1=outgoing
 /// `event`: 0=ongoing, 1=missed, 2=busy, 3=declined, 4=accepted, 5=deleted
 fn extract_calls(records: &[RecoveredRecord], tz_offset_secs: i32) -> Vec<CallRecord> {
-    records.iter().filter_map(|r| record_to_call(r, tz_offset_secs)).collect()
+    records
+        .iter()
+        .filter_map(|r| record_to_call(r, tz_offset_secs))
+        .collect()
 }
 
 fn record_to_call(r: &RecoveredRecord, tz_offset_secs: i32) -> Option<CallRecord> {
@@ -503,7 +512,7 @@ fn detect_disappearing_timers(
     sms_records: &[RecoveredRecord],
     warnings: &mut Vec<ForensicWarning>,
 ) {
-    use helpers::cols::{thread as tcol, sms as scol};
+    use helpers::cols::{sms as scol, thread as tcol};
     for thread_rec in thread_records {
         let thread_id = match thread_rec.row_id {
             Some(id) => id,
@@ -596,7 +605,7 @@ pub mod helpers {
         ///         [, envelope_type[, date_server]]]
         pub mod sms {
             pub const THREAD_ID: usize = 1;
-            pub const DATE: usize = 2;          // date_sent (ms)
+            pub const DATE: usize = 2; // date_sent (ms)
             pub const DATE_RECEIVED: usize = 3;
             pub const TYPE: usize = 4;
             pub const BODY: usize = 5;
@@ -635,9 +644,9 @@ pub mod helpers {
         /// Use `build_reaction_map`'s schema-version branch for the offset adjustment.
         pub mod reaction {
             pub const MESSAGE_ID: usize = 1;
-            pub const AUTHOR_ID: usize = 2;     // post-v168; pre-v168 = 3
-            pub const EMOJI: usize = 3;         // post-v168; pre-v168 = 4
-            pub const DATE_SENT: usize = 4;     // post-v168; pre-v168 = 5
+            pub const AUTHOR_ID: usize = 2; // post-v168; pre-v168 = 3
+            pub const EMOJI: usize = 3; // post-v168; pre-v168 = 4
+            pub const DATE_SENT: usize = 4; // post-v168; pre-v168 = 5
             pub const DATE_RECEIVED: usize = 5; // post-v168; pre-v168 = 6
         }
         /// `attachment` / `part` table column indices.
@@ -651,42 +660,6 @@ pub mod helpers {
             pub const FILE_NAME: usize = 3;
             pub const FILE_SIZE: usize = 4;
         }
-    }
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chat4n6_sqlite_forensics::record::{RecoveredRecord, SqlValue};
-    use chat4n6_plugin_api::EvidenceSource;
-
-    fn make_record(table: &str) -> RecoveredRecord {
-        RecoveredRecord {
-            table: table.to_string(),
-            row_id: Some(1),
-            values: vec![SqlValue::Null],
-            source: EvidenceSource::Live,
-            offset: 0,
-            confidence: 1.0,
-        }
-    }
-
-    #[test]
-    fn tbl_empty_map_returns_empty_slice() {
-        let by: HashMap<String, Vec<RecoveredRecord>> = HashMap::new();
-        assert!(tbl(&by, "thread").is_empty());
-    }
-
-    #[test]
-    fn tbl_populated_map_returns_correct_slice() {
-        let mut by: HashMap<String, Vec<RecoveredRecord>> = HashMap::new();
-        by.insert("thread".to_string(), vec![make_record("thread"), make_record("thread")]);
-        by.insert("sms".to_string(), vec![make_record("sms")]);
-        assert_eq!(tbl(&by, "thread").len(), 2);
-        assert_eq!(tbl(&by, "sms").len(), 1);
-        assert!(tbl(&by, "missing").is_empty());
     }
 }
 
@@ -739,3 +712,41 @@ fn detect_sealed_sender_unresolved(
     }
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chat4n6_plugin_api::EvidenceSource;
+    use chat4n6_sqlite_forensics::record::{RecoveredRecord, SqlValue};
+
+    fn make_record(table: &str) -> RecoveredRecord {
+        RecoveredRecord {
+            table: table.to_string(),
+            row_id: Some(1),
+            values: vec![SqlValue::Null],
+            source: EvidenceSource::Live,
+            offset: 0,
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn tbl_empty_map_returns_empty_slice() {
+        let by: HashMap<String, Vec<RecoveredRecord>> = HashMap::new();
+        assert!(tbl(&by, "thread").is_empty());
+    }
+
+    #[test]
+    fn tbl_populated_map_returns_correct_slice() {
+        let mut by: HashMap<String, Vec<RecoveredRecord>> = HashMap::new();
+        by.insert(
+            "thread".to_string(),
+            vec![make_record("thread"), make_record("thread")],
+        );
+        by.insert("sms".to_string(), vec![make_record("sms")]);
+        assert_eq!(tbl(&by, "thread").len(), 2);
+        assert_eq!(tbl(&by, "sms").len(), 1);
+        assert!(tbl(&by, "missing").is_empty());
+    }
+}

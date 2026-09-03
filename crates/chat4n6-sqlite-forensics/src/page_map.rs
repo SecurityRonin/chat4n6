@@ -157,10 +157,9 @@ impl PageMap {
                         if ptr_off + 2 > page_data.len() {
                             break;
                         }
-                        let cell_off = u16::from_be_bytes([
-                            page_data[ptr_off],
-                            page_data[ptr_off + 1],
-                        ]) as usize;
+                        let cell_off =
+                            u16::from_be_bytes([page_data[ptr_off], page_data[ptr_off + 1]])
+                                as usize;
                         if cell_off + 4 > page_data.len() {
                             continue;
                         }
@@ -241,8 +240,7 @@ impl PageMap {
         if page_data.len() < bhdr + 8 {
             return;
         }
-        let cell_count =
-            u16::from_be_bytes([page_data[bhdr + 3], page_data[bhdr + 4]]) as usize;
+        let cell_count = u16::from_be_bytes([page_data[bhdr + 3], page_data[bhdr + 4]]) as usize;
         let ptr_array_start = bhdr + 8; // leaf header is 8 bytes
 
         let usable = page_size as usize;
@@ -275,8 +273,7 @@ impl PageMap {
 
             let payload_len_usize = payload_len as usize;
             if payload_len_usize > max_local {
-                let mut local_size =
-                    min_local + (payload_len_usize - min_local) % (usable - 4);
+                let mut local_size = min_local + (payload_len_usize - min_local) % (usable - 4);
                 if local_size > max_local {
                     local_size = min_local;
                 }
@@ -320,8 +317,7 @@ impl PageMap {
         if page_data.len() < bhdr + 8 {
             return;
         }
-        let cell_count =
-            u16::from_be_bytes([page_data[bhdr + 3], page_data[bhdr + 4]]) as usize;
+        let cell_count = u16::from_be_bytes([page_data[bhdr + 3], page_data[bhdr + 4]]) as usize;
         let ptr_array_start = bhdr + 8;
 
         // Index B-tree leaf overflow thresholds (same formula as table leaf).
@@ -349,8 +345,7 @@ impl PageMap {
 
             let payload_len_usize = payload_len as usize;
             if payload_len_usize > max_local {
-                let mut local_size =
-                    min_local + (payload_len_usize - min_local) % (usable - 4);
+                let mut local_size = min_local + (payload_len_usize - min_local) % (usable - 4);
                 if local_size > max_local {
                     local_size = min_local;
                 }
@@ -417,8 +412,7 @@ impl PageMap {
             );
 
             // First 4 bytes of each overflow page = next page number (0 = end).
-            let next =
-                u32::from_be_bytes([page_data[0], page_data[1], page_data[2], page_data[3]]);
+            let next = u32::from_be_bytes([page_data[0], page_data[1], page_data[2], page_data[3]]);
             current = next;
         }
     }
@@ -506,7 +500,11 @@ mod tests {
 
     fn get_page_size(db: &[u8]) -> u32 {
         let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
-        if raw == 1 { 65536 } else { raw }
+        if raw == 1 {
+            65536
+        } else {
+            raw
+        }
     }
 
     #[test]
@@ -644,10 +642,8 @@ mod tests {
         let path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch("PRAGMA page_size=512;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE big (id INTEGER PRIMARY KEY, data TEXT);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE big (id INTEGER PRIMARY KEY, data TEXT);")
+            .unwrap();
         for i in 0..200 {
             conn.execute(
                 "INSERT INTO big VALUES (?, ?)",
@@ -701,10 +697,8 @@ mod tests {
         let path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch("PRAGMA page_size=1024;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, data TEXT);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, data TEXT);")
+            .unwrap();
         for i in 0..200 {
             conn.execute(
                 "INSERT INTO t VALUES (?, ?)",
@@ -732,14 +726,8 @@ mod tests {
                     "freelist trunk page {} not marked",
                     trunk
                 );
-                assert_eq!(
-                    ownership.unwrap().table_name,
-                    "__freelist__"
-                );
-                assert_eq!(
-                    ownership.unwrap().page_role,
-                    PageRole::FreelistTrunk
-                );
+                assert_eq!(ownership.unwrap().table_name, "__freelist__");
+                assert_eq!(ownership.unwrap().page_role, PageRole::FreelistTrunk);
             }
         }
     }
@@ -790,10 +778,8 @@ mod tests {
         let path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch("PRAGMA page_size=512;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE big (id INTEGER PRIMARY KEY, data TEXT);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE big (id INTEGER PRIMARY KEY, data TEXT);")
+            .unwrap();
         for i in 0..300 {
             conn.execute(
                 "INSERT INTO big VALUES (?, ?)",
@@ -817,7 +803,10 @@ mod tests {
                 Some(PageRole::BTreeInterior)
             )
         });
-        assert!(has_interior, "expected at least one interior page for 'big' table with 300 rows at page_size=512");
+        assert!(
+            has_interior,
+            "expected at least one interior page for 'big' table with 300 rows at page_size=512"
+        );
 
         // Verify all big pages are either BTreeLeaf or BTreeInterior.
         for p in &big_pages {
@@ -859,7 +848,10 @@ mod tests {
 
         let roots = extract_roots(&db, page_size);
         // idx_name should be in the roots map.
-        assert!(roots.contains_key("idx_name"), "index root not found in sqlite_master");
+        assert!(
+            roots.contains_key("idx_name"),
+            "index root not found in sqlite_master"
+        );
 
         let pm = PageMap::build(&db, page_size, &roots);
 
@@ -935,10 +927,8 @@ mod tests {
         let path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch("PRAGMA page_size=512;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE overflow_t (id INTEGER PRIMARY KEY, big_data TEXT);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE overflow_t (id INTEGER PRIMARY KEY, big_data TEXT);")
+            .unwrap();
         let big_value = "X".repeat(2000);
         for i in 0..10 {
             conn.execute(
@@ -974,8 +964,7 @@ mod tests {
 
         // Verify overflow pages have correct parent_page field.
         for p in &all_pages {
-            if let Some(PageRole::Overflow { parent_page }) =
-                pm.owner_of(*p).map(|o| &o.page_role)
+            if let Some(PageRole::Overflow { parent_page }) = pm.owner_of(*p).map(|o| &o.page_role)
             {
                 // parent_page should be non-zero and should be a leaf page.
                 assert_ne!(*parent_page, 0, "overflow parent should be non-zero");
@@ -1038,10 +1027,8 @@ mod tests {
         let path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch("PRAGMA page_size=512;").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE fl (id INTEGER PRIMARY KEY, data TEXT);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE fl (id INTEGER PRIMARY KEY, data TEXT);")
+            .unwrap();
         // Insert enough rows to create many pages.
         for i in 0..500 {
             conn.execute(
@@ -1082,7 +1069,11 @@ mod tests {
             }
         }
         assert!(trunk_count >= 1, "expected at least 1 freelist trunk page");
-        assert!(leaf_count >= 1, "expected at least 1 freelist leaf page, got 0 (trunk_count={})", trunk_count);
+        assert!(
+            leaf_count >= 1,
+            "expected at least 1 freelist leaf page, got 0 (trunk_count={})",
+            trunk_count
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1104,7 +1095,7 @@ mod tests {
         // Page 2 (offset 512): Make it a TableInterior page (0x05).
         let p2_off = page_size as usize;
         db[p2_off] = 0x05; // TableInterior
-        // Bytes 1-2: first free block = 0
+                           // Bytes 1-2: first free block = 0
         db[p2_off + 1] = 0;
         db[p2_off + 2] = 0;
         // Bytes 3-4: cell count = 1
@@ -1120,7 +1111,7 @@ mod tests {
         db[p2_off + 9] = 0;
         db[p2_off + 10] = 0;
         db[p2_off + 11] = 2; // points back to page 2
-        // Cell pointer array at offset 12: one entry pointing to a cell.
+                             // Cell pointer array at offset 12: one entry pointing to a cell.
         let cell_data_off: u16 = 200; // cell at offset 200 within page
         db[p2_off + 12] = (cell_data_off >> 8) as u8;
         db[p2_off + 13] = (cell_data_off & 0xFF) as u8;
@@ -1271,8 +1262,8 @@ mod tests {
         db[p2] = 0x0D; // TableLeaf
         db[p2 + 3] = 0; // cell count high byte
         db[p2 + 4] = 1; // cell count = 1
-        // Cell pointer array starts at p2+8 for leaf pages.
-        // Point to a cell at offset 100 within the page.
+                        // Cell pointer array starts at p2+8 for leaf pages.
+                        // Point to a cell at offset 100 within the page.
         let cell_off: u16 = 100;
         db[p2 + 8] = (cell_off >> 8) as u8;
         db[p2 + 9] = (cell_off & 0xFF) as u8;
@@ -1285,7 +1276,7 @@ mod tests {
         let cell_abs = p2 + cell_off as usize;
         db[cell_abs] = 0x84; // varint high byte (continuation)
         db[cell_abs + 1] = 0x58; // varint low byte: (0x04 << 7) | 0x58 = 512 + 88 = 600
-        // Row ID varint: 1 (single byte)
+                                 // Row ID varint: 1 (single byte)
         db[cell_abs + 2] = 0x01;
         // Now payload starts at cell_abs + 3.
         // local_size = min_local + (600 - min_local) % (512 - 4)
@@ -1316,7 +1307,10 @@ mod tests {
         // Page 2 = leaf, page 3 = overflow.
         assert_eq!(pm.owner_of(2).unwrap().page_role, PageRole::BTreeLeaf);
         assert!(
-            matches!(pm.owner_of(3).unwrap().page_role, PageRole::Overflow { parent_page: 2 }),
+            matches!(
+                pm.owner_of(3).unwrap().page_role,
+                PageRole::Overflow { parent_page: 2 }
+            ),
             "page 3 should be an overflow page with parent 2"
         );
     }
@@ -1437,7 +1431,7 @@ mod tests {
         db[p2] = 0x0D; // TableLeaf
         db[p2 + 3] = 0;
         db[p2 + 4] = 2; // 2 cells
-        // Cell pointer 1: offset 0 (should be skipped)
+                        // Cell pointer 1: offset 0 (should be skipped)
         db[p2 + 8] = 0;
         db[p2 + 9] = 0;
         // Cell pointer 2: offset beyond page (should be skipped, cell_off >= page_data.len())
@@ -1490,7 +1484,7 @@ mod tests {
         db[p2] = 0x0A; // IndexLeaf
         db[p2 + 3] = 0;
         db[p2 + 4] = 2; // 2 cells
-        // Cell pointer 1: offset 0
+                        // Cell pointer 1: offset 0
         db[p2 + 8] = 0;
         db[p2 + 9] = 0;
         // Cell pointer 2: offset beyond page
@@ -1540,7 +1534,7 @@ mod tests {
         db[p2] = 0x05; // TableInterior
         db[p2 + 3] = 0;
         db[p2 + 4] = 1; // 1 cell
-        // right-most child = 0 (no child)
+                        // right-most child = 0 (no child)
         db[p2 + 8] = 0;
         db[p2 + 9] = 0;
         db[p2 + 10] = 0;
@@ -1741,10 +1735,10 @@ mod tests {
         db[p2] = 0x0D; // TableLeaf
         db[p2 + 3] = 0;
         db[p2 + 4] = 1; // 1 cell
-        // Cell offset pointing to the very last byte of the page.
-        // read_varint at offset 511 will read db[p2+511] which is the last byte.
-        // If the byte has continuation bit set (0x80), it'll try to read the next byte
-        // which is out of bounds -> returns None.
+                        // Cell offset pointing to the very last byte of the page.
+                        // read_varint at offset 511 will read db[p2+511] which is the last byte.
+                        // If the byte has continuation bit set (0x80), it'll try to read the next byte
+                        // which is out of bounds -> returns None.
         let cell_off: u16 = 511;
         db[p2 + 8] = (cell_off >> 8) as u8;
         db[p2 + 9] = (cell_off & 0xFF) as u8;
@@ -1948,7 +1942,7 @@ mod tests {
         db[cell_abs] = 0x84;
         db[cell_abs + 1] = 0x58;
         db[cell_abs + 2] = 0x01; // row_id
-        // overflow ptr at cell_abs + 3 + 92 = cell_abs + 95. All zeros = page 0 = skip.
+                                 // overflow ptr at cell_abs + 3 + 92 = cell_abs + 95. All zeros = page 0 = skip.
 
         let mut roots = HashMap::new();
         roots.insert("test".to_string(), 2u32);
@@ -1985,7 +1979,7 @@ mod tests {
         let cell_abs = p2 + cell_off as usize;
         db[cell_abs] = 0x84;
         db[cell_abs + 1] = 0x58; // payload_len=600
-        // overflow ptr at cell_abs + 2 + 92 = cell_abs + 94. All zeros.
+                                 // overflow ptr at cell_abs + 2 + 92 = cell_abs + 94. All zeros.
 
         let mut roots = HashMap::new();
         roots.insert("idx".to_string(), 2u32);
@@ -2055,7 +2049,7 @@ mod tests {
         let cell_abs = p2 + cell_off as usize;
         db[cell_abs] = 0x84;
         db[cell_abs + 1] = 0x58; // payload_len=600
-        // overflow ptr at cell_abs + 2 + 92 = 480+94 = 574. 574+4=578 > 512.
+                                 // overflow ptr at cell_abs + 2 + 92 = 480+94 = 574. 574+4=578 > 512.
 
         let mut roots = HashMap::new();
         roots.insert("idx".to_string(), 2u32);
@@ -2118,13 +2112,19 @@ mod tests {
         db[..16].copy_from_slice(b"SQLite format 3\x00");
         db[16] = (page_size >> 8) as u8;
         db[17] = (page_size & 0xFF) as u8;
-        db[28] = 0; db[29] = 0; db[30] = 0; db[31] = 1; // page_count=1
-        // Freelist trunk = page 99 (out of bounds).
+        db[28] = 0;
+        db[29] = 0;
+        db[30] = 0;
+        db[31] = 1; // page_count=1
+                    // Freelist trunk = page 99 (out of bounds).
         db[32] = 0;
         db[33] = 0;
         db[34] = 0;
         db[35] = 99;
-        db[36] = 0; db[37] = 0; db[38] = 0; db[39] = 1;
+        db[36] = 0;
+        db[37] = 0;
+        db[38] = 0;
+        db[39] = 1;
 
         let roots = HashMap::new();
         let pm = PageMap::build(&db, page_size, &roots);
@@ -2141,15 +2141,33 @@ mod tests {
         db[..16].copy_from_slice(b"SQLite format 3\x00");
         db[16] = (page_size >> 8) as u8;
         db[17] = (page_size & 0xFF) as u8;
-        db[28] = 0; db[29] = 0; db[30] = 0; db[31] = 2;
-        db[32] = 0; db[33] = 0; db[34] = 0; db[35] = 2; // trunk = page 2
-        db[36] = 0; db[37] = 0; db[38] = 0; db[39] = 1;
+        db[28] = 0;
+        db[29] = 0;
+        db[30] = 0;
+        db[31] = 2;
+        db[32] = 0;
+        db[33] = 0;
+        db[34] = 0;
+        db[35] = 2; // trunk = page 2
+        db[36] = 0;
+        db[37] = 0;
+        db[38] = 0;
+        db[39] = 1;
 
         let p2 = page_size as usize;
-        db[p2] = 0; db[p2+1] = 0; db[p2+2] = 0; db[p2+3] = 0; // next trunk = 0 (end)
-        db[p2+4] = 0; db[p2+5] = 0; db[p2+6] = 0; db[p2+7] = 1; // leaf_count = 1
-        // Leaf page number = 0 (should be skipped).
-        db[p2+8] = 0; db[p2+9] = 0; db[p2+10] = 0; db[p2+11] = 0;
+        db[p2] = 0;
+        db[p2 + 1] = 0;
+        db[p2 + 2] = 0;
+        db[p2 + 3] = 0; // next trunk = 0 (end)
+        db[p2 + 4] = 0;
+        db[p2 + 5] = 0;
+        db[p2 + 6] = 0;
+        db[p2 + 7] = 1; // leaf_count = 1
+                        // Leaf page number = 0 (should be skipped).
+        db[p2 + 8] = 0;
+        db[p2 + 9] = 0;
+        db[p2 + 10] = 0;
+        db[p2 + 11] = 0;
 
         let roots = HashMap::new();
         let pm = PageMap::build(&db, page_size, &roots);
@@ -2166,14 +2184,29 @@ mod tests {
         db[..16].copy_from_slice(b"SQLite format 3\x00");
         db[16] = (page_size >> 8) as u8;
         db[17] = (page_size & 0xFF) as u8;
-        db[28] = 0; db[29] = 0; db[30] = 0; db[31] = 2;
-        db[32] = 0; db[33] = 0; db[34] = 0; db[35] = 2;
-        db[36] = 0; db[37] = 0; db[38] = 0; db[39] = 1;
+        db[28] = 0;
+        db[29] = 0;
+        db[30] = 0;
+        db[31] = 2;
+        db[32] = 0;
+        db[33] = 0;
+        db[34] = 0;
+        db[35] = 2;
+        db[36] = 0;
+        db[37] = 0;
+        db[38] = 0;
+        db[39] = 1;
 
         let p2 = page_size as usize;
-        db[p2] = 0; db[p2+1] = 0; db[p2+2] = 0; db[p2+3] = 0;
+        db[p2] = 0;
+        db[p2 + 1] = 0;
+        db[p2 + 2] = 0;
+        db[p2 + 3] = 0;
         // leaf_count = 9999 — way more than page can hold.
-        db[p2+4] = 0; db[p2+5] = 0; db[p2+6] = 0x27; db[p2+7] = 0x0F;
+        db[p2 + 4] = 0;
+        db[p2 + 5] = 0;
+        db[p2 + 6] = 0x27;
+        db[p2 + 7] = 0x0F;
 
         let roots = HashMap::new();
         let pm = PageMap::build(&db, page_size, &roots);
@@ -2275,7 +2308,8 @@ mod tests {
             .unwrap();
         }
         // Delete some rows to create freelist pages.
-        conn.execute_batch("DELETE FROM data_t WHERE id < 20;").unwrap();
+        conn.execute_batch("DELETE FROM data_t WHERE id < 20;")
+            .unwrap();
         drop(conn);
         let db = std::fs::read(&path).unwrap();
         let page_size = get_page_size(&db);
@@ -2296,12 +2330,21 @@ mod tests {
         }
 
         // We should have at least some overflow pages from the 2000-byte values.
-        let overflow_count = role_counts.keys().filter(|k| k.starts_with("Overflow")).count();
-        assert!(overflow_count > 0 || role_counts.values().sum::<usize>() > 5,
-            "expected overflow pages in comprehensive test, roles: {:?}", role_counts);
+        let overflow_count = role_counts
+            .keys()
+            .filter(|k| k.starts_with("Overflow"))
+            .count();
+        assert!(
+            overflow_count > 0 || role_counts.values().sum::<usize>() > 5,
+            "expected overflow pages in comprehensive test, roles: {:?}",
+            role_counts
+        );
 
         // We should have leaf pages.
-        assert!(role_counts.contains_key("BTreeLeaf"), "expected BTreeLeaf pages");
+        assert!(
+            role_counts.contains_key("BTreeLeaf"),
+            "expected BTreeLeaf pages"
+        );
 
         // Check freelist presence.
         let header = DbHeader::parse(&db).unwrap();
@@ -2329,9 +2372,18 @@ mod tests {
         db[..16].copy_from_slice(b"SQLite format 3\x00");
         db[16] = 0;
         db[17] = 4; // page_size=4
-        db[28] = 0; db[29] = 0; db[30] = 0; db[31] = 25; // page count = 25
-        db[32] = 0; db[33] = 0; db[34] = 0; db[35] = 2; // freelist trunk = page 2
-        db[36] = 0; db[37] = 0; db[38] = 0; db[39] = 1;
+        db[28] = 0;
+        db[29] = 0;
+        db[30] = 0;
+        db[31] = 25; // page count = 25
+        db[32] = 0;
+        db[33] = 0;
+        db[34] = 0;
+        db[35] = 2; // freelist trunk = page 2
+        db[36] = 0;
+        db[37] = 0;
+        db[38] = 0;
+        db[39] = 1;
 
         // Page 2 at offset 4..8 (4 bytes < 8). Guard triggers.
         let roots = HashMap::new();
@@ -2457,8 +2509,14 @@ mod tests {
         let pm = PageMap::build(&db, page_size, &roots);
 
         assert_eq!(pm.owner_of(2).unwrap().page_role, PageRole::BTreeLeaf);
-        assert!(matches!(pm.owner_of(3).unwrap().page_role, PageRole::Overflow { parent_page: 2 }));
-        assert!(matches!(pm.owner_of(4).unwrap().page_role, PageRole::Overflow { parent_page: 2 }));
+        assert!(matches!(
+            pm.owner_of(3).unwrap().page_role,
+            PageRole::Overflow { parent_page: 2 }
+        ));
+        assert!(matches!(
+            pm.owner_of(4).unwrap().page_role,
+            PageRole::Overflow { parent_page: 2 }
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -2473,20 +2531,44 @@ mod tests {
         db[..16].copy_from_slice(b"SQLite format 3\x00");
         db[16] = (page_size >> 8) as u8;
         db[17] = (page_size & 0xFF) as u8;
-        db[28] = 0; db[29] = 0; db[30] = 0; db[31] = 4; // page count = 4
-        db[32] = 0; db[33] = 0; db[34] = 0; db[35] = 2; // freelist trunk = page 2
-        db[36] = 0; db[37] = 0; db[38] = 0; db[39] = 4; // freelist page count
+        db[28] = 0;
+        db[29] = 0;
+        db[30] = 0;
+        db[31] = 4; // page count = 4
+        db[32] = 0;
+        db[33] = 0;
+        db[34] = 0;
+        db[35] = 2; // freelist trunk = page 2
+        db[36] = 0;
+        db[37] = 0;
+        db[38] = 0;
+        db[39] = 4; // freelist page count
 
         // Page 2 (trunk 1): next trunk = page 3, leaf_count = 1, leaf = page 4
         let p2 = page_size as usize;
-        db[p2] = 0; db[p2+1] = 0; db[p2+2] = 0; db[p2+3] = 3; // next trunk = page 3
-        db[p2+4] = 0; db[p2+5] = 0; db[p2+6] = 0; db[p2+7] = 1; // leaf_count = 1
-        db[p2+8] = 0; db[p2+9] = 0; db[p2+10] = 0; db[p2+11] = 4; // leaf page 4
+        db[p2] = 0;
+        db[p2 + 1] = 0;
+        db[p2 + 2] = 0;
+        db[p2 + 3] = 3; // next trunk = page 3
+        db[p2 + 4] = 0;
+        db[p2 + 5] = 0;
+        db[p2 + 6] = 0;
+        db[p2 + 7] = 1; // leaf_count = 1
+        db[p2 + 8] = 0;
+        db[p2 + 9] = 0;
+        db[p2 + 10] = 0;
+        db[p2 + 11] = 4; // leaf page 4
 
         // Page 3 (trunk 2): next trunk = 0 (end), leaf_count = 0
         let p3 = page_size as usize * 2;
-        db[p3] = 0; db[p3+1] = 0; db[p3+2] = 0; db[p3+3] = 0;
-        db[p3+4] = 0; db[p3+5] = 0; db[p3+6] = 0; db[p3+7] = 0;
+        db[p3] = 0;
+        db[p3 + 1] = 0;
+        db[p3 + 2] = 0;
+        db[p3 + 3] = 0;
+        db[p3 + 4] = 0;
+        db[p3 + 5] = 0;
+        db[p3 + 6] = 0;
+        db[p3 + 7] = 0;
 
         let roots = HashMap::new();
         let pm = PageMap::build(&db, page_size, &roots);
@@ -2540,7 +2622,10 @@ mod tests {
 
         assert_eq!(pm.owner_of(2).unwrap().page_role, PageRole::BTreeLeaf);
         assert_eq!(pm.owner_of(2).unwrap().table_name, "idx_test");
-        assert!(matches!(pm.owner_of(3).unwrap().page_role, PageRole::Overflow { parent_page: 2 }));
+        assert!(matches!(
+            pm.owner_of(3).unwrap().page_role,
+            PageRole::Overflow { parent_page: 2 }
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -2635,7 +2720,8 @@ mod tests {
                 if let Some(o) = pm.owner_of(p) {
                     assert!(
                         !matches!(o.page_role, PageRole::Overflow { .. }),
-                        "unexpected overflow page {}", p
+                        "unexpected overflow page {}",
+                        p
                     );
                 }
             }

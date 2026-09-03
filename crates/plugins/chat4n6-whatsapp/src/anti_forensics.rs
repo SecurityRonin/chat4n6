@@ -24,7 +24,9 @@ pub fn detect_vacuum(db_bytes: &[u8]) -> Vec<ForensicWarning> {
     }
     let free_pages = u32::from_be_bytes([db_bytes[36], db_bytes[37], db_bytes[38], db_bytes[39]]);
     if free_pages > 0 {
-        vec![ForensicWarning::DatabaseVacuumed { freelist_page_count: free_pages }]
+        vec![ForensicWarning::DatabaseVacuumed {
+            freelist_page_count: free_pages,
+        }]
     } else {
         vec![]
     }
@@ -47,8 +49,9 @@ pub fn detect_header_tamper(db_bytes: &[u8]) -> Vec<ForensicWarning> {
 
     // Check 1: write_counter vs read_counter (bytes 92–95 vs 96–99).
     let write_version = db_bytes[18]; // 1=journal, 2=WAL
-    let write_counter = u32::from_be_bytes([db_bytes[92], db_bytes[93], db_bytes[94], db_bytes[95]]);
-    let read_counter  = u32::from_be_bytes([db_bytes[96], db_bytes[97], db_bytes[98], db_bytes[99]]);
+    let write_counter =
+        u32::from_be_bytes([db_bytes[92], db_bytes[93], db_bytes[94], db_bytes[95]]);
+    let read_counter = u32::from_be_bytes([db_bytes[96], db_bytes[97], db_bytes[98], db_bytes[99]]);
     if write_counter != read_counter && write_version != 2 {
         warnings.push(ForensicWarning::HeaderTampered {
             change_counter: write_counter,
@@ -58,8 +61,13 @@ pub fn detect_header_tamper(db_bytes: &[u8]) -> Vec<ForensicWarning> {
 
     // Check 2: declared page_size × page_count vs actual file length.
     let raw_page_size = u16::from_be_bytes([db_bytes[16], db_bytes[17]]);
-    let page_size: u64 = if raw_page_size == 1 { 65536 } else { raw_page_size as u64 };
-    let page_count = u32::from_be_bytes([db_bytes[28], db_bytes[29], db_bytes[30], db_bytes[31]]) as u64;
+    let page_size: u64 = if raw_page_size == 1 {
+        65536
+    } else {
+        raw_page_size as u64
+    };
+    let page_count =
+        u32::from_be_bytes([db_bytes[28], db_bytes[29], db_bytes[30], db_bytes[31]]) as u64;
     let expected_size = page_size * page_count;
     let actual_size = db_bytes.len() as u64;
     if actual_size >= 100 && actual_size != expected_size {
@@ -128,9 +136,7 @@ pub fn detect_timestamp_anomalies(result: &ExtractionResult) -> Vec<ForensicWarn
 ///
 /// Takes a map of key_id → list of message row_ids built from raw SQLite records.
 /// Any key_id appearing more than once emits `DuplicateStanzaId`.
-pub fn detect_duplicate_stanza_ids(
-    key_id_map: &HashMap<String, Vec<i64>>,
-) -> Vec<ForensicWarning> {
+pub fn detect_duplicate_stanza_ids(key_id_map: &HashMap<String, Vec<i64>>) -> Vec<ForensicWarning> {
     key_id_map
         .iter()
         .filter(|(_, rows)| rows.len() > 1)
@@ -238,7 +244,9 @@ mod header_tamper_tests {
         let header = valid_header(4096, 1, 5, 3);
         let warnings = detect_header_tamper(&header);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
             "write/read counter mismatch must emit HeaderTampered, got: {warnings:?}"
         );
     }
@@ -249,7 +257,9 @@ mod header_tamper_tests {
         let header = valid_header(4096, 2, 1, 1);
         let warnings = detect_header_tamper(&header);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::HeaderTampered { .. })),
             "page size * count != file size must emit HeaderTampered, got: {warnings:?}"
         );
     }
@@ -278,14 +288,18 @@ mod header_tamper_tests {
         buf[36..40].copy_from_slice(&5u32.to_be_bytes()); // free_pages=5
         let warnings = detect_vacuum(&buf);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::DatabaseVacuumed { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::DatabaseVacuumed { .. })),
             "non-zero free_pages must emit DatabaseVacuumed"
         );
     }
 
     #[test]
     fn selective_deletion_detected() {
-        use chat4n6_plugin_api::{Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent};
+        use chat4n6_plugin_api::{
+            Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent,
+        };
         let make_msg = |id: i64| Message {
             id,
             chat_id: 1,
@@ -310,8 +324,12 @@ mod header_tamper_tests {
             name: None,
             is_group: false,
             messages: vec![
-                make_msg(1), make_msg(2), make_msg(3),
-                make_msg(100), make_msg(101), make_msg(102), // gap 3→100
+                make_msg(1),
+                make_msg(2),
+                make_msg(3),
+                make_msg(100),
+                make_msg(101),
+                make_msg(102), // gap 3→100
             ],
             archived: false,
         };
@@ -324,20 +342,24 @@ mod header_tamper_tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
-        extraction_started_at: None,
-        extraction_finished_at: None,
-        wal_snapshots: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
         };
         let warnings = detect_selective_deletion(&result);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::SelectiveDeletion { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::SelectiveDeletion { .. })),
             "gap 3→100 should trigger SelectiveDeletion, got: {warnings:?}"
         );
     }
 
     #[test]
     fn timestamp_anomaly_pre_whatsapp() {
-        use chat4n6_plugin_api::{Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent};
+        use chat4n6_plugin_api::{
+            Chat, ExtractionResult, ForensicTimestamp, Message, MessageContent,
+        };
         let make_msg = |id: i64, ts: i64| Message {
             id,
             chat_id: 1,
@@ -376,13 +398,15 @@ mod header_tamper_tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
-        extraction_started_at: None,
-        extraction_finished_at: None,
-        wal_snapshots: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
         };
         let warnings = detect_timestamp_anomalies(&result);
         assert!(
-            warnings.iter().any(|w| matches!(w, ForensicWarning::TimestampAnomaly { .. })),
+            warnings
+                .iter()
+                .any(|w| matches!(w, ForensicWarning::TimestampAnomaly { .. })),
             "reversed timestamps should emit TimestampAnomaly, got: {warnings:?}"
         );
     }
@@ -404,7 +428,8 @@ mod new_detector_tests {
         use crate::schema::SchemaVersion;
 
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             PRAGMA user_version = 200;
             CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL);
@@ -423,9 +448,12 @@ mod new_detector_tests {
             INSERT INTO message VALUES (1, 1, NULL, 0, 1710513127000, 'hello', 0, 'ABC123');
             INSERT INTO message VALUES (2, 1, NULL, 1, 1710513128000, 'world', 0, 'ABC123');
             INSERT INTO message VALUES (3, 1, NULL, 0, 1710513129000, 'foo',   0, 'XYZ999');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         let db = std::fs::read(tmp.path()).unwrap();
 
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
@@ -451,7 +479,8 @@ mod new_detector_tests {
         use crate::schema::SchemaVersion;
 
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             PRAGMA user_version = 200;
             CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL);
@@ -488,9 +517,12 @@ mod new_detector_tests {
             INSERT INTO message_thumbnails VALUES (13, x'ff');
             INSERT INTO message_thumbnails VALUES (14, x'ff');
             INSERT INTO message_thumbnails VALUES (15, x'ff');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         let db = std::fs::read(tmp.path()).unwrap();
 
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
@@ -498,7 +530,11 @@ mod new_detector_tests {
         assert!(
             result.forensic_warnings.iter().any(|w| matches!(
                 w,
-                ForensicWarning::ThumbnailOrphanHigh { orphan_thumbnails: 5, total_messages: 10, ratio_pct: 50 }
+                ForensicWarning::ThumbnailOrphanHigh {
+                    orphan_thumbnails: 5,
+                    total_messages: 10,
+                    ratio_pct: 50
+                }
             )),
             "expected ThumbnailOrphanHigh with 5 orphans / 10 messages = 50%, got: {:?}",
             result.forensic_warnings

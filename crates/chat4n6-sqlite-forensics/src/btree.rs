@@ -457,10 +457,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE empty_tbl (id INTEGER PRIMARY KEY, val TEXT);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE empty_tbl (id INTEGER PRIMARY KEY, val TEXT);")
+            .unwrap();
         drop(conn);
         std::fs::read(&path).unwrap()
     }
@@ -497,7 +495,14 @@ mod tests {
 
         // sqlite_master is at root page 1; walk it for the "sqlite_master" table name
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size, 1, "sqlite_master", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size,
+            1,
+            "sqlite_master",
+            EvidenceSource::Live,
+            &mut records,
+        );
 
         // There should be at least one entry for the "items" table definition
         assert!(
@@ -514,7 +519,10 @@ mod tests {
                 }
             })
         });
-        assert!(found, "Expected to find 'items' entry in sqlite_master records");
+        assert!(
+            found,
+            "Expected to find 'items' entry in sqlite_master records"
+        );
     }
 
     /// Walking an empty table returns 0 records.
@@ -523,7 +531,11 @@ mod tests {
         let db = create_empty_table_db();
         let page_size = {
             let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
-            if raw == 1 { 65536 } else { raw }
+            if raw == 1 {
+                65536
+            } else {
+                raw
+            }
         };
 
         // Find empty_tbl root page from sqlite_master
@@ -541,9 +553,9 @@ mod tests {
         let root_page = master_records
             .iter()
             .find(|r| {
-                r.values.get(1).map_or(false, |v| {
-                    matches!(v, crate::record::SqlValue::Text(s) if s == "empty_tbl")
-                })
+                r.values.get(1).is_some_and(
+                    |v| matches!(v, crate::record::SqlValue::Text(s) if s == "empty_tbl"),
+                )
             })
             .and_then(|r| {
                 if let Some(crate::record::SqlValue::Int(n)) = r.values.get(3) {
@@ -555,7 +567,14 @@ mod tests {
             .expect("empty_tbl not found in sqlite_master");
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size, root_page, "empty_tbl", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size,
+            root_page,
+            "empty_tbl",
+            EvidenceSource::Live,
+            &mut records,
+        );
         assert_eq!(records.len(), 0, "Empty table should yield 0 records");
     }
 
@@ -565,7 +584,11 @@ mod tests {
         let db = create_multi_page_db();
         let page_size = {
             let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
-            if raw == 1 { 65536 } else { raw }
+            if raw == 1 {
+                65536
+            } else {
+                raw
+            }
         };
 
         // Get big table root page from sqlite_master
@@ -582,9 +605,9 @@ mod tests {
         let root_page = master_records
             .iter()
             .find(|r| {
-                r.values.get(1).map_or(false, |v| {
-                    matches!(v, crate::record::SqlValue::Text(s) if s == "big")
-                })
+                r.values
+                    .get(1)
+                    .is_some_and(|v| matches!(v, crate::record::SqlValue::Text(s) if s == "big"))
             })
             .and_then(|r| {
                 if let Some(crate::record::SqlValue::Int(n)) = r.values.get(3) {
@@ -596,8 +619,20 @@ mod tests {
             .expect("big table not found in sqlite_master");
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size, root_page, "big", EvidenceSource::Live, &mut records);
-        assert_eq!(records.len(), 200, "Expected all 200 records, got {}", records.len());
+        walk_table_btree(
+            &db,
+            page_size,
+            root_page,
+            "big",
+            EvidenceSource::Live,
+            &mut records,
+        );
+        assert_eq!(
+            records.len(),
+            200,
+            "Expected all 200 records, got {}",
+            records.len()
+        );
     }
 
     /// Requesting a non-existent root page must not panic and must yield empty results.
@@ -606,12 +641,27 @@ mod tests {
         let db = create_simple_db();
         let page_size = {
             let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
-            if raw == 1 { 65536 } else { raw }
+            if raw == 1 {
+                65536
+            } else {
+                raw
+            }
         };
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size, 9999, "ghost", EvidenceSource::Live, &mut records);
-        assert_eq!(records.len(), 0, "Out-of-range root page must yield empty results");
+        walk_table_btree(
+            &db,
+            page_size,
+            9999,
+            "ghost",
+            EvidenceSource::Live,
+            &mut records,
+        );
+        assert_eq!(
+            records.len(),
+            0,
+            "Out-of-range root page must yield empty results"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -624,12 +674,19 @@ mod tests {
         let db = create_simple_db();
         let page_size = {
             let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
-            if raw == 1 { 65536 } else { raw }
+            if raw == 1 {
+                65536
+            } else {
+                raw
+            }
         };
         let overlay: HashMap<u32, Vec<u8>> = HashMap::new();
         // Page 1 exists in DB; overlay has nothing — should return Some from DB
         let result = get_overlay_page(&db, 1, page_size as usize, &overlay);
-        assert!(result.is_some(), "Page 1 should be found in DB even without overlay");
+        assert!(
+            result.is_some(),
+            "Page 1 should be found in DB even without overlay"
+        );
         let (data, bhdr) = result.unwrap();
         assert_eq!(bhdr, 100, "Page 1 bhdr must be 100");
         assert_eq!(data.len(), page_size as usize);
@@ -641,7 +698,11 @@ mod tests {
         let db = create_simple_db();
         let page_size = {
             let raw = u16::from_be_bytes([db[16], db[17]]) as u32;
-            if raw == 1 { 65536 } else { raw }
+            if raw == 1 {
+                65536
+            } else {
+                raw
+            }
         };
         // Build a fake overlay page with a recognizable sentinel byte pattern
         let mut fake_page = vec![0xAAu8; page_size as usize];
@@ -675,9 +736,12 @@ mod tests {
     #[test]
     fn test_follow_overflow_chain_beyond_db() {
         let db = vec![0u8; 4096]; // only 1 page
-        // Ask for page 9999 which is well past EOF
+                                  // Ask for page 9999 which is well past EOF
         let result = follow_overflow_chain(&db, 9999, 4096, 100);
-        assert!(result.is_empty(), "Out-of-bounds overflow page must yield empty vec");
+        assert!(
+            result.is_empty(),
+            "Out-of-bounds overflow page must yield empty vec"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -731,7 +795,7 @@ mod tests {
         // Page 2 starts at byte 4096. bhdr=0.
         let p2 = page_size; // offset of page 2
         db[p2] = 0x05; // TableInterior
-        // first freeblock = 0
+                       // first freeblock = 0
         db[p2 + 1] = 0;
         db[p2 + 2] = 0;
         // cell count = 0
@@ -746,7 +810,14 @@ mod tests {
         db[p2 + 8..p2 + 12].copy_from_slice(&2u32.to_be_bytes());
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size as u32, 2, "test", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size as u32,
+            2,
+            "test",
+            EvidenceSource::Live,
+            &mut records,
+        );
         // Should terminate without panic — cycle guard prevents infinite loop.
         assert!(records.is_empty());
     }
@@ -765,8 +836,18 @@ mod tests {
         db[..16].copy_from_slice(b"SQLite format 3\x00");
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size as u32, 1, "test", EvidenceSource::Live, &mut records);
-        assert!(records.is_empty(), "Too-small page should produce no records");
+        walk_table_btree(
+            &db,
+            page_size as u32,
+            1,
+            "test",
+            EvidenceSource::Live,
+            &mut records,
+        );
+        assert!(
+            records.is_empty(),
+            "Too-small page should produce no records"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -785,7 +866,7 @@ mod tests {
         // --- Page 2 (interior, root) at offset page_size ---
         let p2 = page_size;
         db[p2] = 0x05; // TableInterior
-        // cell count = 1
+                       // cell count = 1
         db[p2 + 3] = 0;
         db[p2 + 4] = 1;
         // cell content area (doesn't matter much, use 100)
@@ -806,7 +887,7 @@ mod tests {
         // --- Page 3 (leaf) at offset page_size*2 ---
         let p3 = page_size * 2;
         db[p3] = 0x0D; // TableLeaf
-        // cell count = 1
+                       // cell count = 1
         db[p3 + 3] = 0;
         db[p3 + 4] = 1;
         // cell content area
@@ -829,7 +910,14 @@ mod tests {
         db[c3 + 4] = 0x2A; // value = 42
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size as u32, 2, "test", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size as u32,
+            2,
+            "test",
+            EvidenceSource::Live,
+            &mut records,
+        );
         assert_eq!(records.len(), 1, "Should find 1 record in leaf child");
         assert_eq!(records[0].values[0], crate::record::SqlValue::Int(42));
     }
@@ -852,12 +940,19 @@ mod tests {
         db[p2 + 5] = 0;
         db[p2 + 6] = 100;
         db[p2 + 8..p2 + 12].copy_from_slice(&0u32.to_be_bytes()); // right=0
-        // Cell pointer at p2+12 points to offset 510, which means cell_off+4=514 > 512
+                                                                  // Cell pointer at p2+12 points to offset 510, which means cell_off+4=514 > 512
         db[p2 + 12] = 0x01;
         db[p2 + 13] = 0xFE; // cell_off = 510
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size as u32, 2, "test", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size as u32,
+            2,
+            "test",
+            EvidenceSource::Live,
+            &mut records,
+        );
         assert!(records.is_empty(), "OOB cell pointer should be skipped");
     }
 
@@ -874,7 +969,7 @@ mod tests {
 
         let p2 = page_size;
         db[p2] = 0x05; // TableInterior
-        // Set absurdly high cell count so ptr_off exceeds page boundary
+                       // Set absurdly high cell count so ptr_off exceeds page boundary
         db[p2 + 3] = 0x0F;
         db[p2 + 4] = 0xFF; // cell count = 4095
         db[p2 + 5] = 0;
@@ -882,7 +977,14 @@ mod tests {
         db[p2 + 8..p2 + 12].copy_from_slice(&0u32.to_be_bytes()); // right=0
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size as u32, 2, "test", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size as u32,
+            2,
+            "test",
+            EvidenceSource::Live,
+            &mut records,
+        );
         assert!(records.is_empty());
     }
 
@@ -899,16 +1001,23 @@ mod tests {
 
         let p2 = page_size;
         db[p2] = 0x05; // TableInterior
-        // Truncate effective page by setting all to 0; page_data.len() >= bhdr + 5 is true
-        // but we want bhdr + 5 > len. Since bhdr=0 and len=512, that won't work for a normal page.
-        // Instead, test cell_count=0: set cell count bytes to 0.
+                       // Truncate effective page by setting all to 0; page_data.len() >= bhdr + 5 is true
+                       // but we want bhdr + 5 > len. Since bhdr=0 and len=512, that won't work for a normal page.
+                       // Instead, test cell_count=0: set cell count bytes to 0.
         db[p2 + 3] = 0;
         db[p2 + 4] = 0; // cell count = 0
-        // right-most child = 0
+                        // right-most child = 0
         db[p2 + 8..p2 + 12].copy_from_slice(&0u32.to_be_bytes());
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size as u32, 2, "test", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size as u32,
+            2,
+            "test",
+            EvidenceSource::Live,
+            &mut records,
+        );
         assert!(records.is_empty());
     }
 
@@ -927,7 +1036,14 @@ mod tests {
         db[p2] = 0xFF; // Unknown page type
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size as u32, 2, "test", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size as u32,
+            2,
+            "test",
+            EvidenceSource::Live,
+            &mut records,
+        );
         assert!(records.is_empty());
     }
 
@@ -946,7 +1062,7 @@ mod tests {
         // Create a leaf page in the overlay for page 2
         let mut leaf_page = vec![0u8; page_size];
         leaf_page[0] = 0x0D; // TableLeaf
-        // cell count = 1
+                             // cell count = 1
         leaf_page[3] = 0;
         leaf_page[4] = 1;
         // cell content area
@@ -987,7 +1103,7 @@ mod tests {
         interior[0] = 0x05; // TableInterior
         interior[3] = 0;
         interior[4] = 0; // cell count = 0
-        // right-most child = 2 (self)
+                         // right-most child = 2 (self)
         interior[8..12].copy_from_slice(&2u32.to_be_bytes());
 
         let mut overlay = HashMap::new();
@@ -1115,7 +1231,7 @@ mod tests {
         interior[5] = 0;
         interior[6] = 100;
         interior[8..12].copy_from_slice(&0u32.to_be_bytes()); // right=0
-        // Cell pointer → cell at offset 510 (510+4=514 > 512)
+                                                              // Cell pointer → cell at offset 510 (510+4=514 > 512)
         interior[12] = 0x01;
         interior[13] = 0xFE;
 
@@ -1185,7 +1301,11 @@ mod tests {
 
         let result = follow_overflow_chain(&db, 1, page_size, page_size * 4);
         // Should collect data from page 1 once, then detect cycle and stop
-        assert_eq!(result.len(), page_size - 4, "Should collect one page's worth");
+        assert_eq!(
+            result.len(),
+            page_size - 4,
+            "Should collect one page's worth"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -1247,8 +1367,8 @@ mod tests {
     #[test]
     fn test_parse_leaf_page_too_small() {
         let db = vec![0u8; 100];
-        let page_data = &db[..6]; // < bhdr + 8 = 108 for page 1 (bhdr=100, impossible)
-        // Use bhdr=0 with short data
+        let _page_data = &db[..6]; // < bhdr + 8 = 108 for page 1 (bhdr=100, impossible)
+                                   // Use bhdr=0 with short data
         let records = parse_table_leaf_page(&db, &db[..6], 0, 1, 4096, "t");
         assert!(records.is_empty());
     }
@@ -1301,7 +1421,7 @@ mod tests {
         page[4] = 1;
         page[5] = 0x01;
         page[6] = 0xFF; // cell content area = 511
-        // Cell pointer → offset 511 (last byte)
+                        // Cell pointer → offset 511 (last byte)
         page[8] = 0x01;
         page[9] = 0xFF;
         // Byte at 511 is a continuation byte with no following byte
@@ -1322,7 +1442,7 @@ mod tests {
         page[4] = 1;
         page[5] = 0x01;
         page[6] = 0xFE; // cell content area = 510
-        // Cell pointer → offset 510
+                        // Cell pointer → offset 510
         page[8] = 0x01;
         page[9] = 0xFE;
         // payload_len varint at 510 = 0x05 (1-byte, valid)
@@ -1358,15 +1478,18 @@ mod tests {
         // Record starts at 507. header_len = large.
         page[505] = 0x64; // payload_len = 100
         page[506] = 0x01; // rowid = 1
-        // Record at 507: header_len = 0x81, 0x00 = 128 as varint
-        // header_end = 507 + 128 = 635 > 512 → skip
+                          // Record at 507: header_len = 0x81, 0x00 = 128 as varint
+                          // header_end = 507 + 128 = 635 > 512 → skip
         page[507] = 0x81;
         page[508] = 0x00; // header_len = 128
-        // payload_start = 507, header_end = 507 + 128 = 635 > 512 → continue
+                          // payload_start = 507, header_end = 507 + 128 = 635 > 512 → continue
 
         let db = page.clone();
         let records = parse_table_leaf_page(&db, &page, 0, 2, page_size as u32, "t");
-        assert!(records.is_empty(), "Header extending beyond page should skip the record");
+        assert!(
+            records.is_empty(),
+            "Header extending beyond page should skip the record"
+        );
     }
 
     /// Truncated record header varint → skip (line 382).
@@ -1385,8 +1508,8 @@ mod tests {
         // then record starts at 510 but the header_len varint is a continuation at EOF
         page[508] = 0x0A; // payload_len = 10
         page[509] = 0x01; // rowid = 1
-        // payload starts at 510. We need header_len varint to fail.
-        // Fill 510-511 with continuation bytes (truncated varint)
+                          // payload starts at 510. We need header_len varint to fail.
+                          // Fill 510-511 with continuation bytes (truncated varint)
         page[510] = 0x81;
         page[511] = 0x81;
 
@@ -1414,17 +1537,17 @@ mod tests {
         page[c] = 0x81; // payload_len varint, high byte
         page[c + 1] = 0x48; // payload_len = 200
         page[c + 2] = 0x01; // rowid = 1
-        // Record starts at c+3:
+                            // Record starts at c+3:
         page[c + 3] = 20; // header_len = 20 (means serial types from c+4 to c+22)
-        // Put a serial type varint that extends beyond the data
+                          // Put a serial type varint that extends beyond the data
         page[c + 4] = 0x01; // valid serial type
-        // Then fill with continuation bytes that hit EOF before terminating
+                            // Then fill with continuation bytes that hit EOF before terminating
         for i in (c + 5)..(c + 20) {
             page[i] = 0xFF; // continuation bytes
         }
 
         let db = page.clone();
-        let records = parse_table_leaf_page(&db, &page, 0, 2, page_size as u32, "t");
+        let _records = parse_table_leaf_page(&db, &page, 0, 2, page_size as u32, "t");
         // Should produce a record with whatever values parsed (partial parse)
         // The break at line 396 stops parsing serial types, then decode proceeds.
         // This is a partial parse — we just verify it doesn't panic.
@@ -1453,10 +1576,10 @@ mod tests {
         let c = 50;
         page[c] = 0x03; // payload_len = 3
         page[c + 1] = 0x01; // rowid = 1
-        // Record at c+2 (3 bytes: c+2, c+3, c+4):
+                            // Record at c+2 (3 bytes: c+2, c+3, c+4):
         page[c + 2] = 0x02; // header_len = 2
         page[c + 3] = 0x06; // serial_type = 6 (needs 8 bytes)
-        // Value area starts at c+4 but only 1 byte in payload (c+4 is the last payload byte)
+                            // Value area starts at c+4 but only 1 byte in payload (c+4 is the last payload byte)
         page[c + 4] = 0x42;
         // header_end = (c+2) + 2 = c+4. data_pos = c+4.
         // decode_serial_type(6, page, c+4) needs 8 bytes from c+4..c+12.
@@ -1481,14 +1604,14 @@ mod tests {
         // Cell at 507: payload_len=3, rowid=1
         page[507] = 0x03; // payload_len = 3
         page[508] = 0x01; // rowid = 1
-        // Record at 509: header_len=2, serial_type=6 (needs 8 bytes)
+                          // Record at 509: header_len=2, serial_type=6 (needs 8 bytes)
         page[509] = 0x02; // header_len = 2
         page[510] = 0x06; // serial_type = 6
-        // Value area starts at 511. But payload_len=3 means payload is 509..512,
-        // and 509+2=511 is header_end. data_pos=511. Needs 8 bytes from 511.
-        // page_data is 512 bytes, so page_data[511..519] is out of range.
-        // Since owned_payload is None, payload_slice is page_data.
-        // decode_serial_type(6, page_data, 511) needs data[511..519] — fails.
+                          // Value area starts at 511. But payload_len=3 means payload is 509..512,
+                          // and 509+2=511 is header_end. data_pos=511. Needs 8 bytes from 511.
+                          // page_data is 512 bytes, so page_data[511..519] is out of range.
+                          // Since owned_payload is None, payload_slice is page_data.
+                          // decode_serial_type(6, page_data, 511) needs data[511..519] — fails.
         page[511] = 0x42;
 
         let db = page.clone();
@@ -1515,12 +1638,15 @@ mod tests {
         let page_size = 512usize;
         let payload_len = 478usize;
         let usable = page_size;
-        let max_local = usable - 35;  // 477
+        let max_local = usable - 35; // 477
         let min_local = (usable - 12) * 32 / 255 - 23; // 23 (approx)
 
         // Verify our math
         let mut local_size = min_local + (payload_len - min_local) % (usable - 4);
-        assert!(local_size > max_local, "Need local_size > max_local to trigger clamp");
+        assert!(
+            local_size > max_local,
+            "Need local_size > max_local to trigger clamp"
+        );
         local_size = min_local; // this is what the code will do
 
         // Build the page with this payload
@@ -1540,11 +1666,11 @@ mod tests {
         page[c] = 0x83;
         page[c + 1] = 0x5E; // = 478
         page[c + 2] = 0x01; // rowid = 1
-        // Record starts at c+3. Write header_len=2, serial_type=0 (NULL)
+                            // Record starts at c+3. Write header_len=2, serial_type=0 (NULL)
         page[c + 3] = 0x02; // header_len = 2
         page[c + 4] = 0x00; // serial_type = 0 (NULL, 0 bytes)
-        // local payload goes from c+3 for local_size bytes.
-        // Overflow pointer is at c+3 + local_size
+                            // local payload goes from c+3 for local_size bytes.
+                            // Overflow pointer is at c+3 + local_size
         let overflow_ptr_pos = c + 3 + local_size;
         if overflow_ptr_pos + 4 <= page_size {
             // Point to page 2 for overflow
@@ -1587,7 +1713,7 @@ mod tests {
         page[496] = 0x83;
         page[497] = 0x74; // = 500
         page[498] = 0x01; // rowid = 1
-        // Record at 499: header_len=2, serial_type=0 (NULL)
+                          // Record at 499: header_len=2, serial_type=0 (NULL)
         page[499] = 0x02;
         page[500] = 0x00;
         // local_size computation for page_size=512, payload=500:
@@ -1612,12 +1738,12 @@ mod tests {
         // Set cell count to a large value so cell pointer array exceeds page
         page[3] = 0x00;
         page[4] = 0xFF; // cell count = 255 → ptr_array needs 255*2 = 510 bytes from offset 8
-        // ptr_array_start = 8, last ptr_off = 8 + 254*2 = 516 which > 512
+                        // ptr_array_start = 8, last ptr_off = 8 + 254*2 = 516 which > 512
         page[5] = 0;
         page[6] = 120;
 
         let db = page.clone();
-        let records = parse_table_leaf_page(&db, &page, 0, 2, page_size as u32, "t");
+        let _records = parse_table_leaf_page(&db, &page, 0, 2, page_size as u32, "t");
         // Should break out of cell pointer loop without panic
         // Some early pointers (all zeros) will be skipped (cell_offset == 0)
     }
@@ -1639,11 +1765,18 @@ mod tests {
         // len(4) >= bhdr(0) + 12? No → skip right child read (line 84 branch not entered)
         let page_size = 4usize;
         let mut db = vec![0u8; page_size * 2]; // 2 pages of 4 bytes each
-        // Page 2 at offset 4: interior page type
+                                               // Page 2 at offset 4: interior page type
         db[4] = 0x05;
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size as u32, 2, "test", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size as u32,
+            2,
+            "test",
+            EvidenceSource::Live,
+            &mut records,
+        );
         assert!(records.is_empty());
     }
 
@@ -1660,7 +1793,14 @@ mod tests {
         db[12] = 0; // cell_count = 0
 
         let mut records = Vec::new();
-        walk_table_btree(&db, page_size as u32, 2, "test", EvidenceSource::Live, &mut records);
+        walk_table_btree(
+            &db,
+            page_size as u32,
+            2,
+            "test",
+            EvidenceSource::Live,
+            &mut records,
+        );
         assert!(records.is_empty());
     }
 
@@ -1703,21 +1843,21 @@ mod tests {
         page[9] = (cell_off & 0xFF) as u8;
 
         let c = cell_off as usize;
-        page[c] = 100;     // payload_len = 100 (inline, no overflow)
-        page[c + 1] = 1;   // rowid = 1
-        // Record at c+2=482. We need header_end = 512 → header_len = 512 - 482 = 30.
-        page[c + 2] = 30;  // header_len = 30 → header_end = 482 + 30 = 512
-        // 512 > payload_slice.len()=512? No, 512 is not > 512. Check is >, not >=. ✓
-        // First serial type at 483: valid
+        page[c] = 100; // payload_len = 100 (inline, no overflow)
+        page[c + 1] = 1; // rowid = 1
+                         // Record at c+2=482. We need header_end = 512 → header_len = 512 - 482 = 30.
+        page[c + 2] = 30; // header_len = 30 → header_end = 482 + 30 = 512
+                          // 512 > payload_slice.len()=512? No, 512 is not > 512. Check is >, not >=. ✓
+                          // First serial type at 483: valid
         page[c + 3] = 0x01; // serial type 1
-        // Fill 484..511 with zeros (valid 1-byte serial types = NULL)
-        // Then put a continuation byte at 511
+                            // Fill 484..511 with zeros (valid 1-byte serial types = NULL)
+                            // Then put a continuation byte at 511
         for i in (c + 4)..511 {
             page[i] = 0x00; // serial type 0 (NULL)
         }
         page[511] = 0x81; // continuation byte at last position
-        // hdr_pos reaches 511 (still < 512 = header_end), reads varint at 511.
-        // Byte 511 = 0x81 (continuation), tries to read byte 512 → out of bounds → None → break!
+                          // hdr_pos reaches 511 (still < 512 = header_end), reads varint at 511.
+                          // Byte 511 = 0x81 (continuation), tries to read byte 512 → out of bounds → None → break!
 
         let db = page.clone();
         let records = parse_table_leaf_page(&db, &page, 0, 2, page_size as u32, "t");
@@ -1762,7 +1902,8 @@ mod overflow_tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA page_size=4096; PRAGMA journal_mode=DELETE;")
             .unwrap();
-        conn.execute_batch("CREATE TABLE docs (body TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE docs (body TEXT);")
+            .unwrap();
         let big_text = "X".repeat(8000); // exceeds table leaf X threshold (4061) for 4096 page
         conn.execute("INSERT INTO docs VALUES (?)", rusqlite::params![big_text])
             .unwrap();

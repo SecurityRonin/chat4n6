@@ -14,8 +14,7 @@ use zip::ZipWriter;
 pub fn write_ufdr(result: &ExtractionResult, dest: &Path) -> Result<()> {
     let file = std::fs::File::create(dest)?;
     let mut zip = ZipWriter::new(file);
-    let opts = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     // Build UFDRManifest.xml
     let manifest_xml = build_manifest_xml(result);
@@ -44,10 +43,10 @@ fn build_manifest_xml(result: &ExtractionResult) -> String {
     for chat in &result.chats {
         for msg in &chat.messages {
             let ts = msg.timestamp.utc.format("%Y-%m-%dT%H:%M:%SZ");
-            let sender = msg
-                .sender_jid
-                .as_deref()
-                .unwrap_or(if msg.from_me { "me" } else { "unknown" });
+            let sender =
+                msg.sender_jid
+                    .as_deref()
+                    .unwrap_or(if msg.from_me { "me" } else { "unknown" });
             let body = match &msg.content {
                 chat4n6_plugin_api::MessageContent::Text(t) => xml_escape(t),
                 chat4n6_plugin_api::MessageContent::Media(_) => "[media]".to_string(),

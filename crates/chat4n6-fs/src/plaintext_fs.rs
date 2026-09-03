@@ -21,7 +21,10 @@ impl PlaintextDirFs {
 /// Rejects absolute paths (PathBuf::join would silently replace root) and
 /// any path that after lexical normalization escapes the root directory.
 fn checked_join(root: &Path, path: &str) -> Result<PathBuf> {
-    anyhow::ensure!(!Path::new(path).is_absolute(), "absolute path rejected: {path}");
+    anyhow::ensure!(
+        !Path::new(path).is_absolute(),
+        "absolute path rejected: {path}"
+    );
     // Lexically normalize the joined path to resolve `..` components.
     let joined = root.join(path);
     let normalized = joined.components().fold(PathBuf::new(), |mut acc, c| {
@@ -33,7 +36,10 @@ fn checked_join(root: &Path, path: &str) -> Result<PathBuf> {
         }
         acc
     });
-    anyhow::ensure!(normalized.starts_with(root), "path traversal rejected: {path}");
+    anyhow::ensure!(
+        normalized.starts_with(root),
+        "path traversal rejected: {path}"
+    );
     Ok(normalized)
 }
 

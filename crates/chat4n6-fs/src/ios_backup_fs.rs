@@ -31,7 +31,11 @@ impl ForensicFs for IosBackupFs {
                     vp.starts_with(&prefix)
                 }
             })
-            .map(|vp| FsEntry { path: vp, size: 0, is_dir: false })
+            .map(|vp| FsEntry {
+                path: vp,
+                size: 0,
+                is_dir: false,
+            })
             .collect();
         Ok(entries)
     }
@@ -96,9 +100,7 @@ mod tests {
     fn test_exists_by_virtual_path() {
         let tmp = tempfile::tempdir().unwrap();
         let fs = IosBackupFs::open(&make_backup(&tmp)).unwrap();
-        assert!(fs.exists(
-            "AppDomain-net.whatsapp.WhatsApp/Documents/ChatStorage.sqlite"
-        ));
+        assert!(fs.exists("AppDomain-net.whatsapp.WhatsApp/Documents/ChatStorage.sqlite"));
         assert!(!fs.exists("AppDomain-net.whatsapp.WhatsApp/no-such-file"));
     }
 
@@ -121,7 +123,11 @@ mod tests {
         assert_eq!(all.len(), 1, "list(\"\") should return all 1 entry");
         // list("AppDomain-net.whatsapp.WhatsApp") should return entries with that domain prefix
         let domain_entries = fs.list("AppDomain-net.whatsapp.WhatsApp").unwrap();
-        assert_eq!(domain_entries.len(), 1, "domain prefix should match 1 entry");
+        assert_eq!(
+            domain_entries.len(),
+            1,
+            "domain prefix should match 1 entry"
+        );
         // list("AppDomain-nonexistent") should return no entries
         let none = fs.list("AppDomain-nonexistent").unwrap();
         assert_eq!(none.len(), 0);

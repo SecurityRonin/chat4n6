@@ -19,10 +19,9 @@ pub fn resolve_timezone_offset(tz: &str) -> Option<i32> {
 fn parse_numeric_offset(s: &str) -> Option<i32> {
     let (sign, rest) = if let Some(r) = s.strip_prefix('+') {
         (1i32, r)
-    } else if let Some(r) = s.strip_prefix('-') {
-        (-1i32, r)
     } else {
-        return None;
+        let r = s.strip_prefix('-')?;
+        (-1i32, r)
     };
     let mut parts = rest.splitn(2, ':');
     let h: i32 = parts.next()?.parse().ok()?;

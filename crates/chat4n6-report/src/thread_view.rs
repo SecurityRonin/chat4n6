@@ -59,13 +59,24 @@ fn render_message_content(content: &MessageContent) -> String {
                 lon
             )
         }
-        MessageContent::VCard(v) => format!("<span class=\"vcard-label\">[Contact: {}]</span>", html_escape(v)),
+        MessageContent::VCard(v) => format!(
+            "<span class=\"vcard-label\">[Contact: {}]</span>",
+            html_escape(v)
+        ),
         MessageContent::Deleted => "<span class=\"deleted-label\">[Deleted]</span>".to_string(),
-        MessageContent::GhostRecovered(s) => format!("<span class=\"ghost-label\">[Ghost: {}]</span>", html_escape(s)),
+        MessageContent::GhostRecovered(s) => format!(
+            "<span class=\"ghost-label\">[Ghost: {}]</span>",
+            html_escape(s)
+        ),
         MessageContent::System(s) => {
-            format!("<span class=\"system-label\">[System: {}]</span>", html_escape(s))
+            format!(
+                "<span class=\"system-label\">[System: {}]</span>",
+                html_escape(s)
+            )
         }
-        MessageContent::Unknown(t) => format!("<span class=\"unknown-label\">[Unknown type {t}]</span>"),
+        MessageContent::Unknown(t) => {
+            format!("<span class=\"unknown-label\">[Unknown type {t}]</span>")
+        }
     }
 }
 
@@ -174,11 +185,7 @@ pub fn render_thread_view(result: &ExtractionResult, case_name: &str) -> String 
 
     let mut chat_sections = String::new();
     for chat in &result.chats {
-        let chat_title = chat
-            .name
-            .as_deref()
-            .unwrap_or(&chat.jid)
-            .to_string();
+        let chat_title = chat.name.as_deref().unwrap_or(&chat.jid).to_string();
 
         let messages_html: String = chat.messages.iter().map(render_message_bubble).collect();
 
@@ -379,9 +386,8 @@ mod tests {
     use super::*;
     use chat4n6_plugin_api::{
         Chat, EvidenceSource, ExtractionResult, ForensicTimestamp, ForensicWarning, MediaRef,
-        Message, MessageContent, Reaction,
+        Message, MessageContent,
     };
-    use tempfile::TempDir;
 
     fn ts(ms: i64) -> ForensicTimestamp {
         ForensicTimestamp::from_millis(ms, 0)
@@ -434,9 +440,9 @@ mod tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
-        extraction_started_at: None,
-        extraction_finished_at: None,
-        wal_snapshots: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
         }
     }
 
@@ -456,21 +462,32 @@ mod tests {
     #[test]
     fn test_thread_view_message_text_in_output() {
         let result = make_result_with(vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("Hello forensics world".into()),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )]);
         let html = render_thread_view(&result, "TestCase");
-        assert!(html.contains("Hello forensics world"), "message text must appear in HTML");
+        assert!(
+            html.contains("Hello forensics world"),
+            "message text must appear in HTML"
+        );
     }
 
     // Test 3: from_me message has class or data-attribute indicating "sent"
     #[test]
     fn test_thread_view_sent_message_indicator() {
         let result = make_result_with(vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("sent by me".into()),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )]);
         let html = render_thread_view(&result, "TestCase");
         // Must contain "sent" class or data-from-me attribute
@@ -487,9 +504,13 @@ mod tests {
     #[test]
     fn test_thread_view_received_message_has_sender() {
         let result = make_result_with(vec![make_msg(
-            1, 1, Some("bob@s.whatsapp.net"), false,
+            1,
+            1,
+            Some("bob@s.whatsapp.net"),
+            false,
             MessageContent::Text("received message".into()),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )]);
         let html = render_thread_view(&result, "TestCase");
         assert!(
@@ -502,9 +523,13 @@ mod tests {
     #[test]
     fn test_thread_view_live_source_green() {
         let result = make_result_with(vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("live message".into()),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )]);
         let html = render_thread_view(&result, "TestCase");
         // Color #22c55e or CSS class referencing live/green
@@ -518,14 +543,19 @@ mod tests {
     #[test]
     fn test_thread_view_carved_source_red() {
         let result = make_result_with(vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("carved message".into()),
             EvidenceSource::CarvedUnalloc { confidence_pct: 80 },
             false,
         )]);
         let html = render_thread_view(&result, "TestCase");
         assert!(
-            html.contains("#ef4444") || html.contains("src-carved") || html.contains("evidence-carved"),
+            html.contains("#ef4444")
+                || html.contains("src-carved")
+                || html.contains("evidence-carved"),
             "Carved source must produce red indicator (#ef4444 or src-carved class)"
         );
     }
@@ -534,9 +564,13 @@ mod tests {
     #[test]
     fn test_thread_view_starred_message_indicator() {
         let result = make_result_with(vec![make_msg(
-            1, 1, None, true,
+            1,
+            1,
+            None,
+            true,
             MessageContent::Text("important evidence".into()),
-            EvidenceSource::Live, true,
+            EvidenceSource::Live,
+            true,
         )]);
         let html = render_thread_view(&result, "TestCase");
         assert!(
@@ -561,9 +595,13 @@ mod tests {
             media_key_b64: None,
         };
         let result = make_result_with(vec![make_msg(
-            1, 1, Some("alice@s.whatsapp.net"), false,
+            1,
+            1,
+            Some("alice@s.whatsapp.net"),
+            false,
             MessageContent::ViewOnce(media),
-            EvidenceSource::Live, false,
+            EvidenceSource::Live,
+            false,
         )]);
         let html = render_thread_view(&result, "TestCase");
         assert!(
@@ -579,7 +617,10 @@ mod tests {
         result.forensic_warnings.push(ForensicWarning::HmacMismatch);
         let html = render_thread_view(&result, "TestCase");
         assert!(
-            html.contains("HMAC") || html.contains("Hmac") || html.contains("warning") || html.contains("mismatch"),
+            html.contains("HMAC")
+                || html.contains("Hmac")
+                || html.contains("warning")
+                || html.contains("mismatch"),
             "forensic warning must appear in HTML output"
         );
     }

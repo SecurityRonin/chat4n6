@@ -564,10 +564,10 @@ mod tests {
             row_id,
             &[
                 2 * type_b.len() as u64 + 13, // Text serial type for "table"
-                2 * name_b.len() as u64 + 13,  // Text serial type for name
-                2 * name_b.len() as u64 + 13,  // Text serial type for tbl_name
-                1,                              // 1-byte Int for rootpage
-                2 * sql_b.len() as u64 + 13,   // Text serial type for sql
+                2 * name_b.len() as u64 + 13, // Text serial type for name
+                2 * name_b.len() as u64 + 13, // Text serial type for tbl_name
+                1,                            // 1-byte Int for rootpage
+                2 * sql_b.len() as u64 + 13,  // Text serial type for sql
             ],
             &[type_b, name_b, name_b, &[rootpage], sql_b],
         )
@@ -577,8 +577,13 @@ mod tests {
     fn test_find_fts_tables_record_with_few_values() {
         // sqlite_master row with < 5 columns → triggers `continue` at line 42
         let short_cell = make_cell(1, &[0, 0], &[&[], &[]]); // only 2 Null values
-        // Also include a valid FTS row so we exercise the loop properly
-        let fts_cell = make_master_cell(2, "my_fts", 0, "CREATE VIRTUAL TABLE my_fts USING fts5(body)");
+                                                             // Also include a valid FTS row so we exercise the loop properly
+        let fts_cell = make_master_cell(
+            2,
+            "my_fts",
+            0,
+            "CREATE VIRTUAL TABLE my_fts USING fts5(body)",
+        );
         let db = make_synthetic_db(4096, &[short_cell, fts_cell]);
         let tables = find_fts_tables(&db);
         assert!(tables.contains(&"my_fts".to_string()));
@@ -604,9 +609,9 @@ mod tests {
             1,
             &[
                 2 * 5 + 13, // col 0 = Text "table"
-                0,           // col 1 = Null
-                0,           // col 2 = Null
-                1,           // col 3 = Int
+                0,          // col 1 = Null
+                0,          // col 2 = Null
+                1,          // col 3 = Int
                 2 * 5 + 13, // col 4 = Text
             ],
             &[b"table", &[], &[], &[2], b"hello"],
@@ -625,8 +630,8 @@ mod tests {
                 2 * 5 + 13, // col 0 = Text "table"
                 2 * 4 + 13, // col 1 = Text "test"
                 2 * 4 + 13, // col 2 = Text "test"
-                1,           // col 3 = Int
-                0,           // col 4 = Null
+                1,          // col 3 = Int
+                0,          // col 4 = Null
             ],
             &[b"table", b"test", b"test", &[2], &[]],
         );
@@ -681,11 +686,11 @@ mod tests {
         let bad_cell = make_cell(
             1,
             &[
-                2 * 5 + 13,             // col 0 = "table"
+                2 * 5 + 13,                   // col 0 = "table"
                 2 * shadow.len() as u64 + 13, // col 1 = shadow name
                 2 * shadow.len() as u64 + 13, // col 2 = shadow name
-                0,                       // col 3 = Null (not Int!)
-                2 * 3 + 13,             // col 4 = "sql"
+                0,                            // col 3 = Null (not Int!)
+                2 * 3 + 13,                   // col 4 = "sql"
             ],
             &[b"table", shadow.as_bytes(), shadow.as_bytes(), &[], b"sql"],
         );
@@ -743,8 +748,8 @@ mod tests {
                 2 * 5 + 13, // "table"
                 2 * 4 + 13, // "test"
                 2 * 4 + 13, // "test"
-                1,           // Int rootpage
-                0,           // Null sql → String::new()
+                1,          // Int rootpage
+                0,          // Null sql → String::new()
             ],
             &[b"table", b"test", b"test", &[2], &[]],
         );
@@ -762,13 +767,19 @@ mod tests {
         let index_cell = make_cell(
             1,
             &[
-                2 * 5 + 13,                    // "index"
-                2 * shadow.len() as u64 + 13,  // name matches shadow
-                2 * shadow.len() as u64 + 13,  // tbl_name
-                1,                              // Int rootpage
-                2 * 5 + 13,                    // sql
+                2 * 5 + 13,                   // "index"
+                2 * shadow.len() as u64 + 13, // name matches shadow
+                2 * shadow.len() as u64 + 13, // tbl_name
+                1,                            // Int rootpage
+                2 * 5 + 13,                   // sql
             ],
-            &[b"index", shadow.as_bytes(), shadow.as_bytes(), &[3], b"hello"],
+            &[
+                b"index",
+                shadow.as_bytes(),
+                shadow.as_bytes(),
+                &[3],
+                b"hello",
+            ],
         );
         // Also include the actual shadow table so the code reaches name matching
         let table_cell = make_master_cell(2, shadow, 4, "CREATE TABLE myfts_content(x)");
@@ -802,7 +813,7 @@ mod tests {
                 2 * 5 + 13, // "table"
                 2 * 4 + 13, // "test"
                 2 * 4 + 13, // "test"
-                0,           // Null rootpage → continue
+                0,          // Null rootpage → continue
                 2 * 5 + 13, // Text sql
             ],
             &[b"table", b"test", b"test", &[], b"hello"],

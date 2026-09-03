@@ -38,7 +38,10 @@ pub fn parse_url_components(url: &str) -> Option<ExtractedLink> {
     let caps = re.captures(url)?;
     let scheme = caps.get(1)?.as_str().to_lowercase();
     let domain = caps.get(2)?.as_str().to_string();
-    let path = caps.get(3).map(|m| m.as_str().to_string()).unwrap_or_default();
+    let path = caps
+        .get(3)
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_default();
     Some(ExtractedLink {
         url: caps.get(0)?.as_str().to_string(),
         scheme,
@@ -80,7 +83,11 @@ mod tests {
     fn test_url_with_path_and_query() {
         let urls = extract_urls("https://example.com/path/to/page?q=hello&lang=en");
         assert_eq!(urls.len(), 1);
-        assert!(urls[0].path.contains("path/to/page"), "path: {}", urls[0].path);
+        assert!(
+            urls[0].path.contains("path/to/page"),
+            "path: {}",
+            urls[0].path
+        );
     }
 
     #[test]

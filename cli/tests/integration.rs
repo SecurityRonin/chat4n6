@@ -1,3 +1,4 @@
+#![allow(deprecated)] // assert_cmd::Command::cargo_bin deprecated but functional; migration to cargo_bin_cmd! tracked separately
 use assert_cmd::cmd::Command;
 use tempfile::TempDir;
 
@@ -5,9 +6,9 @@ use tempfile::TempDir;
 fn setup_ios_whatsapp_fixture() -> TempDir {
     let root = TempDir::new().unwrap();
     // Use PlaintextDirFs-compatible path (no Manifest.db needed).
-    let db_dir = root.path().join(
-        "AppDomainGroup-group.net.whatsapp.WhatsApp.shared",
-    );
+    let db_dir = root
+        .path()
+        .join("AppDomainGroup-group.net.whatsapp.WhatsApp.shared");
     std::fs::create_dir_all(&db_dir).unwrap();
     let conn = rusqlite::Connection::open(db_dir.join("ChatStorage.sqlite")).unwrap();
     conn.execute_batch(
@@ -88,17 +89,17 @@ fn test_run_produces_report() {
     let output = TempDir::new().unwrap();
     let mut cmd = Command::cargo_bin("chat4n6").unwrap();
     cmd.args([
-            "run",
-            "--input",
-            fixture.path().to_str().unwrap(),
-            "--output",
-            output.path().to_str().unwrap(),
-            "--case-name",
-            "TestCase",
-            "--no-unalloc",
-        ])
-        .assert()
-        .success();
+        "run",
+        "--input",
+        fixture.path().to_str().unwrap(),
+        "--output",
+        output.path().to_str().unwrap(),
+        "--case-name",
+        "TestCase",
+        "--no-unalloc",
+    ])
+    .assert()
+    .success();
     assert!(
         output.path().join("index.html").exists(),
         "index.html missing"
@@ -118,16 +119,22 @@ fn report_subcommand_regenerates_html_from_carve_results() {
         .unwrap()
         .args([
             "run",
-            "--input", fixture.path().to_str().unwrap(),
-            "--output", first_out.path().to_str().unwrap(),
-            "--case-name", "Case1",
+            "--input",
+            fixture.path().to_str().unwrap(),
+            "--output",
+            first_out.path().to_str().unwrap(),
+            "--case-name",
+            "Case1",
             "--no-unalloc",
         ])
         .assert()
         .success();
 
     let carve_results = first_out.path().join("carve-results.json");
-    assert!(carve_results.exists(), "carve-results.json not produced by run");
+    assert!(
+        carve_results.exists(),
+        "carve-results.json not produced by run"
+    );
 
     // Step 2: regenerate report from carve-results.json without re-extracting
     let second_out = TempDir::new().unwrap();
@@ -135,9 +142,12 @@ fn report_subcommand_regenerates_html_from_carve_results() {
         .unwrap()
         .args([
             "report",
-            "--from", carve_results.to_str().unwrap(),
-            "--output", second_out.path().to_str().unwrap(),
-            "--case-name", "Case1",
+            "--from",
+            carve_results.to_str().unwrap(),
+            "--output",
+            second_out.path().to_str().unwrap(),
+            "--case-name",
+            "Case1",
         ])
         .assert()
         .success();
@@ -157,11 +167,15 @@ fn page_size_flag_splits_chat_into_multiple_pages() {
         .unwrap()
         .args([
             "run",
-            "--input", fixture.path().to_str().unwrap(),
-            "--output", output.path().to_str().unwrap(),
-            "--case-name", "PagingTest",
+            "--input",
+            fixture.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+            "--case-name",
+            "PagingTest",
             "--no-unalloc",
-            "--page-size", "2",
+            "--page-size",
+            "2",
         ])
         .assert()
         .success();
@@ -173,9 +187,11 @@ fn page_size_flag_splits_chat_into_multiple_pages() {
         .find(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .expect("no chat subdir in chats/");
     let page3 = chat_subdir.path().join("page_003.html");
-    assert!(page3.exists(), "page_003.html missing — page-size flag not honoured");
+    assert!(
+        page3.exists(),
+        "page_003.html missing — page-size flag not honoured"
+    );
 }
-
 
 #[test]
 fn nested_chat_layout_uses_chats_subdirectory() {
@@ -185,9 +201,12 @@ fn nested_chat_layout_uses_chats_subdirectory() {
         .unwrap()
         .args([
             "run",
-            "--input", fixture.path().to_str().unwrap(),
-            "--output", output.path().to_str().unwrap(),
-            "--case-name", "LayoutTest",
+            "--input",
+            fixture.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+            "--case-name",
+            "LayoutTest",
             "--no-unalloc",
         ])
         .assert()
@@ -207,7 +226,8 @@ fn nested_chat_layout_uses_chats_subdirectory() {
     // page_001.html must exist inside the chat subdir
     assert!(
         chat_subdir.path().join("page_001.html").exists(),
-        "page_001.html not found in chat subdir {:?}", chat_subdir.path()
+        "page_001.html not found in chat subdir {:?}",
+        chat_subdir.path()
     );
 
     // No flat chat_{id}_{page}.html files in root
@@ -219,7 +239,10 @@ fn nested_chat_layout_uses_chats_subdirectory() {
             let s = name.to_string_lossy();
             s.starts_with("chat_") && s.ends_with(".html")
         });
-    assert!(!root_has_flat, "flat chat_{{id}}_{{page}}.html files found in report root");
+    assert!(
+        !root_has_flat,
+        "flat chat_{{id}}_{{page}}.html files found in report root"
+    );
 }
 
 #[test]
@@ -230,9 +253,12 @@ fn index_links_to_chats_subdirectory() {
         .unwrap()
         .args([
             "run",
-            "--input", fixture.path().to_str().unwrap(),
-            "--output", output.path().to_str().unwrap(),
-            "--case-name", "LinkTest",
+            "--input",
+            fixture.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+            "--case-name",
+            "LinkTest",
             "--no-unalloc",
         ])
         .assert()
@@ -253,9 +279,12 @@ fn chat_page_has_breadcrumb_to_index() {
         .unwrap()
         .args([
             "run",
-            "--input", fixture.path().to_str().unwrap(),
-            "--output", output.path().to_str().unwrap(),
-            "--case-name", "BreadcrumbTest",
+            "--input",
+            fixture.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+            "--case-name",
+            "BreadcrumbTest",
             "--no-unalloc",
         ])
         .assert()
@@ -284,9 +313,12 @@ fn ios_whatsapp_plugin_registered_and_produces_report() {
         .unwrap()
         .args([
             "run",
-            "--input", fixture.path().to_str().unwrap(),
-            "--output", output.path().to_str().unwrap(),
-            "--case-name", "iOSTest",
+            "--input",
+            fixture.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+            "--case-name",
+            "iOSTest",
             "--no-unalloc",
         ])
         .assert()

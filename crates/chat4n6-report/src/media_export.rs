@@ -76,7 +76,8 @@ pub fn export_media(
                 let hash = sha256_hex(&bytes);
                 media_ref.encrypted_hash = Some(hash.clone());
 
-                let filename = media_ref.file_path
+                let filename = media_ref
+                    .file_path
                     .rsplit('/')
                     .next()
                     .unwrap_or("unknown")
