@@ -1,7 +1,7 @@
 use crate::anti_forensics::{
     detect_duplicate_stanza_ids, detect_rowid_reuse, detect_thumbnail_orphans,
 };
-use crate::schema::{cols, SchemaVersion};
+use crate::schema::SchemaVersion;
 pub use crate::schema::{default_mime_for_type, is_media_type, msg_type_label};
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
@@ -41,8 +41,14 @@ pub fn extract_from_msgstore(
     let engine = ForensicEngine::new(db_bytes, Some(tz_offset_secs))
         .context("failed to open msgstore.db")?;
 
-    // Read DDL map for schema-aware column index resolution (e.g. key_id position).
+    // Read DDL map, then resolve each table's columns BY NAME. Every layer's
+    // records for a table share that table's DDL, so these maps drive live, WAL,
+    // freelist, FTS, carve and journal record interpretation uniformly.
     let ddl_map = engine.table_ddl();
+    let jid_cols = cols_of(&ddl_map, "jid");
+    let chat_cols = cols_of(&ddl_map, "chat");
+    let message_cols = cols_of(&ddl_map, "message");
+    let call_cols = cols_of(&ddl_map, "call_log");
 
     let records = engine.recover_layer1().context("Layer 1 recovery failed")?;
 
@@ -50,16 +56,16 @@ pub fn extract_from_msgstore(
     let by_table = partition_by_table(&records);
 
     // Build JID lookup: id → raw_string
-    let jid_map = build_jid_map(tbl(&by_table, "jid"));
+    let jid_map = build_jid_map(tbl(&by_table, "jid"), &jid_cols);
 
     // Build chat map: chat_id → Chat (populated with messages below)
-    let mut chats = build_chats(tbl(&by_table, "chat"), &jid_map);
+    let mut chats = build_chats(tbl(&by_table, "chat"), &jid_map, &chat_cols);
 
     // Map messages into chats.  If the chat record was deleted/unrecovered,
     // create a stub so forensically-recovered messages are never silently dropped.
     let msg_records = tbl(&by_table, "message");
     for rec in msg_records {
-        if let Some(msg) = record_to_message(rec, &jid_map, tz_offset_secs) {
+        if let Some(msg) = record_to_message(rec, &jid_map, tz_offset_secs, &message_cols) {
             chats
                 .entry(msg.chat_id)
                 .or_insert_with(|| Chat {
@@ -256,7 +262,7 @@ pub fn extract_from_msgstore(
     let call_records = tbl(&by_table, "call_log");
     let raw_calls: Vec<(CallRecord, Option<i64>)> = call_records
         .iter()
-        .filter_map(|r| record_to_call(r, &jid_map, tz_offset_secs))
+        .filter_map(|r| record_to_call(r, &jid_map, tz_offset_secs, &call_cols))
         .collect();
     let calls = merge_group_calls(raw_calls);
 
@@ -366,6 +372,53 @@ fn tbl<'a>(
     by.get(name).map(|v| v.as_slice()).unwrap_or_default()
 }
 
+/// Parse a `CREATE TABLE` DDL and map each column name (lowercased) to its
+/// `values[]` index.
+///
+/// The btree walker stores the INTEGER PRIMARY KEY alias at `values[0]` (Null),
+/// and real columns follow in declaration order, so a column's `values[]` index
+/// equals its 0-based position in the DDL column list (`_id` = 0).
+///
+/// Naive comma-split — like the pre-existing `key_id_column_index` — which is
+/// sufficient for msgstore's `message`/`jid`/`chat`/`call_log` DDL: those tables
+/// declare `_id INTEGER PRIMARY KEY` inline and carry no column-level
+/// `CHECK(a, b)` or table-level (`FOREIGN KEY(...)`) constraints that embed commas.
+fn ddl_column_indices(ddl: &str) -> HashMap<String, usize> {
+    let mut map = HashMap::new();
+    let (Some(start), Some(end)) = (ddl.find('('), ddl.rfind(')')) else {
+        return map;
+    };
+    for (idx, col_def) in ddl[start + 1..end].split(',').enumerate() {
+        if let Some(name) = col_def.split_whitespace().next() {
+            let name = name.trim_matches('`').trim_matches('"');
+            if !name.is_empty() {
+                map.entry(name.to_ascii_lowercase()).or_insert(idx);
+            }
+        }
+    }
+    map
+}
+
+/// Resolve the `name -> values[] index` map for one table from the DDL map.
+/// Returns an empty map when the table's DDL is unavailable; callers then
+/// degrade per-field (omit) rather than reading a wrong ordinal.
+fn cols_of(ddl_map: &HashMap<String, String>, table: &str) -> HashMap<String, usize> {
+    ddl_map
+        .get(table)
+        .map(|ddl| ddl_column_indices(ddl))
+        .unwrap_or_default()
+}
+
+/// Fetch a record value by resolved column name; `None` when the column is
+/// absent from this schema or the record is too short (carved/partial).
+fn val<'a>(
+    r: &'a RecoveredRecord,
+    cols: &HashMap<String, usize>,
+    name: &str,
+) -> Option<&'a SqlValue> {
+    cols.get(name).and_then(|&i| r.values.get(i))
+}
+
 /// Build a map of key_id (XMPP stanza ID) → list of message row_ids.
 ///
 /// Parses the CREATE TABLE DDL for the `message` table to determine the
@@ -376,14 +429,11 @@ fn build_key_id_map(
     msg_records: &[&RecoveredRecord],
     ddl_map: &HashMap<String, String>,
 ) -> HashMap<String, Vec<i64>> {
-    // Find the values[] index for key_id by parsing the DDL column list.
-    // The btree walker puts INTEGER PRIMARY KEY at values[0] as Null,
-    // so real column n (1-based in DDL order after _id) → values[n].
-    let key_id_idx = match ddl_map.get("message") {
-        Some(ddl) => key_id_column_index(ddl),
-        None => return HashMap::new(),
-    };
-    let Some(idx) = key_id_idx else {
+    // Resolve the values[] index of key_id by name from the message DDL.
+    let Some(idx) = ddl_map
+        .get("message")
+        .and_then(|ddl| ddl_column_indices(ddl).get("key_id").copied())
+    else {
         return HashMap::new();
     };
 
@@ -402,45 +452,18 @@ fn build_key_id_map(
     map
 }
 
-/// Parse a CREATE TABLE DDL string and return the 1-based values[] index
-/// for the `key_id` column (i.e. column position counting from 1, since
-/// index 0 is the INTEGER PRIMARY KEY alias Null).
-///
-/// Returns `None` if the column is not found.
-fn key_id_column_index(ddl: &str) -> Option<usize> {
-    // Strip everything up to the first '(' and after the last ')'.
-    let start = ddl.find('(')?;
-    let end = ddl.rfind(')')?;
-    let cols_str = &ddl[start + 1..end];
-
-    // Split on commas (naive but sufficient for well-formed SQLite DDL).
-    // Column 0 in values[] is the INTEGER PRIMARY KEY (always first column).
-    // Real columns start at index 1 in values[].
-    for (idx, col_def) in cols_str.split(',').enumerate() {
-        let col_def = col_def.trim();
-        // Extract first token as column name (may be quoted with `backticks` or plain).
-        let col_name = col_def
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .trim_matches('`')
-            .trim_matches('"');
-        if col_name.eq_ignore_ascii_case("key_id") {
-            return Some(idx);
-        }
-    }
-    None
-}
-
-/// jid table: row_id=_id, values[0]=Null(_id alias), values[1]=raw_string
-fn build_jid_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
+/// jid table: sender identity lives in `raw_string`, resolved by name from the DDL
+/// (values[1] on the legacy `(_id, raw_string)` schema, values[5] on the real
+/// modern schema `(_id, user, server, agent, type, raw_string, device)`). Reading
+/// the ordinal blindly picked up `user` (a bare phone number) and hid the bug.
+fn build_jid_map(
+    records: &[&RecoveredRecord],
+    cols: &HashMap<String, usize>,
+) -> HashMap<i64, String> {
     let mut map = HashMap::new();
     for r in records {
-        let id = match r.row_id {
-            Some(id) => id,
-            None => continue,
-        };
-        let raw = match r.values.get(1) {
+        let Some(id) = r.row_id else { continue };
+        let raw = match val(r, cols, "raw_string") {
             Some(SqlValue::Text(s)) => s.clone(),
             _ => continue,
         };
@@ -449,20 +472,23 @@ fn build_jid_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
     map
 }
 
-/// chat table: row_id=_id, values[0]=Null, [1]=jid_row_id, [2]=subject
-fn build_chats(records: &[&RecoveredRecord], jid_map: &HashMap<i64, String>) -> HashMap<i64, Chat> {
+/// chat table: `jid_row_id`, `subject`, `archived` resolved by name from the DDL.
+/// The real modern schema places `subject` at values[3] (values[2] is `hidden`)
+/// and `archived` at values[10] — the old 2/3 ordinals read the wrong columns.
+fn build_chats(
+    records: &[&RecoveredRecord],
+    jid_map: &HashMap<i64, String>,
+    cols: &HashMap<String, usize>,
+) -> HashMap<i64, Chat> {
     let mut map = HashMap::new();
     for r in records {
-        let id = match r.row_id {
-            Some(id) => id,
-            None => continue,
-        };
-        let jid_row_id = match r.values.get(1) {
+        let Some(id) = r.row_id else { continue };
+        let jid_row_id = match val(r, cols, "jid_row_id") {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
         let jid = jid_map.get(&jid_row_id).cloned().unwrap_or_default();
-        let subject = match r.values.get(2) {
+        let subject = match val(r, cols, "subject") {
             Some(SqlValue::Text(s)) => Some(s.clone()),
             _ => None,
         };
@@ -475,61 +501,67 @@ fn build_chats(records: &[&RecoveredRecord], jid_map: &HashMap<i64, String>) -> 
                 name: subject,
                 is_group,
                 messages: Vec::new(),
-                archived: matches!(r.values.get(3), Some(SqlValue::Int(1))),
+                archived: matches!(val(r, cols, "archived"), Some(SqlValue::Int(1))),
             },
         );
     }
     map
 }
 
-/// message table: row_id=_id, values[0]=Null, [1]=chat_row_id,
-/// [2]=sender_jid_row_id, [3]=from_me, [4]=timestamp, [5]=text_data, [6]=message_type,
-/// [7]=media_mime_type, [8]=media_name, [9]=starred, [10]=edit_version (newer schemas)
+/// message table: columns resolved BY NAME from the DDL (see `cols_of`), because
+/// the real modern schema orders them very differently from the legacy one —
+/// e.g. `timestamp` is values[11] (values[4] is `sender_jid_row_id`), `text_data`
+/// is values[15], `message_type` is values[14]. Reading fixed ordinals produced
+/// the 1970-epoch headline bug. Columns absent from a given schema resolve to
+/// `None` and degrade per-field rather than reading a neighbouring column.
 fn record_to_message(
     r: &RecoveredRecord,
     jid_map: &HashMap<i64, String>,
     tz_offset_secs: i32,
+    cols: &HashMap<String, usize>,
 ) -> Option<Message> {
-    use cols::message as col;
     let id = r.row_id?;
-    let chat_id = match r.values.get(col::CHAT_ROW_ID)? {
+    let chat_id = match val(r, cols, "chat_row_id")? {
         SqlValue::Int(n) => *n,
         _ => return None,
     };
-    let sender_jid = match r.values.get(col::SENDER_JID_ROW_ID) {
+    let sender_jid = match val(r, cols, "sender_jid_row_id") {
         Some(SqlValue::Int(n)) => jid_map.get(n).cloned(),
         _ => None,
     };
-    let from_me = match r.values.get(col::FROM_ME) {
+    let from_me = match val(r, cols, "from_me") {
         Some(SqlValue::Int(n)) => *n != 0,
         _ => false,
     };
-    let ts_ms = match r.values.get(col::TIMESTAMP)? {
+    let ts_ms = match val(r, cols, "timestamp")? {
         SqlValue::Int(n) => *n,
         _ => return None,
     };
-    let msg_type = match r.values.get(col::MESSAGE_TYPE) {
+    let msg_type = match val(r, cols, "message_type") {
         Some(SqlValue::Int(n)) => *n as i32,
         _ => 0,
     };
-    let media_mime = match r.values.get(col::MEDIA_MIME_TYPE) {
+    // media_mime_type / media_name do not exist in the real modern `message`
+    // table (media metadata moved to `message_media`); resolve-by-name returns
+    // None there and we fall back to a type-derived MIME rather than a wrong read.
+    let media_mime = match val(r, cols, "media_mime_type") {
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
-    let media_name = match r.values.get(col::MEDIA_NAME) {
+    let media_name = match val(r, cols, "media_name") {
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
-    let starred = matches!(r.values.get(col::STARRED), Some(SqlValue::Int(n)) if *n != 0);
+    let starred = matches!(val(r, cols, "starred"), Some(SqlValue::Int(n)) if *n != 0);
     // edit_version column added in newer schema versions.
     //   5 = deleted-for-me  (local deletion only)
     //   7 = deleted-for-all (sender deleted from everyone's view)
     // Both cases override the content to Deleted regardless of msg_type or text_data.
-    let edit_version = match r.values.get(col::EDIT_VERSION) {
+    let edit_version = match val(r, cols, "edit_version") {
         Some(SqlValue::Int(n)) => *n,
         _ => 0,
     };
-    let text_data = match r.values.get(col::TEXT_DATA) {
+    let text_data = match val(r, cols, "text_data") {
         Some(SqlValue::Text(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
@@ -603,47 +635,45 @@ fn record_to_message(
     })
 }
 
-/// call_log: row_id=_id, values[0]=Null, [1]=jid_row_id, [2]=from_me,
-/// [3]=video_call, [4]=duration, [5]=timestamp, [6]=call_result,
-/// [7]=call_row_id (optional grouping key), [8]=call_creator_device_jid_row_id (optional)
+/// call_log: columns resolved BY NAME from the DDL. The real modern schema
+/// interposes `call_id` and `transaction_id` before `timestamp`, so `video_call`
+/// and `duration` sit at values[6]/[7] — the old [3]/[4] ordinals read those two
+/// intervening columns as video and duration. `call_row_id` and
+/// `call_creator_device_jid_row_id` are optional grouping keys absent from some
+/// schemas; they resolve to `None` there.
 ///
 /// Returns `(CallRecord, call_row_id)` where call_row_id groups group-call participants.
 fn record_to_call(
     r: &RecoveredRecord,
     jid_map: &HashMap<i64, String>,
     tz_offset_secs: i32,
+    cols: &HashMap<String, usize>,
 ) -> Option<(CallRecord, Option<i64>)> {
     let id = r.row_id?;
-    let jid_row_id = match r.values.get(1)? {
+    let jid_row_id = match val(r, cols, "jid_row_id")? {
         SqlValue::Int(n) => *n,
         _ => return None,
     };
     let participant = jid_map.get(&jid_row_id).cloned().unwrap_or_default();
-    let from_me = match r.values.get(2) {
-        Some(SqlValue::Int(n)) => *n != 0,
-        _ => false,
-    };
-    let video = match r.values.get(3) {
-        Some(SqlValue::Int(n)) => *n != 0,
-        _ => false,
-    };
-    let duration = match r.values.get(4) {
+    let from_me = matches!(val(r, cols, "from_me"), Some(SqlValue::Int(n)) if *n != 0);
+    let video = matches!(val(r, cols, "video_call"), Some(SqlValue::Int(n)) if *n != 0);
+    let duration = match val(r, cols, "duration") {
         Some(SqlValue::Int(n)) => *n as u32,
         _ => 0,
     };
-    let ts_ms = match r.values.get(5)? {
+    let ts_ms = match val(r, cols, "timestamp")? {
         SqlValue::Int(n) => *n,
         _ => return None,
     };
-    let call_result = match r.values.get(6) {
+    let call_result = match val(r, cols, "call_result") {
         Some(SqlValue::Int(n)) => CallResult::from(*n),
         _ => CallResult::Unknown,
     };
-    let call_row_id = match r.values.get(7) {
+    let call_row_id = match val(r, cols, "call_row_id") {
         Some(SqlValue::Int(n)) => Some(*n),
         _ => None,
     };
-    let call_creator_device_jid = match r.values.get(8) {
+    let call_creator_device_jid = match val(r, cols, "call_creator_device_jid_row_id") {
         Some(SqlValue::Int(n)) => jid_map.get(n).cloned(),
         _ => None,
     };
@@ -1272,6 +1302,94 @@ mod tests {
         );
     }
 
+    // ── Real-schema column resolution (name-based, not hardcoded ordinals) ──
+    //
+    // Fixture built from the REAL modern msgstore.db DDL (2023-era Android device),
+    // NOT the simplified schema the other fixtures share. The real `message` table
+    // carries timestamp at values[11] (not 4), the real `jid` table carries
+    // raw_string at values[5] (not 1), the real `chat` table carries subject at
+    // values[3] (not 2), and the real `call_log` carries video_call/duration at
+    // values[6]/[7] (not 3/4). Extraction must resolve columns BY NAME from the DDL,
+    // so these tests fail against the current hardcoded `cols::*` ordinals by
+    // construction (the circular-validation failure the simplified fixtures hid).
+    fn make_real_schema_msgstore() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 1;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, user TEXT, server TEXT, agent INTEGER, type INTEGER, raw_string TEXT, device INTEGER);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, hidden INTEGER, subject TEXT, created_timestamp INTEGER, display_message_row_id INTEGER, last_message_row_id INTEGER, last_read_message_row_id INTEGER, last_read_receipt_sent_message_row_id INTEGER, last_important_message_row_id INTEGER, archived INTEGER);
+            CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL, from_me INTEGER NOT NULL, key_id TEXT, sender_jid_row_id INTEGER, status INTEGER, broadcast INTEGER, recipient_count INTEGER, participant_hash TEXT, origination_flags INTEGER, origin INTEGER, timestamp INTEGER, received_timestamp INTEGER, receipt_server_timestamp INTEGER, message_type INTEGER, text_data TEXT, starred INTEGER, lookup_tables INTEGER, sort_id INTEGER, message_add_on_flags INTEGER, view_mode INTEGER);
+            CREATE TABLE call_log (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, from_me INTEGER, call_id TEXT, transaction_id INTEGER, timestamp INTEGER, video_call INTEGER, duration INTEGER, call_result INTEGER);
+            INSERT INTO jid VALUES (1, '10000000001', 's.whatsapp.net', 0, 0, 'me@s.whatsapp.net', 0);
+            INSERT INTO jid VALUES (2, '10000000002', 's.whatsapp.net', 0, 0, 'alice@s.whatsapp.net', 0);
+            INSERT INTO chat VALUES (1, 2, 0, 'Secret Subject', 0, 0, 0, 0, 0, 0, 0);
+            -- timestamp 1660000000000 ms = 2022-08-08 UTC
+            INSERT INTO message VALUES (10, 1, 0, 'KEY1', 2, 0, 0, 0, '', 0, 0, 1660000000000, 1660000000001, 0, 0, 'hi 2022', 0, 0, 0, 0, 0);
+            INSERT INTO call_log VALUES (1, 2, 0, '999', 888, 1660000000000, 1, 90, 1);
+        "#).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn test_real_schema_message_timestamp_resolved_by_name() {
+        let db = make_real_schema_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 10).expect("msg 10");
+        // Real timestamp is at values[11]; hardcoded ordinal reads values[4]
+        // (sender_jid_row_id = 2) as epoch-millis → 1970. Must be 2022.
+        assert_eq!(
+            msg.timestamp.utc.format("%Y").to_string(),
+            "2022",
+            "message timestamp must resolve to 2022 (real column at values[11]), not epoch-0"
+        );
+    }
+
+    #[test]
+    fn test_real_schema_sender_resolved_by_name() {
+        let db = make_real_schema_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        let msg = chat.messages.iter().find(|m| m.id == 10).expect("msg 10");
+        // jid.raw_string is at values[5]; hardcoded ordinal reads values[1] (user).
+        assert_eq!(
+            msg.sender_jid.as_deref(),
+            Some("alice@s.whatsapp.net"),
+            "sender must resolve via jid.raw_string (values[5]), not the bare `user` column"
+        );
+    }
+
+    #[test]
+    fn test_real_schema_chat_subject_resolved_by_name() {
+        let db = make_real_schema_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        let chat = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
+        // chat.subject is at values[3]; hardcoded ordinal reads values[2] (hidden).
+        assert_eq!(
+            chat.name.as_deref(),
+            Some("Secret Subject"),
+            "chat name must resolve via chat.subject (values[3]), not the `hidden` column"
+        );
+    }
+
+    #[test]
+    fn test_real_schema_call_fields_resolved_by_name() {
+        let db = make_real_schema_msgstore();
+        let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
+        assert_eq!(result.calls.len(), 1, "one call_log row");
+        let call = &result.calls[0];
+        // video_call is at values[6], duration at values[7]; hardcoded ordinals
+        // read call_id (values[3]) as video and transaction_id (values[4]) as duration.
+        assert!(call.video, "video_call must resolve via values[6]");
+        assert_eq!(
+            call.duration_secs, 90,
+            "duration must resolve via values[7], not transaction_id"
+        );
+    }
+
     // ── F21: multi-signal group call detection ───────────────────────────
 
     fn make_msgstore_with_group_call() -> Vec<u8> {
@@ -1648,7 +1766,7 @@ mod proptest_redo_tests {
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let g = result.chats.iter().find(|c| c.jid == "group123@g.us");
         assert!(
-            g.is_some_and(|c| c.is_group),
+            g.map_or(false, |c| c.is_group),
             "chat with @g.us JID must be is_group=true even without a subject"
         );
     }
