@@ -164,6 +164,19 @@ fn render_message_bubble(msg: &Message) -> String {
     )
 }
 
+/// Render a fully self-contained thread view: like [`render_thread_view`], but
+/// every recoverable media item is embedded as a base64 `data:` URI read from
+/// `fs`, so the HTML has no external media dependency. Deterministic — identical
+/// bytes always encode to the same URI, and media appears in message order.
+pub fn render_thread_view_self_contained(
+    result: &ExtractionResult,
+    case_name: &str,
+    _fs: &dyn chat4n6_plugin_api::ForensicFs,
+) -> String {
+    // RED-stage stub: not yet embedding — GREEN wires the FS-backed resolver.
+    render_thread_view(result, case_name)
+}
+
 /// Render a WhatsApp-style thread view HTML report.
 pub fn render_thread_view(result: &ExtractionResult, case_name: &str) -> String {
     let warning_banner = if result.forensic_warnings.is_empty() {
@@ -420,6 +433,94 @@ mod tests {
             receipts: vec![],
             forwarded_from: None,
         }
+    }
+
+    struct MockFs {
+        files: std::collections::HashMap<String, Vec<u8>>,
+    }
+    impl chat4n6_plugin_api::ForensicFs for MockFs {
+        fn list(&self, _p: &str) -> anyhow::Result<Vec<chat4n6_plugin_api::FsEntry>> {
+            Ok(vec![])
+        }
+        fn read(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+            self.files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no such file: {path}"))
+        }
+        fn exists(&self, path: &str) -> bool {
+            self.files.contains_key(path)
+        }
+        fn unallocated_regions(&self) -> Vec<chat4n6_plugin_api::UnallocatedRegion> {
+            vec![]
+        }
+    }
+
+    fn image_media(path: &str) -> MediaRef {
+        MediaRef {
+            file_path: path.to_string(),
+            mime_type: "image/jpeg".to_string(),
+            file_size: 0,
+            extracted_name: None,
+            thumbnail_b64: None,
+            duration_secs: None,
+            file_hash: None,
+            encrypted_hash: None,
+            cdn_url: None,
+            media_key_b64: None,
+        }
+    }
+
+    #[test]
+    fn test_self_contained_viewer_embeds_image_as_data_uri() {
+        use base64::Engine;
+        let jpeg = vec![0xFFu8, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46];
+        let mut files = std::collections::HashMap::new();
+        files.insert("media/pic.jpg".to_string(), jpeg.clone());
+        let fs = MockFs { files };
+        let msg = make_msg(
+            1,
+            1,
+            Some("a@s.whatsapp.net"),
+            false,
+            MessageContent::Media(image_media("media/pic.jpg")),
+            EvidenceSource::Live,
+            false,
+        );
+        let result = make_result_with(vec![msg]);
+        let html = render_thread_view_self_contained(&result, "case", &fs);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
+        assert!(html.contains("<img"), "image media should embed as <img>");
+        assert!(
+            html.contains(&format!("data:image/jpeg;base64,{b64}")),
+            "image must be embedded as a self-contained data URI"
+        );
+    }
+
+    #[test]
+    fn test_self_contained_viewer_placeholder_when_media_unreadable() {
+        let fs = MockFs {
+            files: std::collections::HashMap::new(),
+        };
+        let msg = make_msg(
+            1,
+            1,
+            Some("a"),
+            false,
+            MessageContent::Media(image_media("media/gone.jpg")),
+            EvidenceSource::Live,
+            false,
+        );
+        let result = make_result_with(vec![msg]);
+        let html = render_thread_view_self_contained(&result, "case", &fs);
+        assert!(
+            !html.contains("data:image"),
+            "unreadable media must not embed a data URI"
+        );
+        assert!(
+            html.contains("not embedded"),
+            "unreadable media should show a labelled placeholder"
+        );
     }
 
     fn make_result_with(msgs: Vec<Message>) -> ExtractionResult {
