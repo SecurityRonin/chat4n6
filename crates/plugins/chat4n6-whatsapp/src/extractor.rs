@@ -255,7 +255,7 @@ pub fn extract_from_msgstore(
 
     // Sort messages by timestamp within each chat
     for chat in chats.values_mut() {
-        chat.messages.sort_by_key(|m| m.timestamp.utc);
+        chat.messages.sort_by_key(|m| (m.timestamp.utc, m.id));
     }
 
     // Map call records, then merge group calls by shared call_row_id
@@ -295,7 +295,12 @@ pub fn extract_from_msgstore(
     let thumbnail_records = tbl(&by_table, "message_thumbnails");
     let thumbnail_row_ids: Vec<i64> = thumbnail_records.iter().filter_map(|r| r.row_id).collect();
 
-    let chats_vec: Vec<_> = chats.into_values().collect();
+    // Total, reproducible order: never HashMap::into_values() iteration order,
+    // which Rust randomizes per process. Sorting by chat id makes the chat-section
+    // order in the viewer (and every report artifact) a pure function of the input,
+    // so identical evidence yields an identical output hash on every run.
+    let mut chats_vec: Vec<_> = chats.into_values().collect();
+    chats_vec.sort_by_key(|c| c.id);
 
     let mut forensic_warnings = Vec::new();
     forensic_warnings.extend(detect_duplicate_stanza_ids(&key_id_map));
@@ -356,7 +361,10 @@ pub fn extract_parallel(
 ) -> Result<ExtractionResult> {
     let mut result = extract_from_msgstore(db_bytes, tz_offset_secs, schema_version)?;
     result.chats.par_iter_mut().for_each(|chat| {
-        chat.messages.par_sort_by_key(|m| m.timestamp.utc);
+        // Total key (timestamp, id): par_sort is unstable, so equal timestamps
+        // would otherwise reorder nondeterministically. The id tie-breaker makes it
+        // deterministic and identical to the sequential path.
+        chat.messages.par_sort_by_key(|m| (m.timestamp.utc, m.id));
     });
     Ok(result)
 }
@@ -1387,6 +1395,65 @@ mod tests {
         assert_eq!(
             call.duration_secs, 90,
             "duration must resolve via values[7], not transaction_id"
+        );
+    }
+
+    // ── Determinism: extraction must be repeatable byte-for-byte ─────────────
+    //
+    // The self-contained viewer and every other report artifact render chats in
+    // the order `ExtractionResult.chats` holds them. That order must be a total,
+    // reproducible function of the input — never Rust's per-process randomized
+    // HashMap iteration order. This fixture has five chats whose ids a HashMap
+    // would iterate in an unpredictable order; the contract is that extraction
+    // returns them sorted by id, identically on every run.
+    fn make_multichat_msgstore() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 200;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+            CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL, sender_jid_row_id INTEGER, from_me INTEGER NOT NULL DEFAULT 0, timestamp INTEGER NOT NULL, text_data TEXT, message_type INTEGER NOT NULL DEFAULT 0, media_mime_type TEXT, media_name TEXT);
+            INSERT INTO jid VALUES (1,'a@s.whatsapp.net'),(2,'b@s.whatsapp.net'),(3,'c@s.whatsapp.net'),(4,'d@s.whatsapp.net'),(5,'e@s.whatsapp.net');
+            INSERT INTO chat VALUES (3,3,'C'),(1,1,'A'),(5,5,'E'),(2,2,'B'),(4,4,'D');
+            INSERT INTO message VALUES
+              (10,3,3,0,1710000000000,'hi c',0,NULL,NULL),
+              (11,1,1,0,1710000001000,'hi a',0,NULL,NULL),
+              (12,5,5,0,1710000002000,'hi e',0,NULL,NULL),
+              (13,2,2,0,1710000003000,'hi b',0,NULL,NULL),
+              (14,4,4,0,1710000004000,'hi d',0,NULL,NULL);
+        "#).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn test_chats_returned_in_deterministic_id_order() {
+        let db = make_multichat_msgstore();
+        let ids1: Vec<i64> = extract_from_msgstore(&db, 0, SchemaVersion::Modern)
+            .unwrap()
+            .chats
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        // Contract: chats come back sorted by id (a total, reproducible order),
+        // not in HashMap::into_values() order.
+        assert_eq!(
+            ids1,
+            vec![1, 2, 3, 4, 5],
+            "chats must be returned sorted by id, not in randomized HashMap order"
+        );
+        // And two extractions of identical bytes must agree exactly.
+        let ids2: Vec<i64> = extract_from_msgstore(&db, 0, SchemaVersion::Modern)
+            .unwrap()
+            .chats
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(
+            ids1, ids2,
+            "two extractions of the same bytes must yield identical chat order"
         );
     }
 
