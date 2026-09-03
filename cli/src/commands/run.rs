@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use chat4n6_fs::{DarFs, IosBackupFs, PlaintextDirFs};
+use chat4n6_ios_whatsapp::IosWhatsAppPlugin;
 use chat4n6_plugin_api::ForensicPlugin;
 use chat4n6_report::ReportGenerator;
-use chat4n6_ios_whatsapp::IosWhatsAppPlugin;
 use chat4n6_signal::SignalPlugin;
 use chat4n6_telegram::TelegramPlugin;
 use chat4n6_whatsapp::WhatsAppPlugin;
@@ -55,8 +55,11 @@ pub fn registered_plugins(key_bytes: Option<Vec<u8>>) -> Vec<Box<dyn ForensicPlu
 
 pub fn run(args: RunArgs) -> Result<()> {
     let fs = open_fs(&args.input)?;
-    let key_bytes = args.key_file.as_ref().map(|p| std::fs::read(p)
-        .with_context(|| format!("cannot read key file: {}", p.display()))).transpose()?;
+    let key_bytes = args
+        .key_file
+        .as_ref()
+        .map(|p| std::fs::read(p).with_context(|| format!("cannot read key file: {}", p.display())))
+        .transpose()?;
     let plugins = registered_plugins(key_bytes);
 
     let bar = ProgressBar::new(plugins.len() as u64);
@@ -121,14 +124,10 @@ fn open_fs(input: &Path) -> Result<Box<dyn chat4n6_plugin_api::ForensicFs>> {
             // Strip trailing slice number: "userdata.1" → "userdata"
             let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let base_name = stem.rsplit_once('.').map(|(b, _)| b).unwrap_or(stem);
-            let basename = input
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join(base_name);
-            return Ok(Box::new(
-                DarFs::open_slices(&basename)
-                    .with_context(|| format!("cannot open DAR archive: {}", input.display()))?,
-            ));
+            let basename = input.parent().unwrap_or(Path::new(".")).join(base_name);
+            return Ok(Box::new(DarFs::open_slices(&basename).with_context(
+                || format!("cannot open DAR archive: {}", input.display()),
+            )?));
         }
         anyhow::bail!(
             "{} is a file, not a directory. \
@@ -138,15 +137,13 @@ fn open_fs(input: &Path) -> Result<Box<dyn chat4n6_plugin_api::ForensicFs>> {
         );
     }
     if input.join("Manifest.db").exists() {
-        return Ok(Box::new(
-            IosBackupFs::open(input)
-                .with_context(|| format!("cannot open iOS backup: {}", input.display()))?,
-        ));
+        return Ok(Box::new(IosBackupFs::open(input).with_context(|| {
+            format!("cannot open iOS backup: {}", input.display())
+        })?));
     }
-    Ok(Box::new(
-        PlaintextDirFs::new(input)
-            .with_context(|| format!("cannot open input: {}", input.display()))?,
-    ))
+    Ok(Box::new(PlaintextDirFs::new(input).with_context(|| {
+        format!("cannot open input: {}", input.display())
+    })?))
 }
 
 pub fn resolve_tz_arg(tz: Option<&str>) -> Result<Option<i32>> {
@@ -168,7 +165,8 @@ fn merge_results(
     dst.wal_deltas.extend(src.wal_deltas);
     dst.wal_snapshots.extend(src.wal_snapshots);
     dst.forensic_warnings.extend(src.forensic_warnings);
-    dst.group_participant_events.extend(src.group_participant_events);
+    dst.group_participant_events
+        .extend(src.group_participant_events);
     if dst.timezone_offset_seconds.is_none() {
         dst.timezone_offset_seconds = src.timezone_offset_seconds;
     }
@@ -186,11 +184,15 @@ fn merge_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chat4n6_plugin_api::{ExtractionResult, ForensicWarning, GroupParticipantEvent,
-                              ParticipantAction, EvidenceSource, ForensicTimestamp};
+    use chat4n6_plugin_api::{
+        EvidenceSource, ExtractionResult, ForensicTimestamp, ForensicWarning,
+        GroupParticipantEvent, ParticipantAction,
+    };
 
     fn make_warning() -> ForensicWarning {
-        ForensicWarning::DatabaseVacuumed { freelist_page_count: 3 }
+        ForensicWarning::DatabaseVacuumed {
+            freelist_page_count: 3,
+        }
     }
 
     fn make_event() -> GroupParticipantEvent {
@@ -207,12 +209,18 @@ mod tests {
     fn registered_plugins_includes_all_three_platforms() {
         let plugins = super::registered_plugins(None);
         let names: Vec<&str> = plugins.iter().map(|p| p.name()).collect();
-        assert!(names.iter().any(|n| n.to_lowercase().contains("whatsapp")),
-            "must include WhatsApp plugin, got: {names:?}");
-        assert!(names.iter().any(|n| n.to_lowercase().contains("signal")),
-            "must include Signal plugin, got: {names:?}");
-        assert!(names.iter().any(|n| n.to_lowercase().contains("telegram")),
-            "must include Telegram plugin, got: {names:?}");
+        assert!(
+            names.iter().any(|n| n.to_lowercase().contains("whatsapp")),
+            "must include WhatsApp plugin, got: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.to_lowercase().contains("signal")),
+            "must include Signal plugin, got: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.to_lowercase().contains("telegram")),
+            "must include Telegram plugin, got: {names:?}"
+        );
     }
 
     #[test]
@@ -224,8 +232,11 @@ mod tests {
         src.forensic_warnings.push(ForensicWarning::HmacMismatch);
 
         merge_results(&mut dst, src);
-        assert_eq!(dst.forensic_warnings.len(), 2,
-            "warnings from both plugins must survive merge");
+        assert_eq!(
+            dst.forensic_warnings.len(),
+            2,
+            "warnings from both plugins must survive merge"
+        );
     }
 
     #[test]
@@ -237,7 +248,10 @@ mod tests {
         src.group_participant_events.push(make_event());
 
         merge_results(&mut dst, src);
-        assert_eq!(dst.group_participant_events.len(), 2,
-            "group_participant_events from both plugins must survive merge");
+        assert_eq!(
+            dst.group_participant_events.len(),
+            2,
+            "group_participant_events from both plugins must survive merge"
+        );
     }
 }

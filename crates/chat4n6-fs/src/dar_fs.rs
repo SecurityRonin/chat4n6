@@ -55,7 +55,10 @@ impl ForensicFs for DarFs {
 
     fn exists(&self, path: &str) -> bool {
         let key = path.trim_start_matches('/');
-        self.0.entries().iter().any(|e| e.path.to_str() == Some(key))
+        self.0
+            .entries()
+            .iter()
+            .any(|e| e.path.to_str() == Some(key))
     }
 
     fn unallocated_regions(&self) -> Vec<UnallocatedRegion> {
@@ -76,13 +79,22 @@ mod tests {
             return;
         }
         let fs = DarFs::open(std::path::Path::new(DAR_PATH)).expect("DarFs::open");
-        assert!(!fs.list("").unwrap().is_empty(), "root listing should be non-empty");
+        assert!(
+            !fs.list("").unwrap().is_empty(),
+            "root listing should be non-empty"
+        );
         assert!(
             fs.exists("data/data/com.whatsapp/databases/msgstore.db"),
             "msgstore.db should exist in archive"
         );
-        let bytes = fs.read("data/data/com.whatsapp/databases/msgstore.db").unwrap();
-        assert_eq!(&bytes[..7], b"SQLite ", "msgstore.db should start with SQLite header");
+        let bytes = fs
+            .read("data/data/com.whatsapp/databases/msgstore.db")
+            .unwrap();
+        assert_eq!(
+            &bytes[..7],
+            b"SQLite ",
+            "msgstore.db should start with SQLite header"
+        );
     }
 
     #[test]
@@ -90,7 +102,7 @@ mod tests {
         // Simulate what list() does: filter entries to direct children of a prefix.
         // We can't construct a DarArchive without a real file, so we test the
         // filtering logic by applying it to a set of path strings directly.
-        let all_paths = vec![
+        let all_paths = [
             "data",
             "data/data",
             "data/data/com.whatsapp",
@@ -101,7 +113,10 @@ mod tests {
 
         // list("data/data/com.whatsapp/databases") should return only direct children
         let input_path = "data/data/com.whatsapp/databases";
-        let prefix = format!("{}/", input_path.trim_start_matches('/').trim_end_matches('/'));
+        let prefix = format!(
+            "{}/",
+            input_path.trim_start_matches('/').trim_end_matches('/')
+        );
 
         let results: Vec<&str> = all_paths
             .iter()
@@ -114,22 +129,38 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(results, vec!["data/data/com.whatsapp/databases/msgstore.db", "data/data/com.whatsapp/databases/wa.db"]);
+        assert_eq!(
+            results,
+            vec![
+                "data/data/com.whatsapp/databases/msgstore.db",
+                "data/data/com.whatsapp/databases/wa.db"
+            ]
+        );
 
         // list("data/data") should return only "data/data/com.whatsapp"
         let input_path2 = "data/data";
-        let prefix2 = format!("{}/", input_path2.trim_start_matches('/').trim_end_matches('/'));
-        let results2: Vec<&str> = all_paths.iter().copied().filter(|p| {
-            p.starts_with(&prefix2) && {
-                let remainder = &p[prefix2.len()..];
-                !remainder.is_empty() && !remainder.contains('/')
-            }
-        }).collect();
+        let prefix2 = format!(
+            "{}/",
+            input_path2.trim_start_matches('/').trim_end_matches('/')
+        );
+        let results2: Vec<&str> = all_paths
+            .iter()
+            .copied()
+            .filter(|p| {
+                p.starts_with(&prefix2) && {
+                    let remainder = &p[prefix2.len()..];
+                    !remainder.is_empty() && !remainder.contains('/')
+                }
+            })
+            .collect();
         assert_eq!(results2, vec!["data/data/com.whatsapp"]);
 
         // list("data/data/") with trailing slash should behave same as "data/data"
         let input_path3 = "data/data/";
-        let prefix3 = format!("{}/", input_path3.trim_start_matches('/').trim_end_matches('/'));
+        let prefix3 = format!(
+            "{}/",
+            input_path3.trim_start_matches('/').trim_end_matches('/')
+        );
         assert_eq!(prefix3, prefix2, "trailing slash should be normalized");
     }
 }

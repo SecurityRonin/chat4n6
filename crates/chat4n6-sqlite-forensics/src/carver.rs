@@ -304,7 +304,7 @@ mod tests {
         // FirstColMissing are tried. expected_col_count=2 so FirstColMissing can succeed.
         let data = vec![0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x63];
         let matches = carve_freeblock(&data, 0, "t", 2);
-        assert!(matches.len() >= 1);
+        assert!(!matches.is_empty());
         let has_first_col_missing = matches.iter().any(|m| m.mode == CarveMode::FirstColMissing);
         assert!(has_first_col_missing);
     }

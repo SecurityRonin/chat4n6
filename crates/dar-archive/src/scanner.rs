@@ -77,7 +77,7 @@ mod tests {
     fn test_find_last_zzzzz() {
         // Two zzzzz runs — should find the second (later) one.
         let mut data = vec![0u8; 20];
-        data[2..7].copy_from_slice(&[0x7A; 5]);   // first  at offset 2
+        data[2..7].copy_from_slice(&[0x7A; 5]); // first  at offset 2
         data[12..17].copy_from_slice(&[0x7A; 5]); // second at offset 12
         assert_eq!(find_last_zzzzz(&data), Some(12));
     }

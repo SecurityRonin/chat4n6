@@ -26,16 +26,16 @@ pub fn detect_schema_version(user_version: u32, tables: &[&str]) -> SchemaVersio
 ///   15 = Deleted    (deleted-for-all tombstone placeholder; NOT "ProductSingle")
 pub fn msg_type_label(n: i32) -> &'static str {
     match n {
-        0  => "Text",
-        1  => "Image",
-        2  => "Audio",
-        3  => "Video",
-        4  => "Contact",
-        5  => "Location",
-        6  => "MediaOmitted",
-        7  => "StatusUpdate",
-        8  => "VoiceNote",
-        9  => "Document",
+        0 => "Text",
+        1 => "Image",
+        2 => "Audio",
+        3 => "Video",
+        4 => "Contact",
+        5 => "Location",
+        6 => "MediaOmitted",
+        7 => "StatusUpdate",
+        8 => "VoiceNote",
+        9 => "Document",
         10 => "MissedVoiceCall",
         11 => "MissedVideoCall",
         12 => "MediaCiphertextUnknown",
@@ -44,7 +44,7 @@ pub fn msg_type_label(n: i32) -> &'static str {
         15 => "Deleted",
         16 => "LiveLocation",
         20 => "Sticker",
-        _  => "Unknown",
+        _ => "Unknown",
     }
 }
 

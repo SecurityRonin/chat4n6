@@ -6,7 +6,8 @@
 use memmap2::Mmap;
 use std::fs::File;
 
-const DAR_PATH: &str = "/Users/4n6h4x0r/Documents/Cases/DCCC677_2025/02_Acquired/Redmi/unprotected/userdata.1.dar";
+const DAR_PATH: &str =
+    "/Users/4n6h4x0r/Documents/Cases/DCCC677_2025/02_Acquired/Redmi/unprotected/userdata.1.dar";
 
 fn dump_hex(label: &str, data: &[u8], max_bytes: usize) {
     let show = max_bytes.min(data.len());
@@ -15,7 +16,13 @@ fn dump_hex(label: &str, data: &[u8], max_bytes: usize) {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
         let ascii: String = chunk
             .iter()
-            .map(|&b| if b >= 0x20 && b < 0x7F { b as char } else { '.' })
+            .map(|&b| {
+                if (0x20..0x7F).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         println!("  {:04x}: {:48}  |{}|", i * 16, hex.join(" "), ascii);
     }
@@ -24,16 +31,26 @@ fn dump_hex(label: &str, data: &[u8], max_bytes: usize) {
 // ── Infinint decoder (confirmed from real_infinint.cpp, TG=4) ─────────────
 //   BB = 0x80 → 1 group → 5 bytes; BB = 0x40 → 2 groups → 9 bytes
 fn decode_infinint(data: &[u8], pos: usize) -> Option<(u64, usize)> {
-    if pos >= data.len() { return None; }
+    if pos >= data.len() {
+        return None;
+    }
     let bb = data[pos];
-    if bb == 0x00 { return Some((0, 1)); }
+    if bb == 0x00 {
+        return Some((0, 1));
+    }
     let num_groups = (bb.leading_zeros() as usize) + 1;
     let data_bytes = num_groups * 4;
     let total = 1 + data_bytes;
-    if pos + total > data.len() { return None; }
-    if data_bytes > 8 { return Some((u64::MAX, total)); }
+    if pos + total > data.len() {
+        return None;
+    }
+    if data_bytes > 8 {
+        return Some((u64::MAX, total));
+    }
     let mut v = 0u64;
-    for i in 0..data_bytes { v = (v << 8) | (data[pos + 1 + i] as u64); }
+    for i in 0..data_bytes {
+        v = (v << 8) | (data[pos + 1 + i] as u64);
+    }
     Some((v, total))
 }
 
@@ -46,7 +63,9 @@ fn read_cstr(data: &[u8], pos: usize) -> Option<(String, usize)> {
 
 // ── Datetime skipper ─────────────────────────────────────────────────────
 fn skip_datetime(data: &[u8], mut pos: usize) -> Option<usize> {
-    if pos >= data.len() { return None; }
+    if pos >= data.len() {
+        return None;
+    }
     let precision = data[pos] as char;
     pos += 1;
     let (_, c) = decode_infinint(data, pos)?;
@@ -60,15 +79,21 @@ fn skip_datetime(data: &[u8], mut pos: usize) -> Option<usize> {
 
 // ── Inode header skipper ─────────────────────────────────────────────────
 fn skip_inode(data: &[u8], mut pos: usize) -> Option<(u16, usize)> {
-    if pos >= data.len() { return None; }
+    if pos >= data.len() {
+        return None;
+    }
     let flag = data[pos];
     let ea_flag = flag & 0x07;
     pos += 1;
     // UID, GID
-    let (_, c) = decode_infinint(data, pos)?; pos += c;
-    let (_, c) = decode_infinint(data, pos)?; pos += c;
+    let (_, c) = decode_infinint(data, pos)?;
+    pos += c;
+    let (_, c) = decode_infinint(data, pos)?;
+    pos += c;
     // perm (2 bytes BE)
-    if pos + 2 > data.len() { return None; }
+    if pos + 2 > data.len() {
+        return None;
+    }
     let perm = u16::from_be_bytes([data[pos], data[pos + 1]]);
     pos += 2;
     // atime, mtime, ctime
@@ -77,9 +102,11 @@ fn skip_inode(data: &[u8], mut pos: usize) -> Option<(u16, usize)> {
     pos = skip_datetime(data, pos)?;
     // EA conditional fields
     if ea_flag == 0x01 {
-        let (_, c) = decode_infinint(data, pos)?; pos += c; // ea_size
-        let (_, c) = decode_infinint(data, pos)?; pos += c; // ea_offset
-        let (crc_len, c) = decode_infinint(data, pos)?;     // ea_crc
+        let (_, c) = decode_infinint(data, pos)?;
+        pos += c; // ea_size
+        let (_, c) = decode_infinint(data, pos)?;
+        pos += c; // ea_offset
+        let (crc_len, c) = decode_infinint(data, pos)?; // ea_crc
         pos += c + crc_len as usize;
     }
     Some((perm, pos))
@@ -105,14 +132,20 @@ fn walk_catalog(
     verbose: bool,
 ) {
     let indent = "  ".repeat(depth);
-    if depth > stats.max_depth { stats.max_depth = depth; }
+    if depth > stats.max_depth {
+        stats.max_depth = depth;
+    }
 
     loop {
-        if *pos >= data.len() || *budget == 0 { return; }
+        if *pos >= data.len() || *budget == 0 {
+            return;
+        }
 
         // zzzzz terminator
         if *pos + 5 <= data.len() && &data[*pos..*pos + 5] == b"zzzzz" {
-            if verbose { println!("{indent}[zzzzz catalog terminator at +{pos}]"); }
+            if verbose {
+                println!("{indent}[zzzzz catalog terminator at +{pos}]");
+            }
             *pos += 5;
             return;
         }
@@ -143,7 +176,9 @@ fn walk_catalog(
                     'd' => {
                         stats.dirs += 1;
                         let Some((perm, new_pos)) = skip_inode(data, *pos) else {
-                            if verbose { println!("{indent}d [{full_path}] ERROR: truncated inode"); }
+                            if verbose {
+                                println!("{indent}d [{full_path}] ERROR: truncated inode");
+                            }
                             stats.errors += 1;
                             return;
                         };
@@ -157,32 +192,41 @@ fn walk_catalog(
                     'f' => {
                         stats.files += 1;
                         let Some((perm, new_pos)) = skip_inode(data, *pos) else {
-                            if verbose { println!("{indent}f [{full_path}] ERROR: truncated inode"); }
+                            if verbose {
+                                println!("{indent}f [{full_path}] ERROR: truncated inode");
+                            }
                             stats.errors += 1;
                             return;
                         };
                         *pos = new_pos;
                         let Some((size, c)) = decode_infinint(data, *pos) else {
-                            stats.errors += 1; return;
+                            stats.errors += 1;
+                            return;
                         };
                         *pos += c;
                         let saved = status == 3 || status == 1;
                         let data_offset;
                         if saved {
                             let Some((offset, c)) = decode_infinint(data, *pos) else {
-                                stats.errors += 1; return;
+                                stats.errors += 1;
+                                return;
                             };
                             *pos += c;
                             data_offset = offset;
                             let Some((_, c)) = decode_infinint(data, *pos) else {
-                                stats.errors += 1; return;
+                                stats.errors += 1;
+                                return;
                             }; // storage_size
                             *pos += c;
-                            if *pos + 2 > data.len() { stats.errors += 1; return; }
+                            if *pos + 2 > data.len() {
+                                stats.errors += 1;
+                                return;
+                            }
                             let algo = data[*pos + 1] as char;
                             *pos += 2; // flags + algo
                             let Some((crc_len, c)) = decode_infinint(data, *pos) else {
-                                stats.errors += 1; return;
+                                stats.errors += 1;
+                                return;
                             };
                             *pos += c + crc_len as usize;
                             if verbose || *budget <= 20 {
@@ -191,11 +235,16 @@ fn walk_catalog(
                             }
                         } else {
                             data_offset = 0;
-                            if *pos >= data.len() { stats.errors += 1; return; }
+                            if *pos >= data.len() {
+                                stats.errors += 1;
+                                return;
+                            }
                             *pos += 1; // flags byte
                             if verbose || *budget <= 20 {
-                                println!("{indent}f [{full_path}]  \
-                                    size={size}  (not saved)  perm={perm:04o}");
+                                println!(
+                                    "{indent}f [{full_path}]  \
+                                    size={size}  (not saved)  perm={perm:04o}"
+                                );
                             }
                         }
                         let _ = data_offset;
@@ -204,51 +253,70 @@ fn walk_catalog(
                     'l' => {
                         stats.other += 1;
                         let Some((_, new_pos)) = skip_inode(data, *pos) else {
-                            stats.errors += 1; return;
+                            stats.errors += 1;
+                            return;
                         };
                         *pos = new_pos;
                         let Some((target, new_pos)) = read_cstr(data, *pos) else {
-                            stats.errors += 1; return;
+                            stats.errors += 1;
+                            return;
                         };
                         *pos = new_pos;
-                        if verbose { println!("{indent}l [{full_path}] -> {target}"); }
+                        if verbose {
+                            println!("{indent}l [{full_path}] -> {target}");
+                        }
                     }
                     'c' | 'b' => {
                         stats.other += 1;
                         let Some((_, new_pos)) = skip_inode(data, *pos) else {
-                            stats.errors += 1; return;
+                            stats.errors += 1;
+                            return;
                         };
                         *pos = new_pos;
-                        let Some((_, c)) = decode_infinint(data, *pos) else { stats.errors += 1; return; };
+                        let Some((_, c)) = decode_infinint(data, *pos) else {
+                            stats.errors += 1;
+                            return;
+                        };
                         *pos += c;
-                        let Some((_, c)) = decode_infinint(data, *pos) else { stats.errors += 1; return; };
+                        let Some((_, c)) = decode_infinint(data, *pos) else {
+                            stats.errors += 1;
+                            return;
+                        };
                         *pos += c;
                     }
                     'p' | 's' => {
                         stats.other += 1;
                         let Some((_, new_pos)) = skip_inode(data, *pos) else {
-                            stats.errors += 1; return;
+                            stats.errors += 1;
+                            return;
                         };
                         *pos = new_pos;
-                        if status != 3 { *pos += 1; }
+                        if status != 3 {
+                            *pos += 1;
+                        }
                     }
                     'h' | 'e' => {
                         stats.other += 1;
                         let Some((_, c)) = decode_infinint(data, *pos) else {
-                            stats.errors += 1; return;
+                            stats.errors += 1;
+                            return;
                         };
                         *pos += c;
                     }
                     'x' => {
                         stats.other += 1;
                         let Some((_, new_pos)) = skip_inode(data, *pos) else {
-                            stats.errors += 1; return;
+                            stats.errors += 1;
+                            return;
                         };
                         *pos = new_pos;
                     }
                     'm' => {
                         stats.other += 1;
-                        if *pos >= data.len() { stats.errors += 1; return; }
+                        if *pos >= data.len() {
+                            stats.errors += 1;
+                            return;
+                        }
                         *pos += 1;
                     }
                     _ => unreachable!(),
@@ -279,28 +347,37 @@ fn dump_catalog_bytes() {
     let mmap = unsafe { Mmap::map(&file) }.expect("mmap");
     let data: &[u8] = &mmap;
     let file_size = data.len();
-    println!("File size: {file_size} bytes ({:.2} GB)", file_size as f64 / 1e9);
+    println!(
+        "File size: {file_size} bytes ({:.2} GB)",
+        file_size as f64 / 1e9
+    );
 
     // ── Slice header ─────────────────────────────────────────────────────
     println!("\n=== Slice header (first 64 bytes) ===");
     dump_hex("Slice header", data, 64);
 
     // ── Catalog boundary discovery ────────────────────────────────────────
-    let catalog_start = dar_archive::scanner::find_catalog_start(data)
-        .expect("failed to find catalog start");
-    let zzzzz_pos = dar_archive::scanner::find_last_zzzzz(data)
-        .expect("failed to find catalog end (zzzzz)");
+    let catalog_start =
+        dar_archive::scanner::find_catalog_start(data).expect("failed to find catalog start");
+    let zzzzz_pos =
+        dar_archive::scanner::find_last_zzzzz(data).expect("failed to find catalog end (zzzzz)");
 
     println!("\n=== Catalog boundaries ===");
     println!("Catalog start : offset {catalog_start} (0x{catalog_start:08x})");
     println!("Last zzzzz    : offset {zzzzz_pos} (0x{zzzzz_pos:08x})");
-    println!("Catalog size  : {} bytes ({:.2} MB)",
+    println!(
+        "Catalog size  : {} bytes ({:.2} MB)",
         zzzzz_pos - catalog_start,
-        (zzzzz_pos - catalog_start) as f64 / 1_048_576.0);
+        (zzzzz_pos - catalog_start) as f64 / 1_048_576.0
+    );
     println!("Bytes after zzzzz (footer): {}", file_size - zzzzz_pos - 5);
 
     dump_hex("First 256 bytes of catalog", &data[catalog_start..], 256);
-    dump_hex("64 bytes before zzzzz", &data[zzzzz_pos.saturating_sub(64)..zzzzz_pos], 64);
+    dump_hex(
+        "64 bytes before zzzzz",
+        &data[zzzzz_pos.saturating_sub(64)..zzzzz_pos],
+        64,
+    );
     dump_hex("64 bytes after zzzzz (footer)", &data[zzzzz_pos + 5..], 64);
 
     // ── Full catalog walk (verbose for first 50, then stats-only) ─────────
@@ -310,7 +387,13 @@ fn dump_catalog_bytes() {
     // First pass: verbose walk of first 50 entries
     let mut pos = 0;
     let mut budget = 50usize;
-    let mut stats = WalkStats { dirs: 0, files: 0, other: 0, max_depth: 0, errors: 0 };
+    let mut stats = WalkStats {
+        dirs: 0,
+        files: 0,
+        other: 0,
+        max_depth: 0,
+        errors: 0,
+    };
 
     // Skip root entry header manually for verbose walk
     let sig = catalog_data[pos];
@@ -318,12 +401,14 @@ fn dump_catalog_bytes() {
     println!("Root sig=0x{sig:02x} type='{type_char}'");
     pos += 1;
     let Some((root_name, new_pos)) = read_cstr(catalog_data, pos) else {
-        println!("ERROR: truncated root name"); return;
+        println!("ERROR: truncated root name");
+        return;
     };
     pos = new_pos;
     println!("Root name: {root_name:?}");
     let Some((root_perm, new_pos)) = skip_inode(catalog_data, pos) else {
-        println!("ERROR: truncated root inode"); return;
+        println!("ERROR: truncated root inode");
+        return;
     };
     pos = new_pos;
     println!("Root perm: {root_perm:04o}  inode_end_offset: {pos}");
@@ -339,8 +424,12 @@ fn dump_catalog_bytes() {
     {
         pos = 0;
         pos += 1; // sig
-        if let Some((_, new_pos)) = read_cstr(catalog_data, pos) { pos = new_pos; }
-        if let Some((_, new_pos)) = skip_inode(catalog_data, pos) { pos = new_pos; }
+        if let Some((_, new_pos)) = read_cstr(catalog_data, pos) {
+            pos = new_pos;
+        }
+        if let Some((_, new_pos)) = skip_inode(catalog_data, pos) {
+            pos = new_pos;
+        }
 
         // Clone data into owned Vec so the thread can own it.
         let owned: Vec<u8> = catalog_data.to_vec();
@@ -349,7 +438,13 @@ fn dump_catalog_bytes() {
             .spawn(move || {
                 let mut p = pos;
                 let mut budget = usize::MAX;
-                let mut s = WalkStats { dirs: 0, files: 0, other: 0, max_depth: 0, errors: 0 };
+                let mut s = WalkStats {
+                    dirs: 0,
+                    files: 0,
+                    other: 0,
+                    max_depth: 0,
+                    errors: 0,
+                };
                 walk_catalog(&owned, &mut p, "", 0, &mut budget, &mut s, false);
                 (p, s, owned.len())
             })

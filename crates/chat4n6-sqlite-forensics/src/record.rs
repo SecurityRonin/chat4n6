@@ -129,8 +129,11 @@ impl RecoveredRecord {
 }
 
 /// Groups `RecoveredRecord` references by their `table` name.
-pub fn partition_by_table(records: &[RecoveredRecord]) -> std::collections::HashMap<String, Vec<&RecoveredRecord>> {
-    let mut map: std::collections::HashMap<String, Vec<&RecoveredRecord>> = std::collections::HashMap::new();
+pub fn partition_by_table(
+    records: &[RecoveredRecord],
+) -> std::collections::HashMap<String, Vec<&RecoveredRecord>> {
+    let mut map: std::collections::HashMap<String, Vec<&RecoveredRecord>> =
+        std::collections::HashMap::new();
     for r in records {
         map.entry(r.table.clone()).or_default().push(r);
     }
@@ -174,7 +177,10 @@ mod tests {
 
     #[test]
     fn sql_value_text_eq() {
-        assert_eq!(SqlValue::Text("hello".into()), SqlValue::Text("hello".into()));
+        assert_eq!(
+            SqlValue::Text("hello".into()),
+            SqlValue::Text("hello".into())
+        );
         assert_ne!(SqlValue::Text("a".into()), SqlValue::Text("b".into()));
     }
 

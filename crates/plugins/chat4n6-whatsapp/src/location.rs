@@ -84,7 +84,7 @@ pub fn is_valid_coordinate(lat: f64, lon: f64) -> bool {
     if lat == 0.0 && lon == 0.0 {
         return false;
     }
-    lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0
+    (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)
 }
 
 #[cfg(test)]
@@ -141,9 +141,15 @@ mod tests {
     #[test]
     fn test_osm_url_format() {
         let url = osm_url(51.5074, -0.1278);
-        assert!(url.starts_with("https://www.openstreetmap.org"), "url: {url}");
+        assert!(
+            url.starts_with("https://www.openstreetmap.org"),
+            "url: {url}"
+        );
         assert!(url.contains("51.5074"), "url: {url}");
-        assert!(url.contains("-0.1278") || url.contains("0.1278"), "url: {url}");
+        assert!(
+            url.contains("-0.1278") || url.contains("0.1278"),
+            "url: {url}"
+        );
     }
 
     #[test]

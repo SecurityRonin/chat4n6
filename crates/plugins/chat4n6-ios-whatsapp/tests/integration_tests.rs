@@ -1,6 +1,5 @@
 use chat4n6_ios_whatsapp::{
-    extractor::extract_from_chatstorage,
-    IosWhatsAppPlugin, DB_PATH, DB_ALT_PATH,
+    extractor::extract_from_chatstorage, IosWhatsAppPlugin, DB_ALT_PATH, DB_PATH,
 };
 use chat4n6_plugin_api::{ForensicFs, ForensicPlugin, FsEntry, MessageContent, UnallocatedRegion};
 use std::collections::HashMap;
@@ -13,7 +12,9 @@ struct MockFs {
 
 impl MockFs {
     fn new() -> Self {
-        Self { files: HashMap::new() }
+        Self {
+            files: HashMap::new(),
+        }
     }
     fn add(mut self, path: &str, data: Vec<u8>) -> Self {
         self.files.insert(path.to_string(), data);
@@ -22,24 +23,32 @@ impl MockFs {
 }
 
 impl ForensicFs for MockFs {
-    fn list(&self, _: &str) -> anyhow::Result<Vec<FsEntry>> { Ok(vec![]) }
+    fn list(&self, _: &str) -> anyhow::Result<Vec<FsEntry>> {
+        Ok(vec![])
+    }
     fn read(&self, path: &str) -> anyhow::Result<Vec<u8>> {
         self.files
             .get(path)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("not found: {path}"))
     }
-    fn exists(&self, path: &str) -> bool { self.files.contains_key(path) }
-    fn unallocated_regions(&self) -> Vec<UnallocatedRegion> { vec![] }
+    fn exists(&self, path: &str) -> bool {
+        self.files.contains_key(path)
+    }
+    fn unallocated_regions(&self) -> Vec<UnallocatedRegion> {
+        vec![]
+    }
 }
 
 // ── Fixture builder ───────────────────────────────────────────────────────────
 
 fn make_chatstorage_db() -> Vec<u8> {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(include_str!("fixtures/chatstorage_schema.sql")).unwrap();
+    conn.execute_batch(include_str!("fixtures/chatstorage_schema.sql"))
+        .unwrap();
     let tmp = tempfile::NamedTempFile::new().unwrap();
-    conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+    conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+        .unwrap();
     std::fs::read(tmp.path()).unwrap()
 }
 
@@ -50,7 +59,10 @@ fn test_detect_true_primary_path() {
     let db = make_chatstorage_db();
     let fs = MockFs::new().add(DB_PATH, db);
     let plugin = IosWhatsAppPlugin;
-    assert!(plugin.detect(&fs), "detect() should be true when primary path exists");
+    assert!(
+        plugin.detect(&fs),
+        "detect() should be true when primary path exists"
+    );
 }
 
 // ── T2: detect() true for alternate path ─────────────────────────────────────
@@ -69,7 +81,10 @@ fn test_detect_true_alt_path() {
 fn test_detect_false_no_file() {
     let fs = MockFs::new();
     let plugin = IosWhatsAppPlugin;
-    assert!(!plugin.detect(&fs), "detect() should be false when no file present");
+    assert!(
+        !plugin.detect(&fs),
+        "detect() should be false when no file present"
+    );
 }
 
 // ── T4: chat count matches fixture (3 chats) ─────────────────────────────────
@@ -92,7 +107,10 @@ fn test_archived_chat() {
         .iter()
         .find(|c| c.jid == "4155550101@s.whatsapp.net")
         .expect("Bob's chat should exist");
-    assert!(archived_chat.archived, "Bob's chat (ZARCHIVED=1) should be archived=true");
+    assert!(
+        archived_chat.archived,
+        "Bob's chat (ZARCHIVED=1) should be archived=true"
+    );
 }
 
 // ── T6: group chat has is_group=true ─────────────────────────────────────────
@@ -120,7 +138,11 @@ fn test_sent_message_from_me() {
         .iter()
         .find(|c| c.jid == "4155550100@s.whatsapp.net")
         .expect("Alice's chat");
-    let msg1 = alice_chat.messages.iter().find(|m| m.id == 1).expect("message 1");
+    let msg1 = alice_chat
+        .messages
+        .iter()
+        .find(|m| m.id == 1)
+        .expect("message 1");
     assert!(msg1.from_me, "ZISFROMME=1 should map to from_me=true");
 }
 
@@ -135,7 +157,11 @@ fn test_received_message_sender_jid() {
         .iter()
         .find(|c| c.jid == "4155550100@s.whatsapp.net")
         .expect("Alice's chat");
-    let msg2 = alice_chat.messages.iter().find(|m| m.id == 2).expect("message 2");
+    let msg2 = alice_chat
+        .messages
+        .iter()
+        .find(|m| m.id == 2)
+        .expect("message 2");
     assert!(!msg2.from_me, "ZISFROMME=0 should map to from_me=false");
     assert_eq!(
         msg2.sender_jid.as_deref(),
@@ -155,7 +181,11 @@ fn test_deleted_message_content() {
         .iter()
         .find(|c| c.jid == "4155550100@s.whatsapp.net")
         .expect("Alice's chat");
-    let msg4 = alice_chat.messages.iter().find(|m| m.id == 4).expect("message 4 (deleted)");
+    let msg4 = alice_chat
+        .messages
+        .iter()
+        .find(|m| m.id == 4)
+        .expect("message 4 (deleted)");
     assert!(
         matches!(&msg4.content, MessageContent::Deleted),
         "ZDELETED=1 should produce MessageContent::Deleted, got {:?}",
@@ -174,11 +204,21 @@ fn test_media_message_content() {
         .iter()
         .find(|c| c.jid == "4155550100@s.whatsapp.net")
         .expect("Alice's chat");
-    let msg3 = alice_chat.messages.iter().find(|m| m.id == 3).expect("message 3 (media)");
+    let msg3 = alice_chat
+        .messages
+        .iter()
+        .find(|m| m.id == 3)
+        .expect("message 3 (media)");
     match &msg3.content {
         MessageContent::Media(ref m) => {
-            assert_eq!(m.mime_type, "image/jpeg", "ZWAMEDIAITEM.ZMIMETYPE should map to mime_type");
-            assert_eq!(m.file_size, 204800, "ZWAMEDIAITEM.ZFILESIZE should map to file_size");
+            assert_eq!(
+                m.mime_type, "image/jpeg",
+                "ZWAMEDIAITEM.ZMIMETYPE should map to mime_type"
+            );
+            assert_eq!(
+                m.file_size, 204800,
+                "ZWAMEDIAITEM.ZFILESIZE should map to file_size"
+            );
         }
         other => panic!("expected MessageContent::Media, got {:?}", other),
     }
@@ -195,7 +235,11 @@ fn test_starred_message() {
         .iter()
         .find(|c| c.jid == "4155550100@s.whatsapp.net")
         .expect("Alice's chat");
-    let msg5 = alice_chat.messages.iter().find(|m| m.id == 5).expect("message 5 (starred)");
+    let msg5 = alice_chat
+        .messages
+        .iter()
+        .find(|m| m.id == 5)
+        .expect("message 5 (starred)");
     assert!(msg5.starred, "ZSTARRED=1 should map to starred=true");
 }
 
@@ -207,7 +251,10 @@ fn test_apple_epoch_conversion() {
     // = 2024-03-15T14:32:07Z
     use chat4n6_ios_whatsapp::schema::apple_epoch_to_utc_ms;
     let ms = apple_epoch_to_utc_ms(732205927.0);
-    assert_eq!(ms, 1_710_513_127_000_i64, "Apple epoch → unix ms conversion incorrect");
+    assert_eq!(
+        ms, 1_710_513_127_000_i64,
+        "Apple epoch → unix ms conversion incorrect"
+    );
 }
 
 #[test]
@@ -219,7 +266,11 @@ fn test_message_timestamp_utc_str() {
         .iter()
         .find(|c| c.jid == "4155550100@s.whatsapp.net")
         .expect("Alice's chat");
-    let msg1 = alice_chat.messages.iter().find(|m| m.id == 1).expect("message 1");
+    let msg1 = alice_chat
+        .messages
+        .iter()
+        .find(|m| m.id == 1)
+        .expect("message 1");
     assert_eq!(
         msg1.timestamp.utc_str(),
         "2024-03-15 14:32:07 UTC",
@@ -259,8 +310,14 @@ fn test_chat_jid_from_contact_identifier() {
     let db = make_chatstorage_db();
     let result = extract_from_chatstorage(&db, 0).unwrap();
     let jids: Vec<&str> = result.chats.iter().map(|c| c.jid.as_str()).collect();
-    assert!(jids.contains(&"4155550100@s.whatsapp.net"), "Alice JID should be present");
-    assert!(jids.contains(&"groupabc@g.us"), "group JID should be present");
+    assert!(
+        jids.contains(&"4155550100@s.whatsapp.net"),
+        "Alice JID should be present"
+    );
+    assert!(
+        jids.contains(&"groupabc@g.us"),
+        "group JID should be present"
+    );
 }
 
 // ── T16: name mapping — chat.name from ZPARTNERNAME ─────────────────────────
@@ -274,7 +331,11 @@ fn test_chat_name_from_partner_name() {
         .iter()
         .find(|c| c.jid == "4155550100@s.whatsapp.net")
         .expect("Alice's chat");
-    assert_eq!(alice_chat.name.as_deref(), Some("Alice"), "ZPARTNERNAME should map to chat.name");
+    assert_eq!(
+        alice_chat.name.as_deref(),
+        Some("Alice"),
+        "ZPARTNERNAME should map to chat.name"
+    );
 }
 
 // ── T17: non-archived chat has archived=false ─────────────────────────────────
@@ -288,7 +349,10 @@ fn test_non_archived_chat() {
         .iter()
         .find(|c| c.jid == "4155550100@s.whatsapp.net")
         .expect("Alice's chat");
-    assert!(!alice_chat.archived, "ZARCHIVED=0 should map to archived=false");
+    assert!(
+        !alice_chat.archived,
+        "ZARCHIVED=0 should map to archived=false"
+    );
 }
 
 // ── T18: plugin.extract() works end-to-end ────────────────────────────────────
@@ -298,7 +362,9 @@ fn test_plugin_extract_end_to_end() {
     let db = make_chatstorage_db();
     let fs = MockFs::new().add(DB_PATH, db);
     let plugin = IosWhatsAppPlugin;
-    let result = plugin.extract(&fs, Some(0)).expect("plugin.extract() should succeed");
+    let result = plugin
+        .extract(&fs, Some(0))
+        .expect("plugin.extract() should succeed");
     assert!(!result.chats.is_empty(), "extraction should yield chats");
     assert_eq!(result.timezone_offset_seconds, Some(0));
 }
@@ -349,7 +415,8 @@ mod zsort_gap_tests {
             INSERT INTO ZWAMESSAGE VALUES (5, 1, 732206300.0, 'Msg5', 0, NULL, 0, NULL, 0, 0, 0, 101.0);
         ").unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -375,9 +442,10 @@ mod zsort_gap_tests {
         // Consecutive ZSORT values — no suspicious gap → no SelectiveDeletion
         let db = make_chatstorage_db(); // standard fixture has ZSORT 1..5 sequential
         let result = extract_from_chatstorage(&db, 0).expect("extraction should succeed");
-        let has_selective = result.forensic_warnings.iter().any(|w| {
-            matches!(w, ForensicWarning::SelectiveDeletion { .. })
-        });
+        let has_selective = result
+            .forensic_warnings
+            .iter()
+            .any(|w| matches!(w, ForensicWarning::SelectiveDeletion { .. }));
         assert!(
             !has_selective,
             "No gap in standard fixture — should not emit SelectiveDeletion, got: {:?}",
@@ -428,7 +496,8 @@ mod dynamic_column_tests {
             INSERT INTO ZWAMESSAGE VALUES (10, 'Dynamic text', 1, 732205927.0, 0, NULL, 1, NULL, 0, 0, 0, 1.0);
         ").unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -444,14 +513,19 @@ mod dynamic_column_tests {
             .iter()
             .find(|c| c.jid == "bob@s.whatsapp.net")
             .expect("Bob's chat should exist");
-        assert_eq!(bob_chat.messages.len(), 1, "should have 1 message in Bob's chat");
+        assert_eq!(
+            bob_chat.messages.len(),
+            1,
+            "should have 1 message in Bob's chat"
+        );
 
         let msg = &bob_chat.messages[0];
         assert_eq!(msg.id, 10, "message ID should be 10");
         // With dynamic column lookup, ZTEXT='Dynamic text' must be correctly extracted
         assert!(
             matches!(&msg.content, chat4n6_plugin_api::MessageContent::Text(t) if t == "Dynamic text"),
-            "Expected Text('Dynamic text'), got: {:?}", msg.content
+            "Expected Text('Dynamic text'), got: {:?}",
+            msg.content
         );
         // ZISFROMME=1 must be correctly read despite reordered columns
         assert!(msg.from_me, "from_me should be true (ZISFROMME=1)");

@@ -1,7 +1,7 @@
-use std::borrow::Cow;
-use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use memmap2::Mmap;
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct DarEntry {
@@ -21,12 +21,15 @@ pub struct DarArchive {
 
 impl DarArchive {
     pub fn open(path: &Path) -> Result<Self> {
-        let file = std::fs::File::open(path)
-            .with_context(|| format!("cannot open {}", path.display()))?;
+        let file =
+            std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
         // SAFETY: file is read-only and not modified while mapped.
         let mmap = unsafe { Mmap::map(&file) }
             .with_context(|| format!("cannot mmap {}", path.display()))?;
-        let mut archive = Self { mmaps: vec![mmap], entries: Vec::new() };
+        let mut archive = Self {
+            mmaps: vec![mmap],
+            entries: Vec::new(),
+        };
         archive.load_catalog(0)?;
         Ok(archive)
     }
@@ -67,7 +70,10 @@ impl DarArchive {
         );
 
         let last = mmaps.len() - 1;
-        let mut archive = Self { mmaps, entries: Vec::new() };
+        let mut archive = Self {
+            mmaps,
+            entries: Vec::new(),
+        };
         // Catalog is in the last (terminal) slice only.
         archive.load_catalog(last)?;
         Ok(archive)
@@ -86,7 +92,11 @@ impl DarArchive {
         let mmap = &self.mmaps[entry.slice_index];
         let start = entry.data_offset as usize;
         let end = start + entry.size as usize;
-        anyhow::ensure!(end <= mmap.len(), "entry data out of bounds: {}", entry.path.display());
+        anyhow::ensure!(
+            end <= mmap.len(),
+            "entry data out of bounds: {}",
+            entry.path.display()
+        );
         Ok(Cow::Borrowed(&mmap[start..end]))
     }
 
@@ -94,17 +104,19 @@ impl DarArchive {
         let data: &[u8] = &self.mmaps[slice_index];
 
         // Locate catalog boundaries within this slice.
-        let catalog_start = crate::scanner::find_catalog_start(data)
-            .ok_or_else(|| anyhow::anyhow!(
+        let catalog_start = crate::scanner::find_catalog_start(data).ok_or_else(|| {
+            anyhow::anyhow!(
                 "cannot find catalog start in slice {slice_index} \
                  (no escape marker or 'droot\\0' pattern in last 200 MB)"
-            ))?;
+            )
+        })?;
 
-        let zzzzz_pos = crate::scanner::find_last_zzzzz(data)
-            .ok_or_else(|| anyhow::anyhow!(
+        let zzzzz_pos = crate::scanner::find_last_zzzzz(data).ok_or_else(|| {
+            anyhow::anyhow!(
                 "cannot find catalog end (zzzzz) in slice {slice_index} \
                  (not found in last 100 MB)"
-            ))?;
+            )
+        })?;
 
         anyhow::ensure!(
             catalog_start < zzzzz_pos,
@@ -114,9 +126,8 @@ impl DarArchive {
 
         // Include the zzzzz itself so the parser can recognise the terminator.
         let catalog_data = &data[catalog_start..zzzzz_pos + 5];
-        let mut new_entries =
-            crate::catalog::parse_catalog(catalog_data, slice_index)
-                .with_context(|| format!("parsing catalog in slice {slice_index}"))?;
+        let mut new_entries = crate::catalog::parse_catalog(catalog_data, slice_index)
+            .with_context(|| format!("parsing catalog in slice {slice_index}"))?;
         self.entries.append(&mut new_entries);
         Ok(())
     }

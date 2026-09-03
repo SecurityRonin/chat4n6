@@ -13,7 +13,7 @@ pub fn is_journal_header(data: &[u8]) -> bool {
 
 #[derive(Debug)]
 pub struct JournalHeader {
-    pub page_count: i32,  // -1 means read until end
+    pub page_count: i32, // -1 means read until end
     pub nonce: u32,
     pub initial_db_size: u32,
     pub sector_size: u32,
@@ -71,7 +71,7 @@ pub fn parse_journal(
         // Header is padded to sector boundary
         let data_start = if sector_size > JOURNAL_HEADER_SIZE {
             // Round up to sector boundary
-            ((offset + JOURNAL_HEADER_SIZE + sector_size - 1) / sector_size) * sector_size
+            (offset + JOURNAL_HEADER_SIZE).div_ceil(sector_size) * sector_size
         } else {
             offset + JOURNAL_HEADER_SIZE
         };
@@ -109,7 +109,12 @@ pub fn parse_journal(
                     // For journal pages, pass page_data as the "db" too since
                     // overflow chains won't be in the journal
                     let mut leaf_records = parse_table_leaf_page(
-                        page_data, page_data, bhdr, page_number, page_size as u32, "journal_unknown",
+                        page_data,
+                        page_data,
+                        bhdr,
+                        page_number,
+                        page_size as u32,
+                        "journal_unknown",
                     );
                     if !leaf_records.is_empty() {
                         for r in &mut leaf_records {
@@ -139,7 +144,7 @@ pub fn parse_journal(
         // Move to next section: advance past all page records to next sector boundary
         let section_end = data_start + page_count * record_size;
         offset = if sector_size > 0 {
-            ((section_end + sector_size - 1) / sector_size) * sector_size
+            section_end.div_ceil(sector_size) * sector_size
         } else {
             section_end
         };
@@ -213,7 +218,7 @@ mod tests {
         // Create a minimal table leaf page with one record
         let mut page = vec![0u8; page_size];
         page[0] = 0x0D; // table leaf
-        // cell count = 1
+                        // cell count = 1
         page[3] = 0x00;
         page[4] = 0x01;
         // cell content start (somewhere after cell pointer array)
@@ -248,7 +253,10 @@ mod tests {
         };
 
         let results = parse_journal(&journal, page_size as u32, &[sig]);
-        assert!(!results.is_empty(), "should recover records from journal page");
+        assert!(
+            !results.is_empty(),
+            "should recover records from journal page"
+        );
         for r in &results {
             assert_eq!(r.source, EvidenceSource::Journal);
         }
@@ -300,7 +308,7 @@ mod tests {
         journal[sector_size..sector_size + 4].copy_from_slice(&2u32.to_be_bytes());
         // Page data: a table leaf with no cells (won't produce records but exercises the path)
         journal[sector_size + 4] = 0x0D; // table leaf
-        // cell count = 0
+                                         // cell count = 0
         journal[sector_size + 4 + 3] = 0x00;
         journal[sector_size + 4 + 4] = 0x00;
 
@@ -358,7 +366,7 @@ mod tests {
         let sector_size: usize = 512;
 
         let record_size = 4 + page_size + 4; // 520
-        // Create journal with 2 page records
+                                             // Create journal with 2 page records
         let mut journal = vec![0u8; sector_size + record_size * 2];
         journal[..8].copy_from_slice(&JOURNAL_MAGIC);
         journal[8..12].copy_from_slice(&(-1i32).to_be_bytes()); // page_count = -1
@@ -537,7 +545,7 @@ mod tests {
 
         // Build a 2-section journal
         let section1_size = sector_size + record_size; // header + 1 page record
-        let section1_padded = ((section1_size + sector_size - 1) / sector_size) * sector_size;
+        let section1_padded = section1_size.div_ceil(sector_size) * sector_size;
         let section2_size = sector_size + record_size;
         let total = section1_padded + section2_size;
         let mut journal = vec![0u8; total];
@@ -692,7 +700,7 @@ mod tests {
 
         // Exactly 1 section with 1 page record, tightly packed
         let section_size = sector_size + record_size;
-        let total_padded = ((section_size + sector_size - 1) / sector_size) * sector_size;
+        let total_padded = section_size.div_ceil(sector_size) * sector_size;
         // Don't add a second section — the rounded offset will be past the end
         let mut journal = vec![0u8; total_padded];
         journal[..8].copy_from_slice(&JOURNAL_MAGIC);

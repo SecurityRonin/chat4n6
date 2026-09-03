@@ -71,27 +71,33 @@ impl SchemaSignature {
     fn sql_type_to_hint(col_def_upper: &str) -> ColumnTypeHint {
         let tokens: Vec<&str> = col_def_upper.split_whitespace().collect();
         let type_str = tokens.get(1).copied().unwrap_or("");
-        if type_str.starts_with("INT") || type_str == "BOOLEAN" || type_str == "TINYINT"
-            || type_str == "SMALLINT" || type_str == "BIGINT" || type_str == "MEDIUMINT"
+        if type_str.starts_with("INT")
+            || type_str == "BOOLEAN"
+            || type_str == "TINYINT"
+            || type_str == "SMALLINT"
+            || type_str == "BIGINT"
+            || type_str == "MEDIUMINT"
         {
             ColumnTypeHint::Integer
-        } else if type_str.starts_with("TEXT") || type_str.starts_with("CHAR")
-            || type_str.starts_with("VARCHAR") || type_str == "CLOB"
-            || type_str.starts_with("NCHAR") || type_str.starts_with("NVARCHAR")
+        } else if type_str.starts_with("TEXT")
+            || type_str.starts_with("CHAR")
+            || type_str.starts_with("VARCHAR")
+            || type_str == "CLOB"
+            || type_str.starts_with("NCHAR")
+            || type_str.starts_with("NVARCHAR")
         {
             ColumnTypeHint::Text
-        } else if type_str.starts_with("REAL") || type_str.starts_with("FLOAT")
-            || type_str.starts_with("DOUBLE") || type_str.starts_with("NUMERIC")
+        } else if type_str.starts_with("REAL")
+            || type_str.starts_with("FLOAT")
+            || type_str.starts_with("DOUBLE")
+            || type_str.starts_with("NUMERIC")
             || type_str.starts_with("DECIMAL")
         {
             ColumnTypeHint::Real
-        } else if type_str.starts_with("BLOB") || type_str == "BINARY"
-            || type_str == "VARBINARY"
-        {
+        } else if type_str.starts_with("BLOB") || type_str == "BINARY" || type_str == "VARBINARY" {
             ColumnTypeHint::Blob
-        } else if type_str.is_empty() {
-            ColumnTypeHint::Any
         } else {
+            // empty or unrecognized declared type -> Any affinity
             ColumnTypeHint::Any
         }
     }
@@ -104,7 +110,9 @@ impl SchemaSignature {
             ColumnTypeHint::Integer => matches!(serial_type, 0 | 1..=6 | 8 | 9),
             ColumnTypeHint::Real => matches!(serial_type, 0 | 7),
             ColumnTypeHint::Text => serial_type == 0 || (serial_type >= 13 && serial_type % 2 == 1),
-            ColumnTypeHint::Blob => serial_type == 0 || (serial_type >= 12 && serial_type % 2 == 0),
+            ColumnTypeHint::Blob => {
+                serial_type == 0 || (serial_type >= 12 && serial_type.is_multiple_of(2))
+            }
         }
     }
 
@@ -234,7 +242,10 @@ mod tests {
         .unwrap();
         assert_eq!(sig.table_name, "messages");
         assert_eq!(sig.column_count, 2);
-        assert_eq!(sig.type_hints, vec![ColumnTypeHint::Text, ColumnTypeHint::Integer]);
+        assert_eq!(
+            sig.type_hints,
+            vec![ColumnTypeHint::Text, ColumnTypeHint::Integer]
+        );
     }
 
     #[test]
@@ -258,13 +269,12 @@ mod tests {
 
     #[test]
     fn test_parse_create_table_untyped_columns() {
-        let sig = SchemaSignature::from_create_sql(
-            "kv",
-            "CREATE TABLE kv (key, value)",
-        )
-        .unwrap();
+        let sig = SchemaSignature::from_create_sql("kv", "CREATE TABLE kv (key, value)").unwrap();
         assert_eq!(sig.column_count, 2);
-        assert_eq!(sig.type_hints, vec![ColumnTypeHint::Any, ColumnTypeHint::Any]);
+        assert_eq!(
+            sig.type_hints,
+            vec![ColumnTypeHint::Any, ColumnTypeHint::Any]
+        );
     }
 
     #[test]
@@ -286,15 +296,16 @@ mod tests {
 
     #[test]
     fn test_parse_all_text_columns() {
-        let sig = SchemaSignature::from_create_sql(
-            "t",
-            "CREATE TABLE t (a TEXT, b TEXT, c TEXT)",
-        )
-        .unwrap();
+        let sig = SchemaSignature::from_create_sql("t", "CREATE TABLE t (a TEXT, b TEXT, c TEXT)")
+            .unwrap();
         assert_eq!(sig.column_count, 3);
         assert_eq!(
             sig.type_hints,
-            vec![ColumnTypeHint::Text, ColumnTypeHint::Text, ColumnTypeHint::Text]
+            vec![
+                ColumnTypeHint::Text,
+                ColumnTypeHint::Text,
+                ColumnTypeHint::Text
+            ]
         );
     }
 
@@ -317,7 +328,10 @@ mod tests {
         assert!(SchemaSignature::is_compatible(&ColumnTypeHint::Integer, 8));
         assert!(SchemaSignature::is_compatible(&ColumnTypeHint::Integer, 9));
         assert!(!SchemaSignature::is_compatible(&ColumnTypeHint::Integer, 7));
-        assert!(!SchemaSignature::is_compatible(&ColumnTypeHint::Integer, 13));
+        assert!(!SchemaSignature::is_compatible(
+            &ColumnTypeHint::Integer,
+            13
+        ));
     }
 
     #[test]
@@ -381,7 +395,11 @@ mod tests {
         let sig = SchemaSignature {
             table_name: "t".into(),
             column_count: 3,
-            type_hints: vec![ColumnTypeHint::Integer, ColumnTypeHint::Text, ColumnTypeHint::Integer],
+            type_hints: vec![
+                ColumnTypeHint::Integer,
+                ColumnTypeHint::Text,
+                ColumnTypeHint::Integer,
+            ],
         };
         let data = [0x03, 0x01, 0x0D, 0x2A];
         assert!(sig.try_parse_record(&data, 0).is_none());
@@ -414,16 +432,16 @@ mod tests {
             "CREATE TABLE t (a TEXT, b INTEGER, CONSTRAINT pk PRIMARY KEY (a), FOREIGN KEY (b) REFERENCES other(id))",
         ).unwrap();
         assert_eq!(sig.column_count, 2);
-        assert_eq!(sig.type_hints, vec![ColumnTypeHint::Text, ColumnTypeHint::Integer]);
+        assert_eq!(
+            sig.type_hints,
+            vec![ColumnTypeHint::Text, ColumnTypeHint::Integer]
+        );
     }
 
     #[test]
     fn test_sql_type_to_hint_unrecognized_yields_any() {
         // Covers line 95: unrecognized type name yields ColumnTypeHint::Any.
-        let sig = SchemaSignature::from_create_sql(
-            "t",
-            "CREATE TABLE t (x FOOBARTYPE)",
-        ).unwrap();
+        let sig = SchemaSignature::from_create_sql("t", "CREATE TABLE t (x FOOBARTYPE)").unwrap();
         assert_eq!(sig.column_count, 1);
         assert_eq!(sig.type_hints, vec![ColumnTypeHint::Any]);
     }
@@ -467,7 +485,7 @@ mod tests {
             type_hints: vec![ColumnTypeHint::Integer],
         };
         // header_len=2, st=6 (needs 8 bytes), but data after header is only 1 byte.
-        let data = [0x02, 0x06, 0xFF];
+        let _data = [0x02, 0x06, 0xFF];
         // val_pos = header_len = 2, need 8 bytes starting at offset 2, but buf.len()=3.
         // decode_serial_type returns None → value is Null. This doesn't hit line 154.
         // We need val_pos > buf.len(). This happens when a previous column consumes bytes
@@ -477,7 +495,7 @@ mod tests {
         // val_pos starts at 3. First col: decode(1, data, 3) → reads data[3]=0x2A → consumed=1, val_pos=4.
         // Second col: val_pos=4 > buf.len()=4? No, 4 == 4, not >.
         // Need val_pos=5 > buf.len()=4.
-        let sig2 = SchemaSignature {
+        let _sig2 = SchemaSignature {
             table_name: "t".into(),
             column_count: 2,
             type_hints: vec![ColumnTypeHint::Integer, ColumnTypeHint::Integer],
@@ -557,7 +575,6 @@ mod tests {
         // serial_type for blob of length L: 2*L + 12.
         // For L = 65536, st = 131084. But we'd need 65536+ bytes of data, which is impractical.
         // Line 163 is defensive dead code. Skip.
-        ()
     }
 
     #[test]
@@ -575,10 +592,9 @@ mod tests {
     #[test]
     fn test_parse_create_table_with_check_constraint() {
         // Ensures CHECK constraint lines are skipped (line 54 `upper.starts_with("CHECK")`).
-        let sig = SchemaSignature::from_create_sql(
-            "t",
-            "CREATE TABLE t (val INTEGER, CHECK (val > 0))",
-        ).unwrap();
+        let sig =
+            SchemaSignature::from_create_sql("t", "CREATE TABLE t (val INTEGER, CHECK (val > 0))")
+                .unwrap();
         assert_eq!(sig.column_count, 1);
         assert_eq!(sig.type_hints, vec![ColumnTypeHint::Integer]);
     }
@@ -586,10 +602,9 @@ mod tests {
     #[test]
     fn test_parse_create_table_with_unique_constraint() {
         // Ensures UNIQUE constraint lines are skipped.
-        let sig = SchemaSignature::from_create_sql(
-            "t",
-            "CREATE TABLE t (a TEXT, b INTEGER, UNIQUE (a))",
-        ).unwrap();
+        let sig =
+            SchemaSignature::from_create_sql("t", "CREATE TABLE t (a TEXT, b INTEGER, UNIQUE (a))")
+                .unwrap();
         assert_eq!(sig.column_count, 2);
     }
 }

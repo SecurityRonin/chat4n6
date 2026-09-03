@@ -33,7 +33,10 @@ pub fn decode_infinint(data: &[u8]) -> Result<(u64, usize)> {
     let data_bytes = num_groups * 4;
     let total = 1 + data_bytes;
     if total > data.len() {
-        bail!("truncated infinint: need {total} bytes, have {}", data.len());
+        bail!(
+            "truncated infinint: need {total} bytes, have {}",
+            data.len()
+        );
     }
     if data_bytes > 8 {
         // Value > u64::MAX — not representable; skip gracefully.
@@ -92,10 +95,8 @@ mod tests {
     #[test]
     fn test_value_u64_two_groups() {
         // Two groups (BB = 0x40): value 0x0000_0001_0000_0000 = 2^32
-        let (v, n) = decode_infinint(&[
-            0x40, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-        ])
-        .unwrap();
+        let (v, n) =
+            decode_infinint(&[0x40, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]).unwrap();
         assert_eq!(v, 0x1_0000_0000u64);
         assert_eq!(n, 9);
     }

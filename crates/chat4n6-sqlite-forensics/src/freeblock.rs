@@ -58,7 +58,8 @@ fn collect_freeblocks(page_data: &[u8], bhdr: usize) -> Vec<Freeblock> {
         }
 
         let next = u16::from_be_bytes([page_data[fb_offset], page_data[fb_offset + 1]]) as usize;
-        let size = u16::from_be_bytes([page_data[fb_offset + 2], page_data[fb_offset + 3]]) as usize;
+        let size =
+            u16::from_be_bytes([page_data[fb_offset + 2], page_data[fb_offset + 3]]) as usize;
 
         // Sanity: size must be >= 4 and fit within the page.
         if size < 4 || fb_offset + size > page_len {
@@ -88,7 +89,7 @@ fn try_parse_header(data: &[u8], pos: usize) -> Option<(Vec<u64>, usize)> {
 
     // Sanity: header must be at least 2 bytes (header_len varint itself +
     // at least one serial type), no larger than 512 bytes, and fit in data.
-    if header_len < 2 || header_len > 512 {
+    if !(2..=512).contains(&header_len) {
         return None;
     }
     let header_end_abs = pos + header_len;
@@ -191,20 +192,17 @@ fn collect_leaf_pages(db: &[u8], page_size: u32, root_page: u32) -> Vec<u32> {
                     }
                     // Cell pointer array starts at bhdr+12 for interior pages.
                     if bhdr + 5 <= page_data.len() {
-                        let cell_count = u16::from_be_bytes([
-                            page_data[bhdr + 3],
-                            page_data[bhdr + 4],
-                        ]) as usize;
+                        let cell_count =
+                            u16::from_be_bytes([page_data[bhdr + 3], page_data[bhdr + 4]]) as usize;
                         let ptr_start = bhdr + 12;
                         for i in 0..cell_count {
                             let ptr_off = ptr_start + i * 2;
                             if ptr_off + 2 > page_data.len() {
                                 break;
                             }
-                            let cell_off = u16::from_be_bytes([
-                                page_data[ptr_off],
-                                page_data[ptr_off + 1],
-                            ]) as usize;
+                            let cell_off =
+                                u16::from_be_bytes([page_data[ptr_off], page_data[ptr_off + 1]])
+                                    as usize;
                             // Each interior cell starts with a 4-byte left child pointer.
                             if cell_off + 4 <= page_data.len() {
                                 let child = u32::from_be_bytes([
@@ -252,11 +250,10 @@ pub fn recover_freeblocks(ctx: &RecoveryContext) -> Vec<RecoveredRecord> {
         let leaf_pages = collect_leaf_pages(ctx.db, ctx.page_size, root_page);
 
         for page_num in leaf_pages {
-            let (page_data, bhdr) =
-                match get_page_data(ctx.db, page_num, ctx.page_size as usize) {
-                    Some(x) => x,
-                    None => continue,
-                };
+            let (page_data, bhdr) = match get_page_data(ctx.db, page_num, ctx.page_size as usize) {
+                Some(x) => x,
+                None => continue,
+            };
 
             let page_abs_offset = (page_num as u64 - 1) * ctx.page_size as u64;
 
@@ -284,11 +281,13 @@ pub fn recover_freeblocks(ctx: &RecoveryContext) -> Vec<RecoveredRecord> {
                     if let Some((serial_types, header_end_rel)) =
                         try_parse_header(candidate_region, 0)
                     {
-                        if let Some((values, confidence)) =
-                            validate_and_decode(sig, &serial_types, candidate_region, header_end_rel)
-                        {
-                            let abs_offset =
-                                page_abs_offset + fb.page_offset as u64 + 4 + v as u64;
+                        if let Some((values, confidence)) = validate_and_decode(
+                            sig,
+                            &serial_types,
+                            candidate_region,
+                            header_end_rel,
+                        ) {
+                            let abs_offset = page_abs_offset + fb.page_offset as u64 + 4 + v as u64;
 
                             results.push(RecoveredRecord {
                                 table: table_name.clone(),
@@ -415,8 +414,7 @@ mod tests {
     fn test_no_freeblocks_clean_page() {
         // Page with no freeblocks → empty result.
         let db = make_minimal_db_1024();
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let ctx = make_ctx_with_schema(
             &db,
             "t",
@@ -449,8 +447,7 @@ mod tests {
             db[i] = 0xFF;
         }
 
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let ctx = make_ctx_with_schema(
             &db,
             "t",
@@ -518,14 +515,13 @@ mod tests {
         db[102] = (fb_offset & 0xFF) as u8;
 
         // Write freeblock.
-        db[fb_offset] = 0x00;     // next high
+        db[fb_offset] = 0x00; // next high
         db[fb_offset + 1] = 0x00; // next low  → 0 (end of chain)
         db[fb_offset + 2] = 0x00; // size high
         db[fb_offset + 3] = fb_size as u8; // size low
         db[fb_offset + 4..fb_offset + 4 + record.len()].copy_from_slice(record);
 
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let ctx = make_ctx_with_schema(
             &db,
             "t",
@@ -564,8 +560,7 @@ mod tests {
             db[fb_offset + 4 + i] = 0x00;
         }
 
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let ctx = make_ctx_with_schema(
             &db,
             "t",
@@ -580,8 +575,7 @@ mod tests {
     fn test_no_schema_signature_returns_empty() {
         // Table root present but no matching schema → no results.
         let db = make_minimal_db_1024();
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let mut roots = HashMap::new();
         roots.insert("t".to_string(), 1u32);
         let ctx = RecoveryContext {
@@ -619,8 +613,7 @@ mod tests {
         db[fb_offset + 3] = fb_size as u8;
         db[fb_offset + 4..fb_offset + 4 + record.len()].copy_from_slice(record);
 
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let ctx = make_ctx_with_schema(
             &db,
             "t",
@@ -678,7 +671,7 @@ mod tests {
         // First freeblock at offset 10 (>= bhdr+8=8)
         page_data[1] = 0x00;
         page_data[2] = 0x0A; // 10
-        // Freeblock at 10: next=0, size=2 (invalid, < 4)
+                             // Freeblock at 10: next=0, size=2 (invalid, < 4)
         page_data[10] = 0x00;
         page_data[11] = 0x00;
         page_data[12] = 0x00;
@@ -756,7 +749,8 @@ mod tests {
     #[test]
     fn test_validate_and_decode_column_count_mismatch() {
         // L130: serial_types.len() != sig.column_count → return None
-        let sig = SchemaSignature::from_create_sql("t", "CREATE TABLE t (a TEXT, b INTEGER)").unwrap();
+        let sig =
+            SchemaSignature::from_create_sql("t", "CREATE TABLE t (a TEXT, b INTEGER)").unwrap();
         // 3 serial types for a 2-column schema
         let serial_types = vec![1u64, 1, 1];
         let data = &[0x00, 0x00, 0x00];
@@ -767,7 +761,8 @@ mod tests {
     fn test_validate_and_decode_zero_compat() {
         // L141: compat == 0 → return None
         // Schema expects (TEXT, INTEGER) but provide (REAL, REAL)
-        let sig = SchemaSignature::from_create_sql("t", "CREATE TABLE t (a TEXT, b INTEGER)").unwrap();
+        let sig =
+            SchemaSignature::from_create_sql("t", "CREATE TABLE t (a TEXT, b INTEGER)").unwrap();
         // serial type 7 = REAL (not TEXT), serial type 7 = REAL (not INTEGER)
         let serial_types = vec![7u64, 7];
         // Provide enough data for two 8-byte floats
@@ -855,7 +850,7 @@ mod tests {
         db[bhdr] = 0x05; // interior
         db[bhdr + 3] = 0x00;
         db[bhdr + 4] = 0x02; // 2 cells
-        // Right-most child = page 2
+                             // Right-most child = page 2
         db[bhdr + 8] = 0x00;
         db[bhdr + 9] = 0x00;
         db[bhdr + 10] = 0x00;
@@ -865,7 +860,7 @@ mod tests {
         let ptr_start = bhdr + 12;
         db[ptr_start] = 0x00;
         db[ptr_start + 1] = 0xC8; // 200
-        // Cell pointer 1 → offset 210
+                                  // Cell pointer 1 → offset 210
         db[ptr_start + 2] = 0x00;
         db[ptr_start + 3] = 0xD2; // 210
 
@@ -910,15 +905,17 @@ mod tests {
         db[100] = 0x0A;
 
         let leaves = collect_leaf_pages(&db, page_size as u32, 1);
-        assert!(leaves.is_empty(), "index leaf should not be collected as table leaf");
+        assert!(
+            leaves.is_empty(),
+            "index leaf should not be collected as table leaf"
+        );
     }
 
     #[test]
     fn test_recover_freeblocks_column_count_zero() {
         // L248: sig.column_count == 0 → continue
         let db = make_minimal_db_1024();
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let mut roots = HashMap::new();
         roots.insert("t".to_string(), 1u32);
         // Create a schema with 0 columns
@@ -944,8 +941,7 @@ mod tests {
         // L257-259: get_page_data returns None → continue
         // Use a root page number that's out of range
         let db = make_minimal_db_1024();
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let mut roots = HashMap::new();
         roots.insert("t".to_string(), 999u32); // page 999 doesn't exist
         let sig = SchemaSignature::from_create_sql("t", "CREATE TABLE t (a TEXT)").unwrap();
@@ -973,8 +969,7 @@ mod tests {
         db[202] = 0x00;
         db[203] = 0x04; // size = 4 (just the header, no payload)
 
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let ctx = make_ctx_with_schema(
             &db,
             "t",
@@ -999,10 +994,10 @@ mod tests {
 
         let bhdr = 100;
         db[bhdr] = 0x05; // interior
-        // cell count = 100 (way more than can fit)
+                         // cell count = 100 (way more than can fit)
         db[bhdr + 3] = 0x00;
         db[bhdr + 4] = 0x64; // 100 cells
-        // Right-most child = 0 (invalid, won't be visited)
+                             // Right-most child = 0 (invalid, won't be visited)
         db[bhdr + 8] = 0x00;
         db[bhdr + 9] = 0x00;
         db[bhdr + 10] = 0x00;
@@ -1052,7 +1047,8 @@ mod tests {
     #[test]
     fn test_validate_and_decode_success() {
         // Happy path for validate_and_decode
-        let sig = SchemaSignature::from_create_sql("t", "CREATE TABLE t (a INTEGER, b TEXT)").unwrap();
+        let sig =
+            SchemaSignature::from_create_sql("t", "CREATE TABLE t (a INTEGER, b TEXT)").unwrap();
         // serial type 1 = INT8, serial type 15 = TEXT len 1
         let serial_types = vec![1u64, 15];
         // data: byte 0 = 42 (int8), byte 1 = 'A' (text)
@@ -1070,14 +1066,15 @@ mod tests {
     fn test_validate_and_decode_vpos_exceeds_data_len() {
         // L148-149: vpos > data.len() mid-decode
         // Schema expects 2 columns, serial types match, but values_start is past end of data
-        let sig = SchemaSignature::from_create_sql("t", "CREATE TABLE t (a INTEGER, b INTEGER)").unwrap();
+        let sig =
+            SchemaSignature::from_create_sql("t", "CREATE TABLE t (a INTEGER, b INTEGER)").unwrap();
         let serial_types = vec![1u64, 1]; // 2 x INT8 columns
         let data: &[u8] = &[0x2A]; // Only 1 byte, but first column needs it, second goes past
-        // Start at 0: first INT8 reads byte 0 (ok), vpos=1. Second INT8: vpos=1 == data.len()=1
-        // Actually vpos > data.len() would need values_start to push past.
-        // Let's start at values_start=1 with only 1 byte of data remaining → first column decodes
-        // but decode_serial_type returns None for insufficient data.
-        // The check is vpos > data.len() which is triggered when values_start is PAST the end.
+                                   // Start at 0: first INT8 reads byte 0 (ok), vpos=1. Second INT8: vpos=1 == data.len()=1
+                                   // Actually vpos > data.len() would need values_start to push past.
+                                   // Let's start at values_start=1 with only 1 byte of data remaining → first column decodes
+                                   // but decode_serial_type returns None for insufficient data.
+                                   // The check is vpos > data.len() which is triggered when values_start is PAST the end.
         let result = validate_and_decode(&sig, &serial_types, data, 2);
         assert!(result.is_none(), "vpos > data.len() should return None");
     }
@@ -1110,7 +1107,7 @@ mod tests {
         db[bhdr] = 0x05;
         db[bhdr + 3] = 0x00;
         db[bhdr + 4] = 0x01; // 1 cell
-        // Right-most child = page 3
+                             // Right-most child = page 3
         db[bhdr + 8] = 0x00;
         db[bhdr + 9] = 0x00;
         db[bhdr + 10] = 0x00;
@@ -1129,13 +1126,13 @@ mod tests {
         db[p2] = 0x0D; // table leaf
         db[p2 + 1] = 0x00;
         db[p2 + 2] = 0x0A; // first freeblock at offset 10
-        // Freeblock at page2 offset 10
+                           // Freeblock at page2 offset 10
         let fb_off = p2 + 10;
         db[fb_off] = 0x00;
         db[fb_off + 1] = 0x00; // next = 0
         db[fb_off + 2] = 0x00;
         db[fb_off + 3] = 0x09; // size = 9
-        // Record: header_len=3, serial 15 (TEXT len 1), serial 1 (INT8), 'B', 99
+                               // Record: header_len=3, serial 15 (TEXT len 1), serial 1 (INT8), 'B', 99
         db[fb_off + 4] = 0x03;
         db[fb_off + 5] = 0x0F;
         db[fb_off + 6] = 0x01;
@@ -1146,8 +1143,7 @@ mod tests {
         let p3 = page_size * 2;
         db[p3] = 0x0D;
 
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let ctx = make_ctx_with_schema(
             &db,
             "t",
@@ -1155,7 +1151,10 @@ mod tests {
             leaked_header,
         );
         let results = recover_freeblocks(&ctx);
-        assert!(!results.is_empty(), "Should find record in page 2 freeblock");
+        assert!(
+            !results.is_empty(),
+            "Should find record in page 2 freeblock"
+        );
         assert_eq!(results[0].values[0], SqlValue::Text("B".to_string()));
         assert_eq!(results[0].values[1], SqlValue::Int(99));
         // Offset should be relative to page 2
@@ -1168,7 +1167,7 @@ mod tests {
         // L175: get_page_data returns None for out-of-bounds page
         let page_size: usize = 1024;
         let db = vec![0u8; page_size]; // Only 1 page
-        // Try to get page 5 which doesn't exist
+                                       // Try to get page 5 which doesn't exist
         let leaves = collect_leaf_pages(&db, page_size as u32, 5);
         assert!(leaves.is_empty());
     }
@@ -1199,8 +1198,7 @@ mod tests {
         db[fb_offset + 9] = 0x41; // 'A'
         db[fb_offset + 10] = 0x2A; // 42
 
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         let ctx = make_ctx_with_schema(
             &db,
             "t",
@@ -1240,7 +1238,10 @@ mod tests {
         // Loop: p < 2 → false. serial_types is empty → return None at L113!
         let data: &[u8] = &[0x80, 0x02, 0x00, 0x00]; // varint(2) encoded as 2 bytes
         let result = try_parse_header(data, 0);
-        assert!(result.is_none(), "should return None when serial_types is empty");
+        assert!(
+            result.is_none(),
+            "should return None when serial_types is empty"
+        );
     }
 
     #[test]
@@ -1294,12 +1295,12 @@ mod tests {
         // First freeblock at offset 20
         page_data[1] = 0x00;
         page_data[2] = 0x14; // 20
-        // Freeblock 1 at 20: next=40, size=10
+                             // Freeblock 1 at 20: next=40, size=10
         page_data[20] = 0x00;
         page_data[21] = 0x28; // next = 40
         page_data[22] = 0x00;
         page_data[23] = 0x0A; // size = 10
-        // Freeblock 2 at 40: next=0, size=8
+                              // Freeblock 2 at 40: next=0, size=8
         page_data[40] = 0x00;
         page_data[41] = 0x00; // next = 0
         page_data[42] = 0x00;
@@ -1318,7 +1319,7 @@ mod tests {
         // points to page 3 which is beyond the DB boundary.
         let page_size: usize = 1024;
         let mut db = vec![0u8; page_size * 2]; // only 2 pages
-        // SQLite header
+                                               // SQLite header
         db[..16].copy_from_slice(b"SQLite format 3\x00");
         db[16] = (page_size >> 8) as u8;
         db[17] = (page_size & 0xFF) as u8;
@@ -1396,16 +1397,10 @@ mod tests {
         db[fb_offset + 3] = fb_size as u8;
         db[fb_offset + 4..fb_offset + 4 + payload.len()].copy_from_slice(payload);
 
-        let leaked_header: &'static DbHeader =
-            Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
+        let leaked_header: &'static DbHeader = Box::leak(Box::new(DbHeader::parse(&db).unwrap()));
         // Schema expects TEXT column but freeblock has REAL → validate_and_decode
         // will see 0 compatible columns (REAL vs TEXT) and return None.
-        let ctx = make_ctx_with_schema(
-            &db,
-            "t",
-            "CREATE TABLE t (name TEXT)",
-            leaked_header,
-        );
+        let ctx = make_ctx_with_schema(&db, "t", "CREATE TABLE t (name TEXT)", leaked_header);
         let results = recover_freeblocks(&ctx);
         // try_parse_header succeeds but validate_and_decode returns None,
         // so the inner if-let at L287 falls through → the for loop continues
@@ -1438,7 +1433,7 @@ mod tests {
         // Cell pointer 0 → offset 200 within page 1
         db[112] = 0x00;
         db[113] = 0xC8; // 200
-        // Interior cell at offset 200: left child page number (4 bytes) = page 2
+                        // Interior cell at offset 200: left child page number (4 bytes) = page 2
         db[200..204].copy_from_slice(&2u32.to_be_bytes());
 
         // Page 2 (offset 512, bhdr=0): table leaf 0x0D

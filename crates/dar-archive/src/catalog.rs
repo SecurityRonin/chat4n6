@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
-use crate::infinint::decode_infinint;
 use crate::archive::DarEntry;
+use crate::infinint::decode_infinint;
+use anyhow::{bail, Context, Result};
 
 // ── Signature byte decoding (from libdar cat_signature.cpp) ─────────────────
 //
@@ -190,53 +190,71 @@ pub fn parse_catalog(data: &[u8], slice_index: usize) -> Result<Vec<DarEntry>> {
             // ── Symbolic link ─────────────────────────────────────────────
             'l' => {
                 pos += 1;
-                let (_, new_pos) = read_cstr(data, pos)?; pos = new_pos;
-                let (_, new_pos) = parse_inode_header(data, pos)?; pos = new_pos;
-                let (_, new_pos) = read_cstr(data, pos)?; pos = new_pos; // link target
+                let (_, new_pos) = read_cstr(data, pos)?;
+                pos = new_pos;
+                let (_, new_pos) = parse_inode_header(data, pos)?;
+                pos = new_pos;
+                let (_, new_pos) = read_cstr(data, pos)?;
+                pos = new_pos; // link target
             }
 
             // ── Character / block device ──────────────────────────────────
             'c' | 'b' => {
                 pos += 1;
-                let (_, new_pos) = read_cstr(data, pos)?; pos = new_pos;
-                let (_, new_pos) = parse_inode_header(data, pos)?; pos = new_pos;
-                let (_, c) = decode_infinint(&data[pos..])?; pos += c; // major
-                let (_, c) = decode_infinint(&data[pos..])?; pos += c; // minor
+                let (_, new_pos) = read_cstr(data, pos)?;
+                pos = new_pos;
+                let (_, new_pos) = parse_inode_header(data, pos)?;
+                pos = new_pos;
+                let (_, c) = decode_infinint(&data[pos..])?;
+                pos += c; // major
+                let (_, c) = decode_infinint(&data[pos..])?;
+                pos += c; // minor
             }
 
             // ── Pipe / socket ─────────────────────────────────────────────
             'p' | 's' => {
                 pos += 1;
-                let (_, new_pos) = read_cstr(data, pos)?; pos = new_pos;
-                let (_, new_pos) = parse_inode_header(data, pos)?; pos = new_pos;
-                if status != STATUS_SAVED { pos += 1; } // flags byte
+                let (_, new_pos) = read_cstr(data, pos)?;
+                pos = new_pos;
+                let (_, new_pos) = parse_inode_header(data, pos)?;
+                pos = new_pos;
+                if status != STATUS_SAVED {
+                    pos += 1;
+                } // flags byte
             }
 
             // ── Hard link label ───────────────────────────────────────────
             'h' => {
                 pos += 1;
-                let (_, new_pos) = read_cstr(data, pos)?; pos = new_pos;
-                let (_, c) = decode_infinint(&data[pos..])?; pos += c; // etiquette
+                let (_, new_pos) = read_cstr(data, pos)?;
+                pos = new_pos;
+                let (_, c) = decode_infinint(&data[pos..])?;
+                pos += c; // etiquette
             }
 
             // ── File label (hard link target) ─────────────────────────────
             'e' => {
                 pos += 1;
-                let (_, new_pos) = read_cstr(data, pos)?; pos = new_pos;
-                let (_, c) = decode_infinint(&data[pos..])?; pos += c; // etiquette
+                let (_, new_pos) = read_cstr(data, pos)?;
+                pos = new_pos;
+                let (_, c) = decode_infinint(&data[pos..])?;
+                pos += c; // etiquette
             }
 
             // ── Door / ignored entry ──────────────────────────────────────
             'x' => {
                 pos += 1;
-                let (_, new_pos) = read_cstr(data, pos)?; pos = new_pos;
-                let (_, new_pos) = parse_inode_header(data, pos)?; pos = new_pos;
+                let (_, new_pos) = read_cstr(data, pos)?;
+                pos = new_pos;
+                let (_, new_pos) = parse_inode_header(data, pos)?;
+                pos = new_pos;
             }
 
             // ── Mirage (deleted-entry marker) ─────────────────────────────
             'm' => {
                 pos += 1;
-                let (_, new_pos) = read_cstr(data, pos)?; pos = new_pos;
+                let (_, new_pos) = read_cstr(data, pos)?;
+                pos = new_pos;
                 pos += 1; // original sig byte of deleted entry
             }
 
@@ -390,7 +408,7 @@ mod tests {
         buf.extend(inf(0)); // uid = 0
         buf.extend(inf(0)); // gid = 0
         buf.extend_from_slice(&perm.to_be_bytes()); // perm
-        // atime: 's' + 0
+                                                    // atime: 's' + 0
         buf.push(b's');
         buf.extend(inf(0));
         // mtime: 's' + 0
@@ -452,7 +470,7 @@ mod tests {
         children.extend(inf(13)); // storage_size = 13
         children.push(0x00); // flags = 0
         children.push(b'n'); // algo = 'n' (no compression)
-        // CRC: 4-byte CRC32
+                             // CRC: 4-byte CRC32
         children.extend(inf(4)); // crc_len = 4
         children.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // crc data
 
@@ -486,7 +504,7 @@ mod tests {
         children.extend(inf(4)); // crc_len
         children.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // crc
         children.push(0x7A); // EOD closes docs
-        // Top-level file "top.txt"
+                             // Top-level file "top.txt"
         children.push(0x66);
         children.extend_from_slice(b"top.txt\x00");
         children.extend(minimal_inode(0o644));
@@ -505,11 +523,14 @@ mod tests {
         let docs = entries.iter().find(|e| e.is_dir).unwrap();
         assert_eq!(docs.path, PathBuf::from("docs"));
 
-        let readme = entries.iter().find(|e| e.path == PathBuf::from("docs/readme.txt")).unwrap();
+        let readme = entries
+            .iter()
+            .find(|e| e.path == *"docs/readme.txt")
+            .unwrap();
         assert_eq!(readme.size, 100);
         assert_eq!(readme.data_offset, 1024);
 
-        let top = entries.iter().find(|e| e.path == PathBuf::from("top.txt")).unwrap();
+        let top = entries.iter().find(|e| e.path == *"top.txt").unwrap();
         assert_eq!(top.size, 5);
         assert_eq!(top.data_offset, 2048);
     }
@@ -541,7 +562,7 @@ mod tests {
         children.extend_from_slice(b"mylink\x00");
         children.extend(minimal_inode(0o777));
         children.extend_from_slice(b"/etc/passwd\x00"); // link target
-        // File after symlink
+                                                        // File after symlink
         children.push(0x66);
         children.extend_from_slice(b"after.txt\x00");
         children.extend(minimal_inode(0o644));

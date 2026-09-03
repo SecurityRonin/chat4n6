@@ -39,14 +39,22 @@ pub fn build_poll(
             // Deduplicate voter JIDs for this option
             let unique_jids: Vec<String> = {
                 let mut seen = HashSet::new();
-                voter_jids.into_iter().filter(|j| seen.insert(j.clone())).collect()
+                voter_jids
+                    .into_iter()
+                    .filter(|j| seen.insert(j.clone()))
+                    .collect()
             };
             for jid in &unique_jids {
                 all_voters.insert(jid.clone());
             }
             let voter_names: Vec<String> = unique_jids
                 .iter()
-                .map(|jid| voter_name_map.get(jid).cloned().unwrap_or_else(|| jid.clone()))
+                .map(|jid| {
+                    voter_name_map
+                        .get(jid)
+                        .cloned()
+                        .unwrap_or_else(|| jid.clone())
+                })
                 .collect();
             PollOption {
                 option_id: idx as i64,

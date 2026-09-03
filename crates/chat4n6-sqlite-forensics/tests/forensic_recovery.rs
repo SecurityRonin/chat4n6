@@ -40,7 +40,8 @@ fn make_db_with_page_size(page_size: u32) -> Vec<u8> {
     let path = dir.path().join("test.db");
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch(&format!("PRAGMA page_size={page_size};")).unwrap();
+        conn.execute_batch(&format!("PRAGMA page_size={page_size};"))
+            .unwrap();
         conn.execute_batch(
             "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);
              INSERT INTO items VALUES (1, 'alpha');
@@ -84,9 +85,11 @@ fn make_wal_mode_db() -> (Vec<u8>, Vec<u8>) {
         )
         .unwrap();
         // Checkpoint so the above rows are in the main DB file
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
         // Now insert more data that stays only in WAL
-        conn.execute_batch("INSERT INTO notes VALUES (3, 'wal pending note');").unwrap();
+        conn.execute_batch("INSERT INTO notes VALUES (3, 'wal pending note');")
+            .unwrap();
     }
     let db_bytes = std::fs::read(&path).unwrap();
     let wal_path = format!("{}-wal", path.display());
@@ -400,9 +403,9 @@ fn make_synthetic_journal(page_size: usize, sector_size: usize, page_data: &[u8]
 
     let mut j = vec![0u8; sector_size]; // header, zero-padded
     j[..8].copy_from_slice(&JOURNAL_MAGIC);
-    j[8..12].copy_from_slice(&1i32.to_be_bytes());           // page_count = 1
-    j[12..16].copy_from_slice(&0xCAFEu32.to_be_bytes());     // nonce
-    j[16..20].copy_from_slice(&2u32.to_be_bytes());          // initial db size (pages)
+    j[8..12].copy_from_slice(&1i32.to_be_bytes()); // page_count = 1
+    j[12..16].copy_from_slice(&0xCAFEu32.to_be_bytes()); // nonce
+    j[16..20].copy_from_slice(&2u32.to_be_bytes()); // initial db size (pages)
     j[20..24].copy_from_slice(&(sector_size as u32).to_be_bytes());
     j[24..28].copy_from_slice(&(page_size as u32).to_be_bytes());
 
@@ -418,7 +421,7 @@ fn make_synthetic_journal(page_size: usize, sector_size: usize, page_data: &[u8]
 fn make_table_leaf_page(page_size: usize) -> Vec<u8> {
     let mut page = vec![0u8; page_size];
     page[0] = 0x0D; // table leaf
-    // cell_count = 1
+                    // cell_count = 1
     page[3] = 0x00;
     page[4] = 0x01;
     // cell_content_start
@@ -434,7 +437,7 @@ fn make_table_leaf_page(page_size: usize) -> Vec<u8> {
     page[cell_start as usize + 2] = 0x03; // header_size
     page[cell_start as usize + 3] = 0x01; // serial_type: 1-byte int
     page[cell_start as usize + 4] = 0x0D; // serial_type: 0-byte text
-    page[cell_start as usize + 5] = 42;   // integer value
+    page[cell_start as usize + 5] = 42; // integer value
     page
 }
 
@@ -496,8 +499,7 @@ fn rollback_journal_stats_count_matches_records() {
         .filter(|r| r.source == EvidenceSource::Journal)
         .count();
     assert_eq!(
-        result.stats.journal_recovered,
-        journal_record_count,
+        result.stats.journal_recovered, journal_record_count,
         "stats.journal_recovered must match actual Journal source count"
     );
 }

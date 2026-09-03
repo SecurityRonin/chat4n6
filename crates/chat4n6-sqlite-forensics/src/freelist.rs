@@ -143,7 +143,12 @@ pub fn recover_freelist_content(
         if bhdr_offset < page_data.len() {
             if let Some(PageType::TableLeaf) = PageType::from_byte(page_data[bhdr_offset]) {
                 let mut leaf_records = parse_table_leaf_page(
-                    db, page_data, bhdr_offset, page_num, page_size, "unknown",
+                    db,
+                    page_data,
+                    bhdr_offset,
+                    page_num,
+                    page_size,
+                    "unknown",
                 );
                 if !leaf_records.is_empty() {
                     for r in &mut leaf_records {
@@ -302,10 +307,14 @@ mod tests {
         let sig = SchemaSignature::from_create_sql(
             "items",
             "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER)",
-        ).unwrap();
+        )
+        .unwrap();
         let recovered = recover_freelist_content(&db, 1024, &[sig]);
         // Should find records from freed pages
-        assert!(!recovered.is_empty(), "should recover records from freelist pages");
+        assert!(
+            !recovered.is_empty(),
+            "should recover records from freelist pages"
+        );
         for r in &recovered {
             assert_eq!(r.source, EvidenceSource::Freelist);
         }
@@ -330,7 +339,10 @@ mod tests {
         let trunk = u32::from_be_bytes([db[32], db[33], db[34], db[35]]);
         assert_eq!(trunk, 0, "expected clean DB to have no freelist trunk");
         let recovered = recover_freelist_content(&db, 4096, &[]);
-        assert!(recovered.is_empty(), "clean DB should yield no freelist records");
+        assert!(
+            recovered.is_empty(),
+            "clean DB should yield no freelist records"
+        );
     }
 
     #[test]
@@ -348,7 +360,10 @@ mod tests {
         db[32..36].copy_from_slice(&9999u32.to_be_bytes());
         let recovered = recover_freelist_content(&db, 4096, &[]);
         // Should return empty without panicking.
-        assert!(recovered.is_empty(), "out-of-bounds trunk should yield no records");
+        assert!(
+            recovered.is_empty(),
+            "out-of-bounds trunk should yield no records"
+        );
     }
 
     fn make_db_with_freed_pages() -> Vec<u8> {
@@ -356,19 +371,20 @@ mod tests {
         conn.execute_batch(
             "PRAGMA page_size=1024; PRAGMA journal_mode=DELETE; PRAGMA auto_vacuum=NONE; PRAGMA secure_delete=OFF;"
         ).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER);"
-        ).unwrap();
+        conn.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER);")
+            .unwrap();
         // Insert enough records to fill multiple pages, then delete them all
         for i in 0..200 {
             conn.execute(
                 "INSERT INTO items VALUES (?, ?, ?)",
                 rusqlite::params![i, format!("item_{:04}", i), i * 10],
-            ).unwrap();
+            )
+            .unwrap();
         }
         conn.execute_batch("DELETE FROM items;").unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -406,7 +422,7 @@ mod tests {
         page[0] = 0x0d;
         page[1] = 0x00;
         page[2] = 0x64; // first_fb = 100
-        // freeblock at 100: next=0, size=3 (< 4 → invalid)
+                        // freeblock at 100: next=0, size=3 (< 4 → invalid)
         page[100] = 0x00;
         page[101] = 0x00;
         page[102] = 0x00;
@@ -433,8 +449,8 @@ mod tests {
         // Page 1 (offset 0): trunk page
         db[0..4].copy_from_slice(&0u32.to_be_bytes()); // next_trunk = 0
         db[4..8].copy_from_slice(&100u32.to_be_bytes()); // leaf_count = 100 (way more than fits)
-        // Only room for (32 - 8) / 4 = 6 leaf entries.
-        // Leaf entries at offsets 8, 12, 16, 20, 24, 28 — then offset 32 overflows.
+                                                         // Only room for (32 - 8) / 4 = 6 leaf entries.
+                                                         // Leaf entries at offsets 8, 12, 16, 20, 24, 28 — then offset 32 overflows.
         for i in 0..6 {
             let off = 8 + i * 4;
             db[off..off + 4].copy_from_slice(&((i as u32) + 2).to_be_bytes());

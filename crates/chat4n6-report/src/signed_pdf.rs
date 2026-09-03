@@ -76,10 +76,8 @@ fn build_pdf(body: &str, xmp: &str, hash: &str) -> String {
     );
     let content_len = content.len();
 
-    let mut pdf = format!("%PDF-1.4\n");
-    pdf.push_str(&format!(
-        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Metadata 5 0 R >>\nendobj\n"
-    ));
+    let mut pdf = "%PDF-1.4\n".to_string();
+    pdf.push_str("1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Metadata 5 0 R >>\nendobj\n");
     pdf.push_str("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
     pdf.push_str(
         "3 0 obj\n<< /Type /Page /Parent 2 0 R \

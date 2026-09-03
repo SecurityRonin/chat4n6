@@ -1,4 +1,6 @@
-use crate::anti_forensics::{detect_duplicate_stanza_ids, detect_rowid_reuse, detect_thumbnail_orphans};
+use crate::anti_forensics::{
+    detect_duplicate_stanza_ids, detect_rowid_reuse, detect_thumbnail_orphans,
+};
 use crate::schema::{cols, SchemaVersion};
 pub use crate::schema::{default_mime_for_type, is_media_type, msg_type_label};
 use anyhow::{Context, Result};
@@ -51,10 +53,7 @@ pub fn extract_from_msgstore(
     let jid_map = build_jid_map(tbl(&by_table, "jid"));
 
     // Build chat map: chat_id → Chat (populated with messages below)
-    let mut chats = build_chats(
-        tbl(&by_table, "chat"),
-        &jid_map,
-    );
+    let mut chats = build_chats(tbl(&by_table, "chat"), &jid_map);
 
     // Map messages into chats.  If the chat record was deleted/unrecovered,
     // create a stub so forensically-recovered messages are never silently dropped.
@@ -100,7 +99,10 @@ pub fn extract_from_msgstore(
             }
             // Ghost recovery: upgrade tombstone messages whose original text
             // was preserved in message_quoted.
-            if matches!(&msg.content, MessageContent::Unknown(15) | MessageContent::Deleted) {
+            if matches!(
+                &msg.content,
+                MessageContent::Unknown(15) | MessageContent::Deleted
+            ) {
                 if let Some(ghost_text) = ghost_map.get(&msg.id) {
                     msg.content = MessageContent::GhostRecovered(ghost_text.clone());
                 }
@@ -135,15 +137,12 @@ pub fn extract_from_msgstore(
                 Some(SqlValue::Int(n)) => jid_map.get(n).cloned().unwrap_or_default(),
                 _ => String::new(),
             };
-            reactions_map
-                .entry(msg_row_id)
-                .or_default()
-                .push(Reaction {
-                    emoji,
-                    reactor_jid,
-                    timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
-                    source: r.source.clone(),
-                });
+            reactions_map.entry(msg_row_id).or_default().push(Reaction {
+                emoji,
+                reactor_jid,
+                timestamp: ForensicTimestamp::from_millis(ts_ms, tz_offset_secs),
+                source: r.source.clone(),
+            });
         }
     }
 
@@ -280,17 +279,15 @@ pub fn extract_from_msgstore(
     // ── §2.6 Anti-forensics detectors ────────────────────────────────────────
 
     // Collect live message IDs for thumbnail orphan detection.
-    let live_message_ids: HashSet<i64> = chats.values()
+    let live_message_ids: HashSet<i64> = chats
+        .values()
         .flat_map(|c| c.messages.iter().map(|m| m.id))
         .collect();
     let total_messages = live_message_ids.len() as u32;
 
     // Collect message_thumbnails row IDs.
     let thumbnail_records = tbl(&by_table, "message_thumbnails");
-    let thumbnail_row_ids: Vec<i64> = thumbnail_records
-        .iter()
-        .filter_map(|r| r.row_id)
-        .collect();
+    let thumbnail_row_ids: Vec<i64> = thumbnail_records.iter().filter_map(|r| r.row_id).collect();
 
     let chats_vec: Vec<_> = chats.into_values().collect();
 
@@ -362,7 +359,10 @@ pub fn extract_parallel(
 
 /// Look up a table name in a `partition_by_table` map and return its records as a slice.
 /// Returns an empty slice when the table is absent.
-fn tbl<'a>(by: &'a HashMap<String, Vec<&'a RecoveredRecord>>, name: &str) -> &'a [&'a RecoveredRecord] {
+fn tbl<'a>(
+    by: &'a HashMap<String, Vec<&'a RecoveredRecord>>,
+    name: &str,
+) -> &'a [&'a RecoveredRecord] {
     by.get(name).map(|v| v.as_slice()).unwrap_or_default()
 }
 
@@ -416,8 +416,7 @@ fn key_id_column_index(ddl: &str) -> Option<usize> {
     // Split on commas (naive but sufficient for well-formed SQLite DDL).
     // Column 0 in values[] is the INTEGER PRIMARY KEY (always first column).
     // Real columns start at index 1 in values[].
-    let mut idx = 0usize;
-    for col_def in cols_str.split(',') {
+    for (idx, col_def) in cols_str.split(',').enumerate() {
         let col_def = col_def.trim();
         // Extract first token as column name (may be quoted with `backticks` or plain).
         let col_name = col_def
@@ -429,7 +428,6 @@ fn key_id_column_index(ddl: &str) -> Option<usize> {
         if col_name.eq_ignore_ascii_case("key_id") {
             return Some(idx);
         }
-        idx += 1;
     }
     None
 }
@@ -542,7 +540,12 @@ fn record_to_message(
     } else if msg_type == 53 || msg_type == 54 {
         // View-once image (53) or video (54) — media key/CDN URL may survive device deletion
         let mime = media_mime.unwrap_or_else(|| {
-            if msg_type == 54 { "video/mp4" } else { "image/jpeg" }.to_string()
+            if msg_type == 54 {
+                "video/mp4"
+            } else {
+                "image/jpeg"
+            }
+            .to_string()
         });
         MessageContent::ViewOnce(MediaRef {
             file_path: media_name.unwrap_or_default(),
@@ -841,8 +844,7 @@ fn build_ghost_map(records: &[&RecoveredRecord]) -> HashMap<i64, String> {
 /// Extract contacts from wa.db bytes using the forensic B-tree walker.
 /// wa_contacts table: [0]=Null(_id), [1]=jid, [2]=display_name, [3]=status, [4]=number
 pub fn extract_contacts(wa_db_bytes: &[u8]) -> Result<Vec<Contact>> {
-    let engine = ForensicEngine::new(wa_db_bytes, None)
-        .context("failed to open wa.db")?;
+    let engine = ForensicEngine::new(wa_db_bytes, None).context("failed to open wa.db")?;
     let records = engine.recover_layer1().context("wa.db layer 1 recovery")?;
     let by_table = partition_by_table(&records);
     let contact_records = tbl(&by_table, "wa_contacts");
@@ -962,7 +964,10 @@ mod tests {
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         assert_eq!(result.calls.len(), 1);
         // Fixture inserts call_result=1 (Connected)
-        assert_eq!(result.calls[0].call_result, chat4n6_plugin_api::CallResult::Connected);
+        assert_eq!(
+            result.calls[0].call_result,
+            chat4n6_plugin_api::CallResult::Connected
+        );
     }
 
     // ── E5: quoted message tests ─────────────────────────────────────────
@@ -1021,7 +1026,10 @@ mod tests {
     fn test_extract_contacts_from_wa_db() {
         let wa_db = make_wa_db();
         let contacts = extract_contacts(&wa_db).unwrap();
-        assert!(contacts.len() >= 2, "should have at least 2 contacts with names");
+        assert!(
+            contacts.len() >= 2,
+            "should have at least 2 contacts with names"
+        );
         let alice = contacts
             .iter()
             .find(|c| c.jid == "4155550100@s.whatsapp.net")
@@ -1108,9 +1116,16 @@ mod tests {
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
         // Message 6 has message_type=15 (tombstone, no message_quoted entry) → Deleted
-        let msg6 = chat1.messages.iter().find(|m| m.id == 6).expect("msg 6 (tombstone)");
+        let msg6 = chat1
+            .messages
+            .iter()
+            .find(|m| m.id == 6)
+            .expect("msg 6 (tombstone)");
         assert!(
-            matches!(&msg6.content, MessageContent::Deleted | MessageContent::GhostRecovered(_)),
+            matches!(
+                &msg6.content,
+                MessageContent::Deleted | MessageContent::GhostRecovered(_)
+            ),
             "msg_type=15 tombstone should produce Deleted or GhostRecovered, got {:?}",
             msg6.content
         );
@@ -1133,14 +1148,18 @@ mod tests {
     #[test]
     fn schema_version_is_read_from_pragma_user_version() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql")).unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
+            .unwrap();
         conn.execute_batch("PRAGMA user_version = 215;").unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         let db = std::fs::read(tmp.path()).unwrap();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        assert_eq!(result.schema_version, 215,
-            "schema_version must be read from PRAGMA user_version, not hardcoded");
+        assert_eq!(
+            result.schema_version, 215,
+            "schema_version must be read from PRAGMA user_version, not hardcoded"
+        );
     }
 
     // ── C8: ghost message recovery from message_quoted ───────────────────
@@ -1148,30 +1167,39 @@ mod tests {
     #[test]
     fn ghost_message_recovered_from_message_quoted() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql")).unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
+            .unwrap();
         conn.execute_batch(
             "INSERT INTO message_quoted VALUES (99, 6, 1, NULL, 1, 1710513600000, 'Secret deleted message', 0, NULL, NULL);",
         ).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         let db = std::fs::read(tmp.path()).unwrap();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let ghost = result.chats.iter()
+        let ghost = result
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter())
             .find(|m| matches!(&m.content, MessageContent::GhostRecovered(_)));
-        assert!(ghost.is_some(), "msg_type=15 with message_quoted entry must produce GhostRecovered");
+        assert!(
+            ghost.is_some(),
+            "msg_type=15 with message_quoted entry must produce GhostRecovered"
+        );
         if let Some(MessageContent::GhostRecovered(text)) = ghost.map(|m| &m.content) {
-            assert!(text.contains("Secret deleted message"),
-                "GhostRecovered text must contain the quoted text_data");
+            assert!(
+                text.contains("Secret deleted message"),
+                "GhostRecovered text must contain the quoted text_data"
+            );
         }
     }
 
     #[test]
     fn test_is_media_type_helper() {
-        assert!(is_media_type(1));  // image
-        assert!(is_media_type(2));  // audio
-        assert!(is_media_type(3));  // video
-        assert!(is_media_type(8));  // document
+        assert!(is_media_type(1)); // image
+        assert!(is_media_type(2)); // audio
+        assert!(is_media_type(3)); // video
+        assert!(is_media_type(8)); // document
         assert!(is_media_type(13)); // gif
         assert!(is_media_type(20)); // sticker
         assert!(!is_media_type(0)); // text
@@ -1216,7 +1244,8 @@ mod tests {
             INSERT INTO call_log VALUES (1, 1, 0, 0, 90, 1710513500000, 1, NULL, 2);
         "#).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1273,7 +1302,8 @@ mod tests {
             INSERT INTO call_log VALUES (3, 1, 1, 0, 60, 1710513500000, 1, NULL, NULL);
         "#).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1282,7 +1312,11 @@ mod tests {
         let db = make_msgstore_with_group_call();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let group_calls: Vec<_> = result.calls.iter().filter(|c| c.group_call).collect();
-        assert_eq!(group_calls.len(), 1, "two rows with same call_row_id → 1 merged record");
+        assert_eq!(
+            group_calls.len(),
+            1,
+            "two rows with same call_row_id → 1 merged record"
+        );
         assert_eq!(group_calls[0].participants.len(), 2);
     }
 
@@ -1290,8 +1324,14 @@ mod tests {
     fn test_group_call_participants_contain_both_jids() {
         let db = make_msgstore_with_group_call();
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let gc = result.calls.iter().find(|c| c.group_call).expect("no group call");
-        assert!(gc.participants.contains(&"alice@s.whatsapp.net".to_string()));
+        let gc = result
+            .calls
+            .iter()
+            .find(|c| c.group_call)
+            .expect("no group call");
+        assert!(gc
+            .participants
+            .contains(&"alice@s.whatsapp.net".to_string()));
         assert!(gc.participants.contains(&"bob@s.whatsapp.net".to_string()));
     }
 
@@ -1487,7 +1527,10 @@ mod features_i1_i8_tests {
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let chat1 = result.chats.iter().find(|c| c.id == 1).expect("chat 1");
         let msg2 = chat1.messages.iter().find(|m| m.id == 2).expect("msg 2");
-        assert!(msg2.starred, "msg 2 starred=1 in DB must produce Message.starred=true");
+        assert!(
+            msg2.starred,
+            "msg 2 starred=1 in DB must produce Message.starred=true"
+        );
         let msg1 = chat1.messages.iter().find(|m| m.id == 1).expect("msg 1");
         assert!(!msg1.starred, "msg 1 starred=0 must be false");
     }
@@ -1519,7 +1562,10 @@ mod features_i1_i8_tests {
             Some(8),
             "msg 5 forward_score should be Some(8)"
         );
-        assert!(msg5.is_forwarded, "msg 5 with forward_score=8 must be is_forwarded=true");
+        assert!(
+            msg5.is_forwarded,
+            "msg 5 with forward_score=8 must be is_forwarded=true"
+        );
     }
 }
 
@@ -1530,10 +1576,12 @@ mod proptest_redo_tests {
 
     fn make_db_with_sql(extra_sql: &str) -> Vec<u8> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql")).unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/modern_schema.sql"))
+            .unwrap();
         conn.execute_batch(extra_sql).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1545,11 +1593,16 @@ mod proptest_redo_tests {
              VALUES (1, 1, 0, 1710514000000, NULL, 53, 'image/jpeg', 'Media/WhatsApp View Once/VIEW-001.jpg');",
         );
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let view_once_count = result.chats.iter()
+        let view_once_count = result
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter())
             .filter(|m| matches!(&m.content, MessageContent::ViewOnce(_)))
             .count();
-        assert_eq!(view_once_count, 1, "msg_type 53 must produce ViewOnce, not Unknown");
+        assert_eq!(
+            view_once_count, 1,
+            "msg_type 53 must produce ViewOnce, not Unknown"
+        );
     }
 
     #[test]
@@ -1560,7 +1613,9 @@ mod proptest_redo_tests {
              VALUES (1, 1, 0, 1710514100000, NULL, 54, 'video/mp4', 'Media/WhatsApp View Once/VIEW-002.mp4');",
         );
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let view_once_count = result.chats.iter()
+        let view_once_count = result
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter())
             .filter(|m| matches!(&m.content, MessageContent::ViewOnce(_)))
             .count();
@@ -1576,7 +1631,10 @@ mod proptest_redo_tests {
         );
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let archived_chats: Vec<_> = result.chats.iter().filter(|c| c.archived).collect();
-        assert!(!archived_chats.is_empty(), "archived=1 in DB must produce Chat.archived=true");
+        assert!(
+            !archived_chats.is_empty(),
+            "archived=1 in DB must produce Chat.archived=true"
+        );
     }
 
     #[test]
@@ -1590,7 +1648,7 @@ mod proptest_redo_tests {
         let result = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
         let g = result.chats.iter().find(|c| c.jid == "group123@g.us");
         assert!(
-            g.map_or(false, |c| c.is_group),
+            g.is_some_and(|c| c.is_group),
             "chat with @g.us JID must be is_group=true even without a subject"
         );
     }
@@ -1691,7 +1749,8 @@ mod media_type_extended_tests {
             INSERT INTO message VALUES (1, 1, NULL, 1, 1710513500000, NULL, {}, NULL, NULL, 0, 0, NULL);
         "#, msg_type_val)).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1703,7 +1762,8 @@ mod media_type_extended_tests {
         let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
         assert!(
             matches!(&msg.content, MessageContent::Media(mr) if mr.mime_type.contains("geo")),
-            "msg_type=5 (location) should produce Media with geo mime, got: {:?}", msg.content
+            "msg_type=5 (location) should produce Media with geo mime, got: {:?}",
+            msg.content
         );
     }
 
@@ -1715,7 +1775,8 @@ mod media_type_extended_tests {
         let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
         assert!(
             matches!(&msg.content, MessageContent::Media(_)),
-            "msg_type=42 (live location) should produce Media, got: {:?}", msg.content
+            "msg_type=42 (live location) should produce Media, got: {:?}",
+            msg.content
         );
     }
 
@@ -1727,7 +1788,8 @@ mod media_type_extended_tests {
         let msg = chat.messages.iter().find(|m| m.id == 1).expect("msg 1");
         assert!(
             matches!(&msg.content, MessageContent::Media(mr) if mr.mime_type == "text/vcard"),
-            "msg_type=64 (contact card) should produce Media with text/vcard, got: {:?}", msg.content
+            "msg_type=64 (contact card) should produce Media with text/vcard, got: {:?}",
+            msg.content
         );
     }
 
@@ -1754,7 +1816,8 @@ mod streaming_extraction_tests {
 
     fn make_multi_message_db(msg_count: usize) -> Vec<u8> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             PRAGMA user_version = 200;
             CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
@@ -1774,15 +1837,23 @@ mod streaming_extraction_tests {
             );
             INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
             INSERT INTO chat VALUES (1, 1, NULL);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         for i in 1..=msg_count {
             conn.execute(
                 "INSERT INTO message VALUES (?, 1, NULL, 0, ?, ?, 0, NULL, NULL, 0, 0, NULL)",
-                rusqlite::params![i as i64, (1710000000000i64 + i as i64 * 1000), format!("msg {}", i)],
-            ).unwrap();
+                rusqlite::params![
+                    i as i64,
+                    (1710000000000i64 + i as i64 * 1000),
+                    format!("msg {}", i)
+                ],
+            )
+            .unwrap();
         }
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1793,7 +1864,8 @@ mod streaming_extraction_tests {
         let count_clone = Arc::clone(&count);
         extract_streaming(&db, 0, SchemaVersion::Modern, |_msg| {
             count_clone.fetch_add(1, Ordering::SeqCst);
-        }).expect("extract_streaming should succeed");
+        })
+        .expect("extract_streaming should succeed");
         assert_eq!(
             count.load(Ordering::SeqCst),
             10,
@@ -1807,7 +1879,9 @@ mod streaming_extraction_tests {
 
         // Batch extraction
         let batch = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let mut batch_ids: Vec<i64> = batch.chats.iter()
+        let mut batch_ids: Vec<i64> = batch
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter().map(|m| m.id))
             .collect();
         batch_ids.sort();
@@ -1816,7 +1890,8 @@ mod streaming_extraction_tests {
         let mut streaming_ids = Vec::new();
         extract_streaming(&db, 0, SchemaVersion::Modern, |msg| {
             streaming_ids.push(msg.id);
-        }).expect("extract_streaming should succeed");
+        })
+        .expect("extract_streaming should succeed");
         streaming_ids.sort();
 
         assert_eq!(
@@ -1830,13 +1905,17 @@ mod streaming_extraction_tests {
         let db = make_multi_message_db(20);
 
         let serial = extract_from_msgstore(&db, 0, SchemaVersion::Modern).unwrap();
-        let mut serial_ids: Vec<i64> = serial.chats.iter()
+        let mut serial_ids: Vec<i64> = serial
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter().map(|m| m.id))
             .collect();
         serial_ids.sort();
 
         let parallel = extract_parallel(&db, 0, SchemaVersion::Modern).unwrap();
-        let mut parallel_ids: Vec<i64> = parallel.chats.iter()
+        let mut parallel_ids: Vec<i64> = parallel
+            .chats
+            .iter()
             .flat_map(|c| c.messages.iter().map(|m| m.id))
             .collect();
         parallel_ids.sort();
@@ -1854,9 +1933,11 @@ mod fts5_tests {
 
     fn make_fts5_db() -> Vec<u8> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../tests/fixtures/fts5_schema.sql")).unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/fts5_schema.sql"))
+            .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -1865,10 +1946,14 @@ mod fts5_tests {
         let db = make_fts5_db();
         let fragments = extract_fts5_content(&db).unwrap();
         // Should find at least one _content table with text fragments
-        let content_tables: Vec<_> = fragments.keys()
+        let content_tables: Vec<_> = fragments
+            .keys()
             .filter(|k| k.ends_with("_content"))
             .collect();
-        assert!(!content_tables.is_empty(), "must find at least one FTS5 _content table");
+        assert!(
+            !content_tables.is_empty(),
+            "must find at least one FTS5 _content table"
+        );
         let all_texts: Vec<_> = fragments.values().flatten().collect();
         assert!(
             all_texts.iter().any(|t| t.contains("forensics")),
@@ -1961,7 +2046,8 @@ mod edit_version_tests {
             INSERT INTO message VALUES (1, 1, NULL, 1, 1710513500000, 'original text', 0, NULL, NULL, 0, {});
         "#, edit_version_val, edit_version_val)).unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 
@@ -2043,7 +2129,11 @@ mod tbl_helper_tests {
         let mut map: HashMap<String, Vec<&RecoveredRecord>> = HashMap::new();
         map.insert("message".to_string(), vec![&record]);
         let result = tbl(&map, "message");
-        assert_eq!(result.len(), 1, "known key must return the inserted records");
+        assert_eq!(
+            result.len(),
+            1,
+            "known key must return the inserted records"
+        );
     }
 }
 
@@ -2061,7 +2151,8 @@ mod truncated_record_tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         // Deliberately omit media_mime_type, media_name, starred, edit_version
         // so that column indices 7, 8, 9, 10 are absent from the physical row.
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             PRAGMA user_version = 100;
             CREATE TABLE jid (_id INTEGER PRIMARY KEY, raw_string TEXT NOT NULL);
             CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
@@ -2077,9 +2168,12 @@ mod truncated_record_tests {
             INSERT INTO jid VALUES (1, 'alice@s.whatsapp.net');
             INSERT INTO chat VALUES (1, 1, NULL);
             INSERT INTO message VALUES (1, 1, NULL, 1, 1710513500000, 'hello short', 0);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None).unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     }
 

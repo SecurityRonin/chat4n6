@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 pub enum SenderPlatform {
     Android,
     IPhone,
-    Companion,      // Web/Desktop linked device
-    AndroidLinked,  // secondary Android device
-    IPhoneLinked,   // secondary iPhone device
-    BusinessApi,    // WhatsApp Business Cloud API bot
-    OldAndroid,     // numeric key_id ≤10 chars
+    Companion,     // Web/Desktop linked device
+    AndroidLinked, // secondary Android device
+    IPhoneLinked,  // secondary iPhone device
+    BusinessApi,   // WhatsApp Business Cloud API bot
+    OldAndroid,    // numeric key_id ≤10 chars
     Unknown,
 }
 
@@ -25,11 +25,11 @@ pub struct PlatformClassification {
 /// - len=16: prefix "AC" → Android 0.97; else Android 0.85
 /// - len=18: → BusinessApi 0.95 (exclusive 18-char space)
 /// - len=20: prefix "3A"/"5E"/"4A"/"2A" → IPhone 0.95;
-///           prefix "3F"/"3E"/"3B" → Companion 0.80; else IPhone 0.70
+///   prefix "3F"/"3E"/"3B" → Companion 0.80; else IPhone 0.70
 /// - len=22: prefix "3EB0" → Companion 0.95; prefix "3E" → Companion 0.92;
-///           else Companion 0.70
+///   else Companion 0.70
 /// - len=32: device_number>0 → AndroidLinked 0.90; prefix "AC" → Android 0.97;
-///           else Android 0.90
+///   else Android 0.90
 /// - len=40: → Companion 0.75
 /// - len≤10 AND all digits: → OldAndroid 0.70
 /// - empty OR anything else: → Unknown 0.0
@@ -77,9 +77,7 @@ pub fn classify_key_id(
                     platform: SenderPlatform::IPhone,
                     confidence: 0.95,
                 }
-            } else if upper.starts_with("3F")
-                || upper.starts_with("3E")
-                || upper.starts_with("3B")
+            } else if upper.starts_with("3F") || upper.starts_with("3E") || upper.starts_with("3B")
             {
                 PlatformClassification {
                     platform: SenderPlatform::Companion,
@@ -111,7 +109,7 @@ pub fn classify_key_id(
             }
         }
         32 => {
-            if device_number.map_or(false, |d| d > 0) {
+            if device_number.is_some_and(|d| d > 0) {
                 PlatformClassification {
                     platform: SenderPlatform::AndroidLinked,
                     confidence: 0.90,
@@ -164,14 +162,20 @@ mod tests {
     fn test_len8_from_me_true_android_085() {
         let (p, c) = classify("ABCD1234", true, None);
         assert_eq!(p, SenderPlatform::Android);
-        assert!((c - 0.85).abs() < 0.001, "confidence should be 0.85, got {c}");
+        assert!(
+            (c - 0.85).abs() < 0.001,
+            "confidence should be 0.85, got {c}"
+        );
     }
 
     #[test]
     fn test_len8_from_me_false_android_075() {
         let (p, c) = classify("ABCD1234", false, None);
         assert_eq!(p, SenderPlatform::Android);
-        assert!((c - 0.75).abs() < 0.001, "confidence should be 0.75, got {c}");
+        assert!(
+            (c - 0.75).abs() < 0.001,
+            "confidence should be 0.75, got {c}"
+        );
     }
 
     // ── len=16 tests ─────────────────────────────────────────────────────────
@@ -187,7 +191,10 @@ mod tests {
     fn test_len16_prefix_ac_lowercase_android_097() {
         let (p, c) = classify("ac1234567890abcd", false, None);
         assert_eq!(p, SenderPlatform::Android);
-        assert!((c - 0.97).abs() < 0.001, "case-insensitive prefix match should give 0.97");
+        assert!(
+            (c - 0.97).abs() < 0.001,
+            "case-insensitive prefix match should give 0.97"
+        );
     }
 
     #[test]

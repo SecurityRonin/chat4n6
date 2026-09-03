@@ -35,14 +35,19 @@ impl ReportGenerator {
     pub fn new() -> Result<Self> {
         let mut tera = Tera::default();
         for file_path in Templates::iter() {
-            let file = Templates::get(&file_path)
-                .expect("iter() returned a path that get() can't find");
+            let file =
+                Templates::get(&file_path).expect("iter() returned a path that get() can't find");
             let content = std::str::from_utf8(file.data.as_ref())
                 .with_context(|| format!("template {file_path} is not valid UTF-8"))?;
             tera.add_raw_template(&file_path, content)
                 .with_context(|| format!("failed to parse template {file_path}"))?;
         }
-        Ok(Self { tera, page_size: PAGE_SIZE, obfuscate: false, export_media_fs: None })
+        Ok(Self {
+            tera,
+            page_size: PAGE_SIZE,
+            obfuscate: false,
+            export_media_fs: None,
+        })
     }
 
     pub fn with_page_size(mut self, n: usize) -> Self {
@@ -378,7 +383,11 @@ impl ReportGenerator {
     }
 
     fn maybe_obfuscate_jid(&self, jid: &str) -> String {
-        if self.obfuscate { obfuscate_jid(jid) } else { jid.to_string() }
+        if self.obfuscate {
+            obfuscate_jid(jid)
+        } else {
+            jid.to_string()
+        }
     }
 
     /// Returns the filesystem directory name for a chat.
@@ -431,13 +440,19 @@ impl ReportGenerator {
         Ok(())
     }
 
-    fn render_snapshots(&self, base: &BaseCtx, result: &ExtractionResult, out: &Path) -> Result<()> {
+    fn render_snapshots(
+        &self,
+        base: &BaseCtx,
+        result: &ExtractionResult,
+        out: &Path,
+    ) -> Result<()> {
         if result.wal_snapshots.is_empty() {
             return Ok(());
         }
 
         // Build ROWID → chat-slug lookup from all messages.
-        let mut rowid_to_chat: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        let mut rowid_to_chat: std::collections::HashMap<i64, String> =
+            std::collections::HashMap::new();
         for chat in &result.chats {
             let slug = chat_dir_name(chat.id, chat.name.as_deref().unwrap_or(&chat.jid));
             for msg in &chat.messages {
@@ -453,16 +468,20 @@ impl ReportGenerator {
             }).collect()
         };
 
-        let snapshot_rows: Vec<Value> = result.wal_snapshots.iter().map(|snap| {
-            serde_json::json!({
-                "frame_number": snap.frame_number,
-                "commit_marker": snap.commit_marker,
-                "frame_offset": snap.frame_offset,
-                "added": resolve(&snap.messages_added),
-                "removed": resolve(&snap.messages_removed),
-                "mutated": resolve(&snap.messages_mutated),
+        let snapshot_rows: Vec<Value> = result
+            .wal_snapshots
+            .iter()
+            .map(|snap| {
+                serde_json::json!({
+                    "frame_number": snap.frame_number,
+                    "commit_marker": snap.commit_marker,
+                    "frame_offset": snap.frame_offset,
+                    "added": resolve(&snap.messages_added),
+                    "removed": resolve(&snap.messages_removed),
+                    "mutated": resolve(&snap.messages_mutated),
+                })
             })
-        }).collect();
+            .collect();
 
         let mut ctx = TeraCtx::new();
         ctx.insert("case_name", &base.case_name);
@@ -489,30 +508,43 @@ impl ReportGenerator {
         // Build hourly bar chart data (normalize to 0-100% height).
         let max_hour = *bundle.hourly_counts.iter().max().unwrap_or(&1);
         let max_hour = max_hour.max(1);
-        let hourly_bars: Vec<Value> = bundle.hourly_counts.iter().enumerate().map(|(h, &count)| {
-            serde_json::json!({
-                "hour": h,
-                "count": count,
-                "pct": count * 100 / max_hour,
+        let hourly_bars: Vec<Value> = bundle
+            .hourly_counts
+            .iter()
+            .enumerate()
+            .map(|(h, &count)| {
+                serde_json::json!({
+                    "hour": h,
+                    "count": count,
+                    "pct": count * 100 / max_hour,
+                })
             })
-        }).collect();
+            .collect();
 
         // Build source distribution for template.
-        let source_distribution: Vec<Value> = bundle.source_distribution.iter().map(|(src, cnt)| {
-            serde_json::json!({
-                "source": src,
-                "source_class": src.to_lowercase().replace(' ', "-"),
-                "count": cnt,
+        let source_distribution: Vec<Value> = bundle
+            .source_distribution
+            .iter()
+            .map(|(src, cnt)| {
+                serde_json::json!({
+                    "source": src,
+                    "source_class": src.to_lowercase().replace(' ', "-"),
+                    "count": cnt,
+                })
             })
-        }).collect();
+            .collect();
 
         // Build deletion rate for template.
-        let per_chat_deletion_rate: Vec<Value> = bundle.per_chat_deletion_rate.iter().map(|(jid, rate)| {
-            serde_json::json!({
-                "jid": jid,
-                "rate": format!("{:.1}", rate),
+        let per_chat_deletion_rate: Vec<Value> = bundle
+            .per_chat_deletion_rate
+            .iter()
+            .map(|(jid, rate)| {
+                serde_json::json!({
+                    "jid": jid,
+                    "rate": format!("{:.1}", rate),
+                })
             })
-        }).collect();
+            .collect();
 
         let mut ctx = TeraCtx::new();
         ctx.insert("case_name", &base.case_name);
@@ -522,7 +554,10 @@ impl ReportGenerator {
         ctx.insert("total_messages", &bundle.total_messages);
         ctx.insert("total_chats", &bundle.total_chats);
         ctx.insert("total_calls", &bundle.total_calls);
-        ctx.insert("impossible_timestamp_count", &bundle.impossible_timestamp_count);
+        ctx.insert(
+            "impossible_timestamp_count",
+            &bundle.impossible_timestamp_count,
+        );
         ctx.insert("hourly_bars", &hourly_bars);
         ctx.insert("source_distribution", &source_distribution);
         ctx.insert("per_chat_deletion_rate", &per_chat_deletion_rate);
@@ -672,8 +707,11 @@ mod tests {
             quoted_message: None,
             source: EvidenceSource::Live,
             row_offset: 0,
-            starred: false, forward_score: None, is_forwarded: false,
-            edit_history: vec![], receipts: vec![],
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
             forwarded_from: None,
         };
         let msg = Message {
@@ -687,8 +725,11 @@ mod tests {
             quoted_message: Some(Box::new(quoted)),
             source: EvidenceSource::Live,
             row_offset: 0,
-            starred: false, forward_score: None, is_forwarded: false,
-            edit_history: vec![], receipts: vec![],
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
             forwarded_from: None,
         };
         let media_msg = Message {
@@ -713,8 +754,11 @@ mod tests {
             quoted_message: None,
             source: EvidenceSource::Live,
             row_offset: 0,
-            starred: false, forward_score: None, is_forwarded: false,
-            edit_history: vec![], receipts: vec![],
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
             forwarded_from: None,
         };
         let chat = Chat {
@@ -745,9 +789,9 @@ mod tests {
             schema_version: 200,
             forensic_warnings: vec![],
             group_participant_events: vec![],
-        extraction_started_at: None,
-        extraction_finished_at: None,
-        wal_snapshots: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
         }
     }
 
@@ -755,21 +799,31 @@ mod tests {
     fn forensic_warnings_appear_in_index() {
         use chat4n6_plugin_api::ForensicWarning;
         let mut result = make_test_result();
-        result.forensic_warnings.push(ForensicWarning::DatabaseVacuumed { freelist_page_count: 0 });
-        result.forensic_warnings.push(ForensicWarning::HeaderTampered {
-            change_counter: 99,
-            expected_max: 5,
-        });
+        result
+            .forensic_warnings
+            .push(ForensicWarning::DatabaseVacuumed {
+                freelist_page_count: 0,
+            });
+        result
+            .forensic_warnings
+            .push(ForensicWarning::HeaderTampered {
+                change_counter: 99,
+                expected_max: 5,
+            });
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("WarnTest", &result, out.path()).unwrap();
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
         assert!(
-            index.contains("VACUUM") || index.contains("DatabaseVacuumed") || index.contains("vacuumed"),
+            index.contains("VACUUM")
+                || index.contains("DatabaseVacuumed")
+                || index.contains("vacuumed"),
             "index.html should surface DatabaseVacuumed warning"
         );
         assert!(
-            index.contains("tamper") || index.contains("Tamper") || index.contains("change_counter"),
+            index.contains("tamper")
+                || index.contains("Tamper")
+                || index.contains("change_counter"),
             "index.html should surface HeaderTampered warning"
         );
     }
@@ -789,7 +843,8 @@ mod tests {
         let deleted = std::fs::read_to_string(out.path().join("deleted.html")).unwrap();
         // Must include a row with row_id=99 from the WalDelta we inserted
         assert!(
-            deleted.contains("99") && (deleted.contains("DeletedInWal") || deleted.contains("wal-delta")),
+            deleted.contains("99")
+                && (deleted.contains("DeletedInWal") || deleted.contains("wal-delta")),
             "deleted.html must render actual WalDelta rows (row_id=99, status=DeletedInWal)"
         );
     }
@@ -818,7 +873,10 @@ mod tests {
         let gen = ReportGenerator::new().expect("template load");
         gen.render("TestCase", &make_test_result(), out.path())
             .unwrap();
-        assert!(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html").exists());
+        assert!(out
+            .path()
+            .join("chats/chat_1_test_s_whatsapp_net/page_001.html")
+            .exists());
     }
 
     #[test]
@@ -914,7 +972,10 @@ mod tests {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
-        assert!(out.path().join("gallery.html").exists(), "gallery.html should be created");
+        assert!(
+            out.path().join("gallery.html").exists(),
+            "gallery.html should be created"
+        );
     }
 
     #[test]
@@ -924,9 +985,18 @@ mod tests {
         gen.render("Test", &make_test_result(), out.path()).unwrap();
         let gallery = std::fs::read_to_string(out.path().join("gallery.html")).unwrap();
         // Tera auto-escapes / to &#x2F;
-        assert!(gallery.contains("image&#x2F;jpeg"), "gallery should list the media MIME type");
-        assert!(gallery.contains("IMG-001.jpg"), "gallery should list the media file path");
-        assert!(gallery.contains("Beach photo"), "gallery should show the caption");
+        assert!(
+            gallery.contains("image&#x2F;jpeg"),
+            "gallery should list the media MIME type"
+        );
+        assert!(
+            gallery.contains("IMG-001.jpg"),
+            "gallery should list the media file path"
+        );
+        assert!(
+            gallery.contains("Beach photo"),
+            "gallery should show the caption"
+        );
     }
 
     #[test]
@@ -934,7 +1004,11 @@ mod tests {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
-        let chat = std::fs::read_to_string(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html")).unwrap();
+        let chat = std::fs::read_to_string(
+            out.path()
+                .join("chats/chat_1_test_s_whatsapp_net/page_001.html"),
+        )
+        .unwrap();
         // Tera auto-escapes / to &#x2F;
         assert!(
             chat.contains("[Media: image&#x2F;jpeg]"),
@@ -949,9 +1023,19 @@ mod tests {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
-        let chat = std::fs::read_to_string(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html")).unwrap();
-        assert!(chat.contains("id=\"msg-search\""), "chat page should have search input");
-        assert!(chat.contains("filterMessages"), "chat page should have filter JS function");
+        let chat = std::fs::read_to_string(
+            out.path()
+                .join("chats/chat_1_test_s_whatsapp_net/page_001.html"),
+        )
+        .unwrap();
+        assert!(
+            chat.contains("id=\"msg-search\""),
+            "chat page should have search input"
+        );
+        assert!(
+            chat.contains("filterMessages"),
+            "chat page should have filter JS function"
+        );
     }
 
     #[test]
@@ -959,9 +1043,19 @@ mod tests {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
-        let chat = std::fs::read_to_string(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html")).unwrap();
-        assert!(chat.contains("src-filter"), "chat page should have source filter checkboxes");
-        assert!(chat.contains("data-source="), "rows should have data-source attribute");
+        let chat = std::fs::read_to_string(
+            out.path()
+                .join("chats/chat_1_test_s_whatsapp_net/page_001.html"),
+        )
+        .unwrap();
+        assert!(
+            chat.contains("src-filter"),
+            "chat page should have source filter checkboxes"
+        );
+        assert!(
+            chat.contains("data-source="),
+            "rows should have data-source attribute"
+        );
     }
 
     #[test]
@@ -969,7 +1063,11 @@ mod tests {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
-        let chat = std::fs::read_to_string(out.path().join("chats/chat_1_test_s_whatsapp_net/page_001.html")).unwrap();
+        let chat = std::fs::read_to_string(
+            out.path()
+                .join("chats/chat_1_test_s_whatsapp_net/page_001.html"),
+        )
+        .unwrap();
         assert!(
             chat.contains("quoted-block"),
             "quoted messages should render with quoted-block class"
@@ -986,8 +1084,14 @@ mod tests {
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
-        assert!(index.contains("id=\"chat-search\""), "index should have chat search input");
-        assert!(index.contains("filterChats"), "index should have filter JS function");
+        assert!(
+            index.contains("id=\"chat-search\""),
+            "index should have chat search input"
+        );
+        assert!(
+            index.contains("filterChats"),
+            "index should have filter JS function"
+        );
     }
 
     #[test]
@@ -996,8 +1100,14 @@ mod tests {
         let gen = ReportGenerator::new().unwrap();
         gen.render("Test", &make_test_result(), out.path()).unwrap();
         let calls = std::fs::read_to_string(out.path().join("calls.html")).unwrap();
-        assert!(calls.contains("id=\"call-search\""), "calls should have search input");
-        assert!(calls.contains("filterCalls"), "calls should have filter JS function");
+        assert!(
+            calls.contains("id=\"call-search\""),
+            "calls should have search input"
+        );
+        assert!(
+            calls.contains("filterCalls"),
+            "calls should have filter JS function"
+        );
     }
 
     #[test]
@@ -1020,7 +1130,8 @@ mod tests {
         // ZIP magic: PK\x03\x04
         assert!(
             bytes.starts_with(b"PK\x03\x04"),
-            "UFDR file must be a valid ZIP (PK\\x03\\x04 magic), got: {:?}", &bytes[..4.min(bytes.len())]
+            "UFDR file must be a valid ZIP (PK\\x03\\x04 magic), got: {:?}",
+            &bytes[..4.min(bytes.len())]
         );
     }
 
@@ -1030,7 +1141,8 @@ mod tests {
         let out_path = tmp.path().join("report.ufdr");
         crate::ufdr::write_ufdr(&make_test_result(), &out_path).expect("write_ufdr should succeed");
         let zip_bytes = std::fs::read(&out_path).unwrap();
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).expect("must open as ZIP");
+        let mut zip =
+            zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).expect("must open as ZIP");
         let names: Vec<String> = (0..zip.len())
             .map(|i| zip.by_index(i).unwrap().name().to_string())
             .collect();
@@ -1046,8 +1158,11 @@ mod tests {
         let out_path = tmp.path().join("report.ufdr");
         crate::ufdr::write_ufdr(&make_test_result(), &out_path).expect("write_ufdr should succeed");
         let zip_bytes = std::fs::read(&out_path).unwrap();
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).expect("must open as ZIP");
-        let mut manifest_file = zip.by_name("UFDRManifest.xml").expect("UFDRManifest.xml must exist");
+        let mut zip =
+            zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).expect("must open as ZIP");
+        let mut manifest_file = zip
+            .by_name("UFDRManifest.xml")
+            .expect("UFDRManifest.xml must exist");
         let mut xml = String::new();
         std::io::Read::read_to_string(&mut manifest_file, &mut xml).unwrap();
         assert!(
@@ -1062,13 +1177,13 @@ mod tests {
     fn signed_pdf_starts_with_pdf_magic() {
         let tmp = TempDir::new().unwrap();
         let out_path = tmp.path().join("report.pdf");
-        crate::signed_pdf::write_signed_pdf(
-            &make_test_result(), "TestCase", &[], &[], &out_path
-        ).expect("write_signed_pdf should succeed");
+        crate::signed_pdf::write_signed_pdf(&make_test_result(), "TestCase", &[], &[], &out_path)
+            .expect("write_signed_pdf should succeed");
         let bytes = std::fs::read(&out_path).unwrap();
         assert!(
             bytes.starts_with(b"%PDF"),
-            "PDF file must start with %PDF, got: {:?}", &bytes[..4.min(bytes.len())]
+            "PDF file must start with %PDF, got: {:?}",
+            &bytes[..4.min(bytes.len())]
         );
     }
 
@@ -1076,9 +1191,8 @@ mod tests {
     fn signed_pdf_contains_sha256_in_xmp() {
         let tmp = TempDir::new().unwrap();
         let out_path = tmp.path().join("report.pdf");
-        crate::signed_pdf::write_signed_pdf(
-            &make_test_result(), "TestCase", &[], &[], &out_path
-        ).expect("write_signed_pdf should succeed");
+        crate::signed_pdf::write_signed_pdf(&make_test_result(), "TestCase", &[], &[], &out_path)
+            .expect("write_signed_pdf should succeed");
         let content = std::fs::read_to_string(&out_path).expect("PDF must be readable as text");
         assert!(
             content.contains("SHA-256") || content.contains("sha256"),
@@ -1088,12 +1202,11 @@ mod tests {
 
     #[test]
     fn signed_pdf_hash_matches_report_body() {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let tmp = TempDir::new().unwrap();
         let out_path = tmp.path().join("report.pdf");
-        crate::signed_pdf::write_signed_pdf(
-            &make_test_result(), "TestCase", &[], &[], &out_path
-        ).expect("write_signed_pdf should succeed");
+        crate::signed_pdf::write_signed_pdf(&make_test_result(), "TestCase", &[], &[], &out_path)
+            .expect("write_signed_pdf should succeed");
         let content = std::fs::read_to_string(&out_path).unwrap();
         // The PDF should contain the hash of its own report body section
         // Extract the hash from the XMP and verify it matches
@@ -1104,7 +1217,10 @@ mod tests {
             if hex_end <= content.len() {
                 let embedded_hash = &content[hex_start..hex_end];
                 // Find report body in the PDF (between <body> tags or similar marker)
-                if let (Some(s), Some(e)) = (content.find("<report-body>"), content.find("</report-body>")) {
+                if let (Some(s), Some(e)) = (
+                    content.find("<report-body>"),
+                    content.find("</report-body>"),
+                ) {
                     let body = &content[s + 13..e];
                     let computed = format!("{:x}", Sha256::digest(body.as_bytes()));
                     assert_eq!(
@@ -1123,23 +1239,30 @@ mod tests {
     #[test]
     fn forwarded_badge_in_chat_page() {
         let fwd_msg = Message {
-            id: 42, chat_id: 1,
+            id: 42,
+            chat_id: 1,
             sender_jid: Some("alice@s.whatsapp.net".to_string()),
             from_me: false,
             timestamp: ForensicTimestamp::from_millis(1710513127000, 0),
             content: MessageContent::Text("forwarded content here".to_string()),
-            reactions: vec![], quoted_message: None,
+            reactions: vec![],
+            quoted_message: None,
             source: EvidenceSource::Live,
-            row_offset: 0, starred: false,
+            row_offset: 0,
+            starred: false,
             forward_score: Some(3),
             is_forwarded: true,
-            edit_history: vec![], receipts: vec![],
+            edit_history: vec![],
+            receipts: vec![],
             forwarded_from: None,
         };
         let chat = Chat {
-            id: 1, jid: "alice@s.whatsapp.net".to_string(),
+            id: 1,
+            jid: "alice@s.whatsapp.net".to_string(),
             name: Some("Alice".to_string()),
-            is_group: false, messages: vec![fwd_msg], archived: false,
+            is_group: false,
+            messages: vec![fwd_msg],
+            archived: false,
         };
         let mut result = make_test_result();
         result.chats = vec![chat];
@@ -1151,7 +1274,9 @@ mod tests {
         // Find the chat page directory
         let chat_dir = std::fs::read_dir(out.path().join("chats"))
             .unwrap()
-            .next().unwrap().unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
             .path();
         let page = std::fs::read_to_string(chat_dir.join("page_001.html")).unwrap();
         // Must show a forwarded label separate from message content — not just the content text
@@ -1164,23 +1289,30 @@ mod tests {
     #[test]
     fn high_forward_score_is_notable() {
         let viral_msg = Message {
-            id: 99, chat_id: 1,
+            id: 99,
+            chat_id: 1,
             sender_jid: Some("bob@s.whatsapp.net".to_string()),
             from_me: false,
             timestamp: ForensicTimestamp::from_millis(1710513127000, 0),
             content: MessageContent::Text("viral message".to_string()),
-            reactions: vec![], quoted_message: None,
+            reactions: vec![],
+            quoted_message: None,
             source: EvidenceSource::Live,
-            row_offset: 0, starred: false,
+            row_offset: 0,
+            starred: false,
             forward_score: Some(10), // viral
             is_forwarded: true,
-            edit_history: vec![], receipts: vec![],
+            edit_history: vec![],
+            receipts: vec![],
             forwarded_from: None,
         };
         let chat = Chat {
-            id: 1, jid: "bob@s.whatsapp.net".to_string(),
+            id: 1,
+            jid: "bob@s.whatsapp.net".to_string(),
             name: Some("Bob".to_string()),
-            is_group: false, messages: vec![viral_msg], archived: false,
+            is_group: false,
+            messages: vec![viral_msg],
+            archived: false,
         };
         let mut result = make_test_result();
         result.chats = vec![chat];
@@ -1191,12 +1323,17 @@ mod tests {
 
         let chat_dir = std::fs::read_dir(out.path().join("chats"))
             .unwrap()
-            .next().unwrap().unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
             .path();
         let page = std::fs::read_to_string(chat_dir.join("page_001.html")).unwrap();
         // High forward_score (>=5) must show the numeric score in a distinct element
         assert!(
-            page.contains("badge-forwarded-viral") || page.contains("fwd:10") || page.contains("×10") || page.contains("score=10"),
+            page.contains("badge-forwarded-viral")
+                || page.contains("fwd:10")
+                || page.contains("×10")
+                || page.contains("score=10"),
             "chat page must highlight high forward_score (10) with a distinct viral indicator"
         );
     }
@@ -1205,19 +1342,26 @@ mod tests {
 
     fn make_phone_result() -> ExtractionResult {
         let msg = Message {
-            id: 1, chat_id: 1,
+            id: 1,
+            chat_id: 1,
             sender_jid: Some("6591234567@s.whatsapp.net".to_string()),
             from_me: false,
             timestamp: ForensicTimestamp::from_millis(1710513127000, 0),
             content: MessageContent::Text("obfuscation test".to_string()),
-            reactions: vec![], quoted_message: None,
+            reactions: vec![],
+            quoted_message: None,
             source: EvidenceSource::Live,
-            row_offset: 0, starred: false, forward_score: None, is_forwarded: false,
-            edit_history: vec![], receipts: vec![],
+            row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
             forwarded_from: None,
         };
         let chat = Chat {
-            id: 1, jid: "6591234567@s.whatsapp.net".to_string(),
+            id: 1,
+            jid: "6591234567@s.whatsapp.net".to_string(),
             name: None, // no display name so jid renders as the name
             is_group: false,
             messages: vec![msg],
@@ -1225,12 +1369,16 @@ mod tests {
         };
         ExtractionResult {
             chats: vec![chat],
-            contacts: vec![], calls: vec![], wal_deltas: vec![],
-            timezone_offset_seconds: Some(0), schema_version: 200,
-            forensic_warnings: vec![], group_participant_events: vec![],
-        extraction_started_at: None,
-        extraction_finished_at: None,
-        wal_snapshots: vec![],
+            contacts: vec![],
+            calls: vec![],
+            wal_deltas: vec![],
+            timezone_offset_seconds: Some(0),
+            schema_version: 200,
+            forensic_warnings: vec![],
+            group_participant_events: vec![],
+            extraction_started_at: None,
+            extraction_finished_at: None,
+            wal_snapshots: vec![],
         }
     }
 
@@ -1238,7 +1386,8 @@ mod tests {
     fn obfuscation_masks_phone_in_index() {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap().with_obfuscate(true);
-        gen.render("ObfuscTest", &make_phone_result(), out.path()).unwrap();
+        gen.render("ObfuscTest", &make_phone_result(), out.path())
+            .unwrap();
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
         assert!(
             !index.contains("91234567"),
@@ -1254,7 +1403,8 @@ mod tests {
     fn no_obfuscation_shows_full_number() {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap(); // no with_obfuscate
-        gen.render("NoObfuscTest", &make_phone_result(), out.path()).unwrap();
+        gen.render("NoObfuscTest", &make_phone_result(), out.path())
+            .unwrap();
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
         assert!(
             index.contains("91234567"),
@@ -1269,50 +1419,70 @@ mod tests {
         // Two chats with interleaved timestamps: chat A at t=1000, chat B at t=500, chat A at t=2000.
         // Timeline must show t=500 before t=1000 before t=2000.
         let msg_a1 = Message {
-            id: 10, chat_id: 1,
+            id: 10,
+            chat_id: 1,
             sender_jid: Some("alice@s.whatsapp.net".to_string()),
             from_me: false,
             timestamp: ForensicTimestamp::from_millis(1710513127000, 0),
             content: MessageContent::Text("alpha message".to_string()),
-            reactions: vec![], quoted_message: None,
+            reactions: vec![],
+            quoted_message: None,
             source: EvidenceSource::Live,
-            row_offset: 0, starred: false, forward_score: None, is_forwarded: false,
-            edit_history: vec![], receipts: vec![],
+            row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
             forwarded_from: None,
         };
         let msg_b1 = Message {
-            id: 20, chat_id: 2,
+            id: 20,
+            chat_id: 2,
             sender_jid: Some("bob@s.whatsapp.net".to_string()),
             from_me: false,
             timestamp: ForensicTimestamp::from_millis(1710513100000, 0), // earlier
             content: MessageContent::Text("beta earlier".to_string()),
-            reactions: vec![], quoted_message: None,
+            reactions: vec![],
+            quoted_message: None,
             source: EvidenceSource::Live,
-            row_offset: 0, starred: false, forward_score: None, is_forwarded: false,
-            edit_history: vec![], receipts: vec![],
+            row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
             forwarded_from: None,
         };
         let msg_a2 = Message {
-            id: 11, chat_id: 1,
+            id: 11,
+            chat_id: 1,
             sender_jid: None,
             from_me: true,
             timestamp: ForensicTimestamp::from_millis(1710513300000, 0), // latest
             content: MessageContent::Text("alpha later".to_string()),
-            reactions: vec![], quoted_message: None,
+            reactions: vec![],
+            quoted_message: None,
             source: EvidenceSource::Live,
-            row_offset: 0, starred: false, forward_score: None, is_forwarded: false,
-            edit_history: vec![], receipts: vec![],
+            row_offset: 0,
+            starred: false,
+            forward_score: None,
+            is_forwarded: false,
+            edit_history: vec![],
+            receipts: vec![],
             forwarded_from: None,
         };
         let chat_a = Chat {
-            id: 1, jid: "alice@s.whatsapp.net".to_string(),
+            id: 1,
+            jid: "alice@s.whatsapp.net".to_string(),
             name: Some("Alice".to_string()),
             is_group: false,
             messages: vec![msg_a1, msg_a2],
             archived: false,
         };
         let chat_b = Chat {
-            id: 2, jid: "bob@s.whatsapp.net".to_string(),
+            id: 2,
+            jid: "bob@s.whatsapp.net".to_string(),
             name: Some("Bob".to_string()),
             is_group: false,
             messages: vec![msg_b1],
@@ -1332,9 +1502,15 @@ mod tests {
 
         let timeline = std::fs::read_to_string(out.path().join("timeline.html")).unwrap();
         // "beta earlier" (t=100s) must appear before "alpha message" (t=127s)
-        let pos_beta = timeline.find("beta earlier").expect("beta earlier must appear in timeline");
-        let pos_alpha = timeline.find("alpha message").expect("alpha message must appear in timeline");
-        let pos_later = timeline.find("alpha later").expect("alpha later must appear in timeline");
+        let pos_beta = timeline
+            .find("beta earlier")
+            .expect("beta earlier must appear in timeline");
+        let pos_alpha = timeline
+            .find("alpha message")
+            .expect("alpha message must appear in timeline");
+        let pos_later = timeline
+            .find("alpha later")
+            .expect("alpha later must appear in timeline");
         assert!(
             pos_beta < pos_alpha,
             "bob's earlier message must appear before alice's alpha message in timeline"
@@ -1349,16 +1525,19 @@ mod tests {
     fn timeline_has_search_and_nav() {
         let out = TempDir::new().unwrap();
         let gen = ReportGenerator::new().unwrap();
-        gen.render("TimelineNavTest", &make_test_result(), out.path()).unwrap();
+        gen.render("TimelineNavTest", &make_test_result(), out.path())
+            .unwrap();
 
         let timeline = std::fs::read_to_string(out.path().join("timeline.html")).unwrap();
         assert!(
-            timeline.contains("<input") && (timeline.contains("search") || timeline.contains("filter")),
+            timeline.contains("<input")
+                && (timeline.contains("search") || timeline.contains("filter")),
             "timeline.html must contain a search/filter input element"
         );
         assert!(
             timeline.contains("index.html"),
-            "timeline.html must contain a breadcrumb link to index.html"        );
+            "timeline.html must contain a breadcrumb link to index.html"
+        );
     }
 
     // ── §2.3 WAL Snapshot Timeline tests ────────────────────────────────────
@@ -1403,15 +1582,24 @@ mod tests {
         gen.render("SnapTest", &result, out.path()).unwrap();
 
         let snap_path = out.path().join("snapshots.html");
-        assert!(snap_path.exists(), "snapshots.html must be generated when wal_snapshots is non-empty");
+        assert!(
+            snap_path.exists(),
+            "snapshots.html must be generated when wal_snapshots is non-empty"
+        );
 
         let html = std::fs::read_to_string(&snap_path).unwrap();
-        assert!(html.contains("Frame 1") || html.contains("frame-1") || html.contains("frame_1"),
-            "snapshots.html must contain Frame 1");
-        assert!(html.contains("Frame 2") || html.contains("frame-2") || html.contains("frame_2"),
-            "snapshots.html must contain Frame 2");
-        assert!(html.contains("Frame 3") || html.contains("frame-3") || html.contains("frame_3"),
-            "snapshots.html must contain Frame 3");
+        assert!(
+            html.contains("Frame 1") || html.contains("frame-1") || html.contains("frame_1"),
+            "snapshots.html must contain Frame 1"
+        );
+        assert!(
+            html.contains("Frame 2") || html.contains("frame-2") || html.contains("frame_2"),
+            "snapshots.html must contain Frame 2"
+        );
+        assert!(
+            html.contains("Frame 3") || html.contains("frame-3") || html.contains("frame_3"),
+            "snapshots.html must contain Frame 3"
+        );
         // ROWID 100 appears in frame 1 (added) and frame 2 (mutated)
         assert!(html.contains("100"), "snapshots.html must show ROWID 100");
         // ROWID 101 appears in frame 1 (added) and frame 3 (removed)
@@ -1426,10 +1614,14 @@ mod tests {
         gen.render("SnapStyleTest", &result, out.path()).unwrap();
 
         let html = std::fs::read_to_string(out.path().join("snapshots.html")).unwrap();
-        assert!(html.contains("frame-committed"),
-            "snapshots.html must have class 'frame-committed' for committed frames");
-        assert!(html.contains("frame-uncommitted"),
-            "snapshots.html must have class 'frame-uncommitted' for uncommitted frames (frame 3)");
+        assert!(
+            html.contains("frame-committed"),
+            "snapshots.html must have class 'frame-committed' for committed frames"
+        );
+        assert!(
+            html.contains("frame-uncommitted"),
+            "snapshots.html must have class 'frame-uncommitted' for uncommitted frames (frame 3)"
+        );
     }
 
     #[test]
@@ -1451,7 +1643,10 @@ mod tests {
         use chrono::TimeZone;
         // Three messages at UTC hours 0, 6, 12
         let make_msg = |id: i64, hour: u32, content: MessageContent| -> Message {
-            let ts_ms = chrono::Utc.with_ymd_and_hms(2024, 3, 15, hour, 0, 0).unwrap().timestamp_millis();
+            let ts_ms = chrono::Utc
+                .with_ymd_and_hms(2024, 3, 15, hour, 0, 0)
+                .unwrap()
+                .timestamp_millis();
             Message {
                 id,
                 chat_id: 1,
@@ -1515,8 +1710,14 @@ mod tests {
         let gen = ReportGenerator::new().unwrap();
         gen.render("StatsTest", &result, out.path()).unwrap();
 
-        assert!(out.path().join("stats.html").exists(), "stats.html must be generated");
-        assert!(out.path().join("stats.json").exists(), "stats.json must be generated");
+        assert!(
+            out.path().join("stats.html").exists(),
+            "stats.html must be generated"
+        );
+        assert!(
+            out.path().join("stats.json").exists(),
+            "stats.json must be generated"
+        );
 
         let json_str = std::fs::read_to_string(out.path().join("stats.json")).unwrap();
         let bundle: crate::stats::StatsBundle = serde_json::from_str(&json_str)
@@ -1526,7 +1727,7 @@ mod tests {
 
     #[test]
     fn stats_impossible_timestamp_count() {
-        use chrono::{TimeZone, Duration};
+        use chrono::{Duration, TimeZone};
         let finished_at = chrono::Utc.with_ymd_and_hms(2024, 3, 15, 12, 0, 0).unwrap();
         let future_ts_ms = (finished_at + Duration::days(1)).timestamp_millis();
         let past_ts_ms = finished_at.timestamp_millis() - 1000;
@@ -1581,8 +1782,10 @@ mod tests {
         result.extraction_finished_at = Some(finished_at);
 
         let bundle = crate::stats::compute(&result);
-        assert_eq!(bundle.impossible_timestamp_count, 1,
-            "should count 1 message with timestamp after extraction_finished_at");
+        assert_eq!(
+            bundle.impossible_timestamp_count, 1,
+            "should count 1 message with timestamp after extraction_finished_at"
+        );
     }
 
     // ── §2.4 Media Export Pipeline tests ────────────────────────────────────
@@ -1663,22 +1866,34 @@ mod tests {
 
             // File must be copied to output_dir/media/by-chat/<slug>/test.jpg
             let slug = "chat_1_test_s_whatsapp_net";
-            let dest = output_dir.path().join(format!("media/by-chat/{slug}/test.jpg"));
-            assert!(dest.exists(), "exported file must exist at {}", dest.display());
+            let dest = output_dir
+                .path()
+                .join(format!("media/by-chat/{slug}/test.jpg"));
+            assert!(
+                dest.exists(),
+                "exported file must exist at {}",
+                dest.display()
+            );
 
             let bytes = fs::read(&dest).unwrap();
             assert_eq!(bytes, b"fake-jpeg", "file contents must be preserved");
 
             // encrypted_hash must be set on the media ref
             if let MessageContent::Media(ref mr) = result.chats[0].messages[0].content {
-                assert!(mr.encrypted_hash.is_some(), "encrypted_hash must be set after export");
+                assert!(
+                    mr.encrypted_hash.is_some(),
+                    "encrypted_hash must be set after export"
+                );
                 // SHA-256 of b"fake-jpeg" = known value
                 let expected = {
-                    use sha2::{Sha256, Digest};
+                    use sha2::{Digest, Sha256};
                     format!("{:x}", Sha256::digest(b"fake-jpeg"))
                 };
-                assert_eq!(mr.encrypted_hash.as_deref().unwrap(), expected,
-                    "encrypted_hash must equal SHA-256 of file bytes");
+                assert_eq!(
+                    mr.encrypted_hash.as_deref().unwrap(),
+                    expected,
+                    "encrypted_hash must equal SHA-256 of file bytes"
+                );
             } else {
                 panic!("message content should still be Media");
             }
@@ -1702,11 +1917,18 @@ mod tests {
 
             let csv = std::fs::read_to_string(&csv_path).unwrap();
             let lines: Vec<&str> = csv.lines().collect();
-            assert_eq!(lines.len(), 2, "CSV must have header + 1 data row, got: {:?}", lines);
+            assert_eq!(
+                lines.len(),
+                2,
+                "CSV must have header + 1 data row, got: {:?}",
+                lines
+            );
 
             // Header must have expected columns
-            assert!(lines[0].contains("sha256") || lines[0].contains("SHA256"),
-                "CSV header must contain sha256 column");
+            assert!(
+                lines[0].contains("sha256") || lines[0].contains("SHA256"),
+                "CSV header must contain sha256 column"
+            );
 
             // Data row must have non-empty sha256
             assert!(!lines[1].is_empty(), "data row must not be empty");

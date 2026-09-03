@@ -71,8 +71,7 @@ impl IosBackup {
         );
         let sub = &entry.file_id[..2];
         let path = self.backup_dir.join(sub).join(&entry.file_id);
-        std::fs::read(&path)
-            .with_context(|| format!("cannot read backup file {}", path.display()))
+        std::fs::read(&path).with_context(|| format!("cannot read backup file {}", path.display()))
     }
 }
 
@@ -140,7 +139,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = make_backup(&tmp);
         let backup = IosBackup::open(&dir).unwrap();
-        assert!(backup.get("AppDomain-net.whatsapp.WhatsApp", "no-such-file").is_none());
+        assert!(backup
+            .get("AppDomain-net.whatsapp.WhatsApp", "no-such-file")
+            .is_none());
     }
 
     #[test]
@@ -149,7 +150,10 @@ mod tests {
         let dir = make_backup(&tmp);
         let backup = IosBackup::open(&dir).unwrap();
         let entry = backup
-            .get("AppDomain-net.whatsapp.WhatsApp", "Documents/ChatStorage.sqlite")
+            .get(
+                "AppDomain-net.whatsapp.WhatsApp",
+                "Documents/ChatStorage.sqlite",
+            )
             .unwrap();
         let content = backup.read(entry).unwrap();
         assert_eq!(content, b"fake-sqlite-content");

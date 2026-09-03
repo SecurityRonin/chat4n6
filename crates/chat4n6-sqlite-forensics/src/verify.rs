@@ -126,7 +126,7 @@ pub fn build_verification_report(
 mod tests {
     use super::*;
     use crate::header::DbHeader;
-    use crate::pragma::{parse_pragma_info, PragmaInfo};
+    use crate::pragma::parse_pragma_info;
     use crate::record::SqlValue;
     use std::collections::HashMap;
 
@@ -284,7 +284,10 @@ mod tests {
         let result = make_result(vec![]);
         let report = build_verification_report(&ctx, &result);
 
-        assert!(!report.evidence_hash.is_empty(), "Hash must always be present");
+        assert!(
+            !report.evidence_hash.is_empty(),
+            "Hash must always be present"
+        );
         assert_eq!(report.findings.len(), 0);
         assert!(report.rowid_gaps.is_empty());
         assert!(report.benchmark_score.is_none());
@@ -408,7 +411,10 @@ mod tests {
         };
         let result = make_result(vec![record]);
         let report = build_verification_report(&ctx, &result);
-        assert_eq!(report.findings[0].recovery_technique, "WAL replay (pending transaction)");
+        assert_eq!(
+            report.findings[0].recovery_technique,
+            "WAL replay (pending transaction)"
+        );
     }
 
     #[test]
@@ -435,7 +441,10 @@ mod tests {
         };
         let result = make_result(vec![record]);
         let report = build_verification_report(&ctx, &result);
-        assert_eq!(report.findings[0].recovery_technique, "WAL analysis (deleted in WAL)");
+        assert_eq!(
+            report.findings[0].recovery_technique,
+            "WAL analysis (deleted in WAL)"
+        );
     }
 
     #[test]
@@ -462,7 +471,10 @@ mod tests {
         };
         let result = make_result(vec![record]);
         let report = build_verification_report(&ctx, &result);
-        assert_eq!(report.findings[0].recovery_technique, "Rollback journal parsing");
+        assert_eq!(
+            report.findings[0].recovery_technique,
+            "Rollback journal parsing"
+        );
     }
 
     #[test]

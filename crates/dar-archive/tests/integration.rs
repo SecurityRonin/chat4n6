@@ -22,8 +22,7 @@ fn test_open_single_slice_has_entries() {
         eprintln!("Skipping: real .dar fixture not present at {SINGLE_SLICE_PATH}");
         return;
     }
-    let archive = DarArchive::open(Path::new(SINGLE_SLICE_PATH))
-        .expect("DarArchive::open");
+    let archive = DarArchive::open(Path::new(SINGLE_SLICE_PATH)).expect("DarArchive::open");
     let count = archive.entries().len();
     println!("entries: {count}");
     assert!(count > 0, "expected entries in catalog");
@@ -31,18 +30,23 @@ fn test_open_single_slice_has_entries() {
 
 #[test]
 fn test_open_single_slice_contains_whatsapp() {
-    if !fixture_present() { return; }
+    if !fixture_present() {
+        return;
+    }
     let archive = DarArchive::open(Path::new(SINGLE_SLICE_PATH)).unwrap();
-    let found = archive.entries().iter().any(|e| {
-        e.path.to_str().map_or(false, |p| p.contains("com.whatsapp"))
-    });
+    let found = archive
+        .entries()
+        .iter()
+        .any(|e| e.path.to_str().is_some_and(|p| p.contains("com.whatsapp")));
     assert!(found, "expected a com.whatsapp entry in the catalog");
 }
 
 #[test]
 fn test_open_slices_finds_first_slice() {
-    if !fixture_present() { return; }
-    let archive = DarArchive::open_slices(Path::new(MULTI_SLICE_BASENAME))
-        .expect("DarArchive::open_slices");
+    if !fixture_present() {
+        return;
+    }
+    let archive =
+        DarArchive::open_slices(Path::new(MULTI_SLICE_BASENAME)).expect("DarArchive::open_slices");
     assert!(!archive.entries().is_empty());
 }

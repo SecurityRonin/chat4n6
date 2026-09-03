@@ -109,7 +109,11 @@ pub fn default_mime_for_type(t: i32) -> &'static str {
 /// Values > 4_000_000_000 are treated as milliseconds.
 #[inline]
 pub fn normalise_coredata_secs(raw: f64) -> f64 {
-    if raw > 4_000_000_000.0 { raw / 1000.0 } else { raw }
+    if raw > 4_000_000_000.0 {
+        raw / 1000.0
+    } else {
+        raw
+    }
 }
 
 /// Convert a raw ZMESSAGEDATE value (may be seconds or milliseconds) to Unix ms.
@@ -184,13 +188,19 @@ mod tests {
     #[test]
     fn zflags_not_forwarded_only_bit7() {
         // 0x80 = only bit 7 → NOT forwarded
-        assert!(!zflags_is_forwarded(0x80), "0x80 alone must NOT be forwarded");
+        assert!(
+            !zflags_is_forwarded(0x80),
+            "0x80 alone must NOT be forwarded"
+        );
     }
 
     #[test]
     fn zflags_not_forwarded_only_bit8() {
         // 0x100 = only bit 8 → NOT forwarded
-        assert!(!zflags_is_forwarded(0x100), "0x100 alone must NOT be forwarded");
+        assert!(
+            !zflags_is_forwarded(0x100),
+            "0x100 alone must NOT be forwarded"
+        );
     }
 
     #[test]

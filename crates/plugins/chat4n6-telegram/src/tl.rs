@@ -59,6 +59,9 @@ mod tests {
 
     #[test]
     fn too_short_is_none() {
-        assert_eq!(decode_tl_message_text(&[0x3f, 0x1f, 0xdd, 0x94, 0, 0]), None);
+        assert_eq!(
+            decode_tl_message_text(&[0x3f, 0x1f, 0xdd, 0x94, 0, 0]),
+            None
+        );
     }
 }

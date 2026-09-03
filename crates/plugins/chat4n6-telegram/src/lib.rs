@@ -79,15 +79,13 @@ mod tests {
 
     #[test]
     fn test_detect_cache4() {
-        let fs =
-            MockFs::new().with_file("data/data/org.telegram.messenger/files/cache4.db");
+        let fs = MockFs::new().with_file("data/data/org.telegram.messenger/files/cache4.db");
         assert!(TelegramPlugin.detect(&fs));
     }
 
     #[test]
     fn test_detect_cache() {
-        let fs =
-            MockFs::new().with_file("data/data/org.telegram.messenger/files/cache.db");
+        let fs = MockFs::new().with_file("data/data/org.telegram.messenger/files/cache.db");
         assert!(TelegramPlugin.detect(&fs));
     }
 
@@ -101,8 +99,7 @@ mod tests {
     /// returning empty, so callers can detect corrupted/missing databases.
     #[test]
     fn test_extract_invalid_db_returns_err() {
-        let fs =
-            MockFs::new().with_file("data/data/org.telegram.messenger/files/cache4.db");
+        let fs = MockFs::new().with_file("data/data/org.telegram.messenger/files/cache4.db");
         let r = TelegramPlugin.extract(&fs, None);
         assert!(r.is_err(), "invalid SQLite bytes should return Err");
     }

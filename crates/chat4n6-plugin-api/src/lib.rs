@@ -31,7 +31,10 @@ mod tests {
         assert_eq!(EvidenceSource::WalDeleted.to_string(), "WAL-DELETED");
         assert_eq!(EvidenceSource::Journal.to_string(), "JOURNAL");
         assert_eq!(EvidenceSource::IndexRecovery.to_string(), "INDEX-RECOVERY");
-        assert_eq!(EvidenceSource::CarvedOverflow.to_string(), "CARVED-OVERFLOW");
+        assert_eq!(
+            EvidenceSource::CarvedOverflow.to_string(),
+            "CARVED-OVERFLOW"
+        );
         assert_eq!(
             EvidenceSource::CarvedIntraPage { confidence_pct: 75 }.to_string(),
             "CARVED-INTRA-PAGE 75%"
@@ -158,7 +161,10 @@ mod tests {
         assert_eq!(m, back);
         assert_eq!(back.file_hash.as_deref(), Some("abc123def456"));
         assert_eq!(back.encrypted_hash.as_deref(), Some("enc789xyz000"));
-        assert_eq!(back.cdn_url.as_deref(), Some("https://mmg.whatsapp.net/v/abc"));
+        assert_eq!(
+            back.cdn_url.as_deref(),
+            Some("https://mmg.whatsapp.net/v/abc")
+        );
         assert_eq!(back.media_key_b64.as_deref(), Some("dGVzdGtleQ=="));
     }
 
@@ -173,11 +179,18 @@ mod tests {
             "thumbnail_b64": null,
             "duration_secs": 30
         }"#;
-        let m: MediaRef = serde_json::from_str(old_json).expect("must deserialize old JSON without error");
+        let m: MediaRef =
+            serde_json::from_str(old_json).expect("must deserialize old JSON without error");
         assert!(m.file_hash.is_none(), "file_hash should default to None");
-        assert!(m.encrypted_hash.is_none(), "encrypted_hash should default to None");
+        assert!(
+            m.encrypted_hash.is_none(),
+            "encrypted_hash should default to None"
+        );
         assert!(m.cdn_url.is_none(), "cdn_url should default to None");
-        assert!(m.media_key_b64.is_none(), "media_key_b64 should default to None");
+        assert!(
+            m.media_key_b64.is_none(),
+            "media_key_b64 should default to None"
+        );
         assert_eq!(m.mime_type, "video/mp4");
         assert_eq!(m.file_size, 4096);
         assert_eq!(m.duration_secs, Some(30));

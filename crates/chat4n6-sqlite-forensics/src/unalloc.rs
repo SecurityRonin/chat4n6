@@ -618,12 +618,18 @@ mod tests {
         assert_eq!(p2.len(), 1);
         // Null → 0
         assert_eq!(
-            p1.iter().find(|p| p.col_index == 0).unwrap().serial_type_hint,
+            p1.iter()
+                .find(|p| p.col_index == 0)
+                .unwrap()
+                .serial_type_hint,
             0
         );
         // Real → 7
         assert_eq!(
-            p1.iter().find(|p| p.col_index == 1).unwrap().serial_type_hint,
+            p1.iter()
+                .find(|p| p.col_index == 1)
+                .unwrap()
+                .serial_type_hint,
             7
         );
     }
@@ -631,9 +637,13 @@ mod tests {
     #[test]
     fn test_carve_multi_column_text_record() {
         // Test carving a record with text columns to exercise text serial type matching
-        let live = vec![
-            make_record("msgs", vec![SqlValue::Text("hello".into()), SqlValue::Text("world".into())]),
-        ];
+        let live = vec![make_record(
+            "msgs",
+            vec![
+                SqlValue::Text("hello".into()),
+                SqlValue::Text("world".into()),
+            ],
+        )];
         let sig_db = learn_signatures(&live);
 
         // Build a record: header_len=3, serial_type=15 (TEXT len=1), serial_type=15 (TEXT len=1)
@@ -764,7 +774,7 @@ mod tests {
         // L168: header_end > data.len() → return None
         let data: &[u8] = &[0x0A]; // header_len=10 but data is only 1 byte
         let patterns = vec![];
-        let result = try_parse_record(&data, 0, "t", 1, &patterns);
+        let result = try_parse_record(data, 0, "t", 1, &patterns);
         assert!(result.is_none());
     }
 
@@ -774,7 +784,7 @@ mod tests {
         // read_varint([0x00], 0) returns (0, 1). header_end=0 < hl_consumed=1.
         let data: &[u8] = &[0x00, 0x01, 0x2A];
         let patterns = vec![];
-        let result = try_parse_record(&data, 0, "t", 1, &patterns);
+        let result = try_parse_record(data, 0, "t", 1, &patterns);
         assert!(result.is_none());
     }
 
@@ -799,7 +809,9 @@ mod tests {
         };
         let found = carve_unallocated(&region, &sig_db, "t");
         assert!(!found.is_empty(), "Should carve a REAL record");
-        assert!(matches!(&found[0].values[0], SqlValue::Real(v) if (*v - std::f64::consts::PI).abs() < 1e-10));
+        assert!(
+            matches!(&found[0].values[0], SqlValue::Real(v) if (*v - std::f64::consts::PI).abs() < 1e-10)
+        );
     }
 
     #[test]

@@ -1,11 +1,10 @@
+use chrono::{DateTime, Datelike, FixedOffset, Timelike};
+use serde::{Deserialize, Serialize};
 /// Per-contact HTML forensic dossier.
 ///
 /// Builds activity statistics for a single contact and renders
 /// a self-contained, no-external-deps HTML report.
-
 use std::collections::HashMap;
-use chrono::{DateTime, Datelike, FixedOffset, Timelike};
-use serde::{Deserialize, Serialize};
 
 /// Activity heatmap: hour (0-23) → message count
 pub type HourlyHeatmap = [u32; 24];
@@ -71,7 +70,13 @@ pub(crate) fn html_escape(s: &str) -> String {
 fn extract_domains(text: &str) -> Vec<String> {
     let mut domains = Vec::new();
     for part in text.split("://").skip(1) {
-        let host = part.split('/').next().unwrap_or("").split('?').next().unwrap_or("");
+        let host = part
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split('?')
+            .next()
+            .unwrap_or("");
         let host = host.split('#').next().unwrap_or("").trim();
         if !host.is_empty() {
             domains.push(host.to_lowercase());
@@ -143,7 +148,9 @@ pub fn build_contact_stats(
             if reaction.reactor_jid == contact_jid {
                 *reactions_given.entry(reaction.emoji.clone()).or_insert(0) += 1;
             } else {
-                *reactions_received.entry(reaction.emoji.clone()).or_insert(0) += 1;
+                *reactions_received
+                    .entry(reaction.emoji.clone())
+                    .or_insert(0) += 1;
             }
         }
     }
@@ -158,11 +165,11 @@ pub fn build_contact_stats(
 
     // Sort reactions by count desc
     let mut rg: Vec<(String, u32)> = reactions_given.into_iter().collect();
-    rg.sort_by(|a, b| b.1.cmp(&a.1));
+    rg.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     stats.reactions_given = rg;
 
     let mut rr: Vec<(String, u32)> = reactions_received.into_iter().collect();
-    rr.sort_by(|a, b| b.1.cmp(&a.1));
+    rr.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     stats.reactions_received = rr;
 
     stats
@@ -300,12 +307,7 @@ mod tests {
         }
     }
 
-    fn make_media_msg(
-        id: i64,
-        sender_jid: Option<&str>,
-        from_me: bool,
-        ts_ms: i64,
-    ) -> Message {
+    fn make_media_msg(id: i64, sender_jid: Option<&str>, from_me: bool, ts_ms: i64) -> Message {
         Message {
             id,
             chat_id: 1,
@@ -405,8 +407,20 @@ mod tests {
 
     #[test]
     fn test_stats_top_link_domains_sorted() {
-        let m1 = make_text_msg(1, Some(CONTACT_JID), false, 1000, "check https://example.com/foo");
-        let m2 = make_text_msg(2, Some(CONTACT_JID), false, 2000, "also https://example.com/bar and https://other.com/baz");
+        let m1 = make_text_msg(
+            1,
+            Some(CONTACT_JID),
+            false,
+            1000,
+            "check https://example.com/foo",
+        );
+        let m2 = make_text_msg(
+            2,
+            Some(CONTACT_JID),
+            false,
+            2000,
+            "also https://example.com/bar and https://other.com/baz",
+        );
         let msgs: Vec<&Message> = vec![&m1, &m2];
         let stats = build_contact_stats(CONTACT_JID, None, &msgs, 0);
         assert!(!stats.top_link_domains.is_empty());

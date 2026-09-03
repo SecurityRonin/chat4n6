@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chat4n6_plugin_api::{
-    Chat, ExtractionResult, ForensicTimestamp, ForensicWarning,
-    ForwardOrigin, ForwardOriginKind, MediaRef, Message, MessageContent,
+    Chat, ExtractionResult, ForensicTimestamp, ForensicWarning, ForwardOrigin, ForwardOriginKind,
+    MediaRef, Message, MessageContent,
 };
 use chat4n6_sqlite_forensics::{
     db::ForensicEngine,
@@ -17,6 +17,7 @@ mod cols {
         pub const UID: usize = 1;
         pub const DATE: usize = 2;
         pub const OUT: usize = 3;
+        #[allow(dead_code)] // schema column index, retained for documentation
         pub const DATA: usize = 4;
         pub const FWD_FROM_ID: usize = 7;
         pub const FWD_FROM_NAME: usize = 8;
@@ -50,9 +51,7 @@ pub fn extract_from_telegram_db(db_bytes: &[u8], tz_offset_secs: i32) -> Result<
     let engine = ForensicEngine::new(db_bytes, Some(tz_offset_secs))
         .context("failed to open Telegram cache.db")?;
 
-    let records = engine
-        .recover_layer1()
-        .context("Layer 1 recovery failed")?;
+    let records = engine.recover_layer1().context("Layer 1 recovery failed")?;
 
     let by_table = partition_by_table(&records);
 
@@ -268,7 +267,7 @@ fn tbl<'a>(
 fn build_media_set(records: &[&RecoveredRecord]) -> HashSet<i64> {
     let mut set = HashSet::new();
     for r in records {
-        let mid = match r.values.get(0) {
+        let mid = match r.values.first() {
             Some(SqlValue::Int(n)) => *n,
             _ => continue,
         };
@@ -276,7 +275,6 @@ fn build_media_set(records: &[&RecoveredRecord]) -> HashSet<i64> {
     }
     set
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -300,7 +298,11 @@ mod tests {
         let db = make_telegram_db("");
         let result = extract_from_telegram_db(&db, 0).unwrap();
         assert!(!result.chats.is_empty(), "should have at least one chat");
-        let all_msgs: Vec<_> = result.chats.iter().flat_map(|c| c.messages.iter()).collect();
+        let all_msgs: Vec<_> = result
+            .chats
+            .iter()
+            .flat_map(|c| c.messages.iter())
+            .collect();
         assert!(!all_msgs.is_empty(), "should have messages");
     }
 
@@ -454,9 +456,15 @@ mod tests {
             .find(|m| m.id == 20)
             .expect("message mid=20 must exist");
         assert!(msg.is_forwarded, "mid=20 must be is_forwarded=true");
-        let fwd = msg.forwarded_from.as_ref().expect("forwarded_from must be Some");
+        let fwd = msg
+            .forwarded_from
+            .as_ref()
+            .expect("forwarded_from must be Some");
         assert!(
-            matches!(fwd.origin_kind, chat4n6_plugin_api::ForwardOriginKind::Unknown),
+            matches!(
+                fwd.origin_kind,
+                chat4n6_plugin_api::ForwardOriginKind::Unknown
+            ),
             "unknown user → ForwardOriginKind::Unknown"
         );
     }

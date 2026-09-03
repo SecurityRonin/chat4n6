@@ -14,17 +14,12 @@ use anyhow::{bail, Result};
 use chat4n6_plugin_api::EvidenceSource;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum WalMode {
+    #[default]
     Both,
     Apply,
     Ignore,
-}
-
-impl Default for WalMode {
-    fn default() -> Self {
-        Self::Both
-    }
 }
 
 #[derive(Debug)]
@@ -240,7 +235,11 @@ impl<'a> ForensicEngine<'a> {
         // Layer 2: WAL (if provided)
         if let Some(wal) = self.wal_data {
             let wal_records = recover_layer2_enhanced(
-                ctx.db, wal, ctx.page_size, self.wal_mode, &ctx.table_roots,
+                ctx.db,
+                wal,
+                ctx.page_size,
+                self.wal_mode,
+                &ctx.table_roots,
             );
             stats.wal_pending = wal_records
                 .iter()
@@ -258,8 +257,7 @@ impl<'a> ForensicEngine<'a> {
         // reclaimed pages are immediately reused, so forensic recovery yields
         // nothing meaningful and may produce false positives.
         if ctx.pragma_info.auto_vacuum != AutoVacuumMode::Full {
-            let freelist =
-                recover_freelist_content(ctx.db, ctx.page_size, &ctx.schema_signatures);
+            let freelist = recover_freelist_content(ctx.db, ctx.page_size, &ctx.schema_signatures);
             stats.freelist_recovered = freelist.len();
             all.extend(freelist);
         } else {
@@ -278,8 +276,11 @@ impl<'a> ForensicEngine<'a> {
         // Skip if secure_delete != Off: SQLite zeroes or overwrites freed cell
         // space, so gap-carved data is gone and carving would only find zeros.
         if ctx.pragma_info.secure_delete == SecureDeleteMode::Off {
-            let roots_vec: Vec<_> =
-                ctx.table_roots.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            let roots_vec: Vec<_> = ctx
+                .table_roots
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
             let gaps = scan_page_gaps(ctx.db, ctx.page_size, &roots_vec, &ctx.schema_signatures);
             stats.gap_carved = gaps.len();
             all.extend(gaps);
@@ -321,8 +322,7 @@ impl<'a> ForensicEngine<'a> {
 
         // Layer 8: Journal (if provided)
         if let Some(journal) = self.journal_data {
-            let journal_records =
-                parse_journal(journal, ctx.page_size, &ctx.schema_signatures);
+            let journal_records = parse_journal(journal, ctx.page_size, &ctx.schema_signatures);
             stats.journal_recovered = journal_records.len();
             all.extend(journal_records);
         }
@@ -332,7 +332,10 @@ impl<'a> ForensicEngine<'a> {
         deduplicate(&mut all);
         stats.duplicates_removed = before - all.len();
 
-        Ok(RecoveryResult { records: all, stats })
+        Ok(RecoveryResult {
+            records: all,
+            stats,
+        })
     }
 }
 
@@ -368,9 +371,11 @@ mod tests {
             )
             .unwrap();
             // Force a checkpoint so the above is in the DB file
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .unwrap();
             // Now add more data that stays in WAL
-            conn.execute_batch("INSERT INTO notes VALUES (3, 'wal pending note');").unwrap();
+            conn.execute_batch("INSERT INTO notes VALUES (3, 'wal pending note');")
+                .unwrap();
         }
         let db_bytes = std::fs::read(&path).unwrap();
         let wal_path = format!("{}-wal", path.display());
@@ -398,7 +403,9 @@ mod tests {
     #[test]
     fn test_wal_mode_builder() {
         let db = create_test_db();
-        let engine = ForensicEngine::new(&db, None).unwrap().with_wal_mode(WalMode::Apply);
+        let engine = ForensicEngine::new(&db, None)
+            .unwrap()
+            .with_wal_mode(WalMode::Apply);
         assert_eq!(engine.wal_mode, WalMode::Apply);
     }
 
@@ -421,7 +428,9 @@ mod tests {
     fn test_with_journal_builder() {
         let db = create_test_db();
         let journal = vec![0u8; 512];
-        let engine = ForensicEngine::new(&db, None).unwrap().with_journal(&journal);
+        let engine = ForensicEngine::new(&db, None)
+            .unwrap()
+            .with_journal(&journal);
         assert!(engine.journal_data.is_some());
     }
 
@@ -473,7 +482,9 @@ mod tests {
     fn test_recovery_result_empty_journal() {
         let db = create_test_db();
         let journal = vec![0u8; 512]; // invalid journal, should produce 0 records
-        let engine = ForensicEngine::new(&db, None).unwrap().with_journal(&journal);
+        let engine = ForensicEngine::new(&db, None)
+            .unwrap()
+            .with_journal(&journal);
         let result = engine.recover_all().unwrap();
         assert_eq!(result.stats.journal_recovered, 0);
     }
@@ -508,7 +519,10 @@ mod tests {
             .with_journal(&fake_journal);
         // Both attachments present — recover_all must complete without panic.
         let result = engine.recover_all();
-        assert!(result.is_ok(), "recover_all must not panic with both WAL and journal attached");
+        assert!(
+            result.is_ok(),
+            "recover_all must not panic with both WAL and journal attached"
+        );
     }
 
     // ── Additional coverage tests ─────────────────────────────────────────────
@@ -551,7 +565,10 @@ mod tests {
         let engine = ForensicEngine::new(&db, None).unwrap();
         let ctx = engine.build_context().unwrap();
         // Should have at least one schema signature for "messages"
-        assert!(ctx.schema_signatures.iter().any(|s| s.table_name == "messages"));
+        assert!(ctx
+            .schema_signatures
+            .iter()
+            .any(|s| s.table_name == "messages"));
         let msg_sig = ctx
             .schema_signatures
             .iter()
@@ -580,7 +597,9 @@ mod tests {
         journal[sector_size..sector_size + 4].copy_from_slice(&2u32.to_be_bytes());
         journal[sector_size + 4] = 0x0D;
 
-        let engine = ForensicEngine::new(&db, None).unwrap().with_journal(&journal);
+        let engine = ForensicEngine::new(&db, None)
+            .unwrap()
+            .with_journal(&journal);
         let result = engine.recover_all().unwrap();
         // Journal may or may not recover records, but the code path is exercised
         assert!(result.stats.live_count > 0);
@@ -615,7 +634,11 @@ mod tests {
         let engine = ForensicEngine::new(&db, None).unwrap();
         let result = engine.recover_all().unwrap();
         // Default auto_vacuum is None, so freelist should NOT be skipped
-        assert!(!result.stats.layers_skipped.iter().any(|s| s.contains("freelist")));
+        assert!(!result
+            .stats
+            .layers_skipped
+            .iter()
+            .any(|s| s.contains("freelist")));
     }
 
     #[test]
@@ -721,9 +744,15 @@ mod tests {
         let engine = ForensicEngine::new(&db, None).unwrap();
         let ctx = engine.build_context().unwrap();
         // Should have a schema signature for "items" only (not index or view)
-        assert!(ctx.schema_signatures.iter().any(|s| s.table_name == "items"));
+        assert!(ctx
+            .schema_signatures
+            .iter()
+            .any(|s| s.table_name == "items"));
         // Index and view should not produce schema signatures
-        assert!(!ctx.schema_signatures.iter().any(|s| s.table_name == "idx_name"));
+        assert!(!ctx
+            .schema_signatures
+            .iter()
+            .any(|s| s.table_name == "idx_name"));
     }
 
     #[test]
@@ -735,7 +764,11 @@ mod tests {
         let result = engine.recover_all().unwrap();
         assert!(result.stats.live_count > 0);
         // Items should be recovered
-        let items: Vec<_> = result.records.iter().filter(|r| r.table == "items").collect();
+        let items: Vec<_> = result
+            .records
+            .iter()
+            .filter(|r| r.table == "items")
+            .collect();
         assert_eq!(items.len(), 2);
     }
 
@@ -765,7 +798,11 @@ mod tests {
         let engine = ForensicEngine::new(&db, None).unwrap();
         let result = engine.recover_all().unwrap();
         // layers_skipped should contain freelist skip message
-        assert!(result.stats.layers_skipped.iter().any(|s| s.contains("freelist")));
+        assert!(result
+            .stats
+            .layers_skipped
+            .iter()
+            .any(|s| s.contains("freelist")));
     }
 
     #[test]
@@ -775,7 +812,7 @@ mod tests {
         // runtime-only setting, not stored in the SQLite file header).
         // Instead, verify the format strings compile and the layers_skipped
         // mechanism works for auto_vacuum=Full (which IS stored in the header).
-        use crate::pragma::{SecureDeleteMode, AutoVacuumMode};
+        use crate::pragma::{AutoVacuumMode, SecureDeleteMode};
 
         // Verify format strings produce valid output (dead-code coverage)
         let sd = SecureDeleteMode::On;
@@ -819,10 +856,8 @@ mod tests {
         let bhdr: usize = 100;
         let cell_count = u16::from_be_bytes([db[bhdr + 3], db[bhdr + 4]]) as usize;
         assert!(cell_idx < cell_count);
-        let ptr = u16::from_be_bytes([
-            db[bhdr + 8 + cell_idx * 2],
-            db[bhdr + 8 + cell_idx * 2 + 1],
-        ]) as usize;
+        let ptr = u16::from_be_bytes([db[bhdr + 8 + cell_idx * 2], db[bhdr + 8 + cell_idx * 2 + 1]])
+            as usize;
 
         let mut pos = ptr;
         // Skip payload_len varint
@@ -857,9 +892,13 @@ mod tests {
         let ptr0 = u16::from_be_bytes([db[bhdr + 8], db[bhdr + 9]]) as usize;
         // Skip payload_len and rowid varints to find header_start
         let mut pos = ptr0;
-        while db[pos] & 0x80 != 0 { pos += 1; }
+        while db[pos] & 0x80 != 0 {
+            pos += 1;
+        }
         pos += 1;
-        while db[pos] & 0x80 != 0 { pos += 1; }
+        while db[pos] & 0x80 != 0 {
+            pos += 1;
+        }
         pos += 1;
         // pos now points to header_len; set it to 2 (only 1 serial type)
         db[pos] = 0x02;
@@ -927,10 +966,13 @@ mod tests {
         let mut master_records = Vec::new();
         engine.traverse_btree(1, "sqlite_master", &mut master_records);
         // At least one record should have 5 values but values[4] is not Text
-        let has_non_text_sql = master_records.iter().any(|r| {
-            r.values.len() >= 5 && !matches!(&r.values[4], SqlValue::Text(_))
-        });
-        assert!(has_non_text_sql, "Corruption should produce a record with non-Text sql column");
+        let has_non_text_sql = master_records
+            .iter()
+            .any(|r| r.values.len() >= 5 && !matches!(&r.values[4], SqlValue::Text(_)));
+        assert!(
+            has_non_text_sql,
+            "Corruption should produce a record with non-Text sql column"
+        );
 
         // Now exercise build_schema_signatures through build_context
         let ctx = engine.build_context().unwrap();
