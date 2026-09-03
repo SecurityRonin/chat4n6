@@ -118,7 +118,17 @@ impl ReportGenerator {
         self.render_stats(&base_ctx, result, output_dir)?;
 
         // --- thread-view.html ---
-        let thread_html = crate::thread_view::render_thread_view(result, case_name);
+        // With a media filesystem available, emit the fully self-contained viewer
+        // (media embedded as base64 data URIs) so the HTML stands alone; otherwise
+        // fall back to the media-referenced view.
+        let thread_html = match &self.export_media_fs {
+            Some(fs) => crate::thread_view::render_thread_view_self_contained(
+                result,
+                case_name,
+                fs.as_ref(),
+            ),
+            None => crate::thread_view::render_thread_view(result, case_name),
+        };
         std::fs::write(output_dir.join("thread-view.html"), thread_html)?;
 
         // --- case-uco.json ---
