@@ -1,5 +1,74 @@
-use chat4n6_plugin_api::{EvidenceSource, ExtractionResult, Message, MessageContent};
+use chat4n6_plugin_api::{EvidenceSource, ExtractionResult, MediaRef, Message, MessageContent};
 use std::path::Path;
+
+/// Resolves a `MediaRef` to a self-contained `data:` URI, or `None` when the
+/// bytes are unavailable (the viewer then shows a labelled placeholder).
+trait MediaResolver {
+    fn data_uri(&self, media: &MediaRef) -> Option<String>;
+}
+
+/// Embeds nothing — media renders as a `[Media: mime]` label. Keeps
+/// `render_thread_view` self-contained for CSS/JS while media stays referenced.
+struct NoMedia;
+impl MediaResolver for NoMedia {
+    fn data_uri(&self, _media: &MediaRef) -> Option<String> {
+        None
+    }
+}
+
+/// Backed by a forensic filesystem: reads `media.file_path` and base64-encodes it
+/// into a `data:` URI. Deterministic — identical bytes always yield the identical
+/// URI, so the emitted HTML is byte-reproducible.
+struct FsMedia<'a>(&'a dyn chat4n6_plugin_api::ForensicFs);
+impl MediaResolver for FsMedia<'_> {
+    fn data_uri(&self, media: &MediaRef) -> Option<String> {
+        use base64::Engine;
+        let bytes = self.0.read(&media.file_path).ok()?;
+        if bytes.is_empty() {
+            return None;
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Some(format!("data:{};base64,{}", media.mime_type, b64))
+    }
+}
+
+/// Render one media item, embedding it as a `data:` URI when the resolver can
+/// supply the bytes, else a labelled placeholder (three-tier: full / — / label).
+fn render_media(m: &MediaRef, resolver: &dyn MediaResolver, view_once: bool) -> String {
+    let mime = &m.mime_type;
+    match resolver.data_uri(m) {
+        Some(uri) => {
+            if mime.starts_with("image/") {
+                format!(
+                    "<img class=\"media\" src=\"{}\" alt=\"{}\" loading=\"lazy\">",
+                    uri,
+                    html_escape(mime)
+                )
+            } else if mime.starts_with("video/") {
+                format!("<video class=\"media\" controls preload=\"none\" src=\"{uri}\"></video>")
+            } else if mime.starts_with("audio/") {
+                format!("<audio class=\"media\" controls preload=\"none\" src=\"{uri}\"></audio>")
+            } else {
+                let name = m.extracted_name.as_deref().unwrap_or("file");
+                format!(
+                    "<a class=\"media-file\" href=\"{}\" download=\"{}\">📄 {} ({})</a>",
+                    uri,
+                    html_escape(name),
+                    html_escape(name),
+                    html_escape(mime)
+                )
+            }
+        }
+        None if view_once => format!(
+            "<span class=\"view-once-label\">🔒 View Once — media key preserved ({})</span>",
+            html_escape(mime)
+        ),
+        None => format!(
+            "<span class=\"media-label\">[Media: {} — not embedded]</span>",
+            html_escape(mime)
+        ),
+    }
+}
 
 fn evidence_color(source: &EvidenceSource) -> &'static str {
     match source {
@@ -39,17 +108,11 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-fn render_message_content(content: &MessageContent) -> String {
+fn render_message_content(content: &MessageContent, resolver: &dyn MediaResolver) -> String {
     match content {
         MessageContent::Text(t) => html_escape(t),
-        MessageContent::Media(m) => format!(
-            "<span class=\"media-label\">[Media: {}]</span>",
-            html_escape(&m.mime_type)
-        ),
-        MessageContent::ViewOnce(m) => format!(
-            "<span class=\"view-once-label\">🔒 View Once — media key preserved ({})</span>",
-            html_escape(&m.mime_type)
-        ),
+        MessageContent::Media(m) => render_media(m, resolver, false),
+        MessageContent::ViewOnce(m) => render_media(m, resolver, true),
         MessageContent::Location { lat, lon, name } => {
             let label = name.as_deref().unwrap_or("Location");
             format!(
@@ -80,13 +143,13 @@ fn render_message_content(content: &MessageContent) -> String {
     }
 }
 
-fn render_message_bubble(msg: &Message) -> String {
+fn render_message_bubble(msg: &Message, resolver: &dyn MediaResolver) -> String {
     let dir_class = if msg.from_me { "sent" } else { "received" };
     let color = evidence_color(&msg.source);
     let src_class = evidence_class(&msg.source);
     let source_label = msg.source.to_string();
     let ts = msg.timestamp.utc_str();
-    let content_html = render_message_content(&msg.content);
+    let content_html = render_message_content(&msg.content, resolver);
 
     let sender_html = if !msg.from_me {
         let jid = msg.sender_jid.as_deref().unwrap_or("unknown");
@@ -109,7 +172,7 @@ fn render_message_bubble(msg: &Message) -> String {
 
     let quoted_html = if let Some(ref q) = msg.quoted_message {
         let q_sender = q.sender_jid.as_deref().unwrap_or("me");
-        let q_content = render_message_content(&q.content);
+        let q_content = render_message_content(&q.content, resolver);
         format!(
             "<div class=\"quoted-msg\"><span class=\"quoted-sender\">{}</span>: {}</div>",
             html_escape(q_sender),
@@ -164,8 +227,24 @@ fn render_message_bubble(msg: &Message) -> String {
     )
 }
 
-/// Render a WhatsApp-style thread view HTML report.
+/// Render a fully self-contained thread view: like [`render_thread_view`], but
+/// every recoverable media item is embedded as a base64 `data:` URI read from
+/// `fs`, so the HTML has no external media dependency. Deterministic — identical
+/// bytes always encode to the same URI, and media appears in message order.
+pub fn render_thread_view_self_contained(
+    result: &ExtractionResult,
+    case_name: &str,
+    fs: &dyn chat4n6_plugin_api::ForensicFs,
+) -> String {
+    render_with(result, case_name, &FsMedia(fs))
+}
+
+/// Render a WhatsApp-style thread view HTML report (media referenced, not embedded).
 pub fn render_thread_view(result: &ExtractionResult, case_name: &str) -> String {
+    render_with(result, case_name, &NoMedia)
+}
+
+fn render_with(result: &ExtractionResult, case_name: &str, resolver: &dyn MediaResolver) -> String {
     let warning_banner = if result.forensic_warnings.is_empty() {
         String::new()
     } else {
@@ -187,7 +266,11 @@ pub fn render_thread_view(result: &ExtractionResult, case_name: &str) -> String 
     for chat in &result.chats {
         let chat_title = chat.name.as_deref().unwrap_or(&chat.jid).to_string();
 
-        let messages_html: String = chat.messages.iter().map(render_message_bubble).collect();
+        let messages_html: String = chat
+            .messages
+            .iter()
+            .map(|m| render_message_bubble(m, resolver))
+            .collect();
 
         chat_sections.push_str(&format!(
             r#"<section class="chat-section" id="chat-{id}">
@@ -321,6 +404,21 @@ header {{
   gap: 4px;
   margin-top: 2px;
 }}
+.media {{
+  max-width: 280px;
+  max-height: 340px;
+  border-radius: 8px;
+  display: block;
+  margin: 4px 0;
+}}
+.media-file {{
+  display: inline-block;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+}}
 .reaction {{
   background: white;
   border-radius: 12px;
@@ -420,6 +518,94 @@ mod tests {
             receipts: vec![],
             forwarded_from: None,
         }
+    }
+
+    struct MockFs {
+        files: std::collections::HashMap<String, Vec<u8>>,
+    }
+    impl chat4n6_plugin_api::ForensicFs for MockFs {
+        fn list(&self, _p: &str) -> anyhow::Result<Vec<chat4n6_plugin_api::FsEntry>> {
+            Ok(vec![])
+        }
+        fn read(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+            self.files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no such file: {path}"))
+        }
+        fn exists(&self, path: &str) -> bool {
+            self.files.contains_key(path)
+        }
+        fn unallocated_regions(&self) -> Vec<chat4n6_plugin_api::UnallocatedRegion> {
+            vec![]
+        }
+    }
+
+    fn image_media(path: &str) -> MediaRef {
+        MediaRef {
+            file_path: path.to_string(),
+            mime_type: "image/jpeg".to_string(),
+            file_size: 0,
+            extracted_name: None,
+            thumbnail_b64: None,
+            duration_secs: None,
+            file_hash: None,
+            encrypted_hash: None,
+            cdn_url: None,
+            media_key_b64: None,
+        }
+    }
+
+    #[test]
+    fn test_self_contained_viewer_embeds_image_as_data_uri() {
+        use base64::Engine;
+        let jpeg = vec![0xFFu8, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46];
+        let mut files = std::collections::HashMap::new();
+        files.insert("media/pic.jpg".to_string(), jpeg.clone());
+        let fs = MockFs { files };
+        let msg = make_msg(
+            1,
+            1,
+            Some("a@s.whatsapp.net"),
+            false,
+            MessageContent::Media(image_media("media/pic.jpg")),
+            EvidenceSource::Live,
+            false,
+        );
+        let result = make_result_with(vec![msg]);
+        let html = render_thread_view_self_contained(&result, "case", &fs);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
+        assert!(html.contains("<img"), "image media should embed as <img>");
+        assert!(
+            html.contains(&format!("data:image/jpeg;base64,{b64}")),
+            "image must be embedded as a self-contained data URI"
+        );
+    }
+
+    #[test]
+    fn test_self_contained_viewer_placeholder_when_media_unreadable() {
+        let fs = MockFs {
+            files: std::collections::HashMap::new(),
+        };
+        let msg = make_msg(
+            1,
+            1,
+            Some("a"),
+            false,
+            MessageContent::Media(image_media("media/gone.jpg")),
+            EvidenceSource::Live,
+            false,
+        );
+        let result = make_result_with(vec![msg]);
+        let html = render_thread_view_self_contained(&result, "case", &fs);
+        assert!(
+            !html.contains("data:image"),
+            "unreadable media must not embed a data URI"
+        );
+        assert!(
+            html.contains("not embedded"),
+            "unreadable media should show a labelled placeholder"
+        );
     }
 
     fn make_result_with(msgs: Vec<Message>) -> ExtractionResult {
