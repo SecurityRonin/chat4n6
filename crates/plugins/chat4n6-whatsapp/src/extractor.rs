@@ -255,7 +255,7 @@ pub fn extract_from_msgstore(
 
     // Sort messages by timestamp within each chat
     for chat in chats.values_mut() {
-        chat.messages.sort_by_key(|m| m.timestamp.utc);
+        chat.messages.sort_by_key(|m| (m.timestamp.utc, m.id));
     }
 
     // Map call records, then merge group calls by shared call_row_id
@@ -295,7 +295,12 @@ pub fn extract_from_msgstore(
     let thumbnail_records = tbl(&by_table, "message_thumbnails");
     let thumbnail_row_ids: Vec<i64> = thumbnail_records.iter().filter_map(|r| r.row_id).collect();
 
-    let chats_vec: Vec<_> = chats.into_values().collect();
+    // Total, reproducible order: never HashMap::into_values() iteration order,
+    // which Rust randomizes per process. Sorting by chat id makes the chat-section
+    // order in the viewer (and every report artifact) a pure function of the input,
+    // so identical evidence yields an identical output hash on every run.
+    let mut chats_vec: Vec<_> = chats.into_values().collect();
+    chats_vec.sort_by_key(|c| c.id);
 
     let mut forensic_warnings = Vec::new();
     forensic_warnings.extend(detect_duplicate_stanza_ids(&key_id_map));
@@ -356,7 +361,10 @@ pub fn extract_parallel(
 ) -> Result<ExtractionResult> {
     let mut result = extract_from_msgstore(db_bytes, tz_offset_secs, schema_version)?;
     result.chats.par_iter_mut().for_each(|chat| {
-        chat.messages.par_sort_by_key(|m| m.timestamp.utc);
+        // Total key (timestamp, id): par_sort is unstable, so equal timestamps
+        // would otherwise reorder nondeterministically. The id tie-breaker makes it
+        // deterministic and identical to the sequential path.
+        chat.messages.par_sort_by_key(|m| (m.timestamp.utc, m.id));
     });
     Ok(result)
 }
