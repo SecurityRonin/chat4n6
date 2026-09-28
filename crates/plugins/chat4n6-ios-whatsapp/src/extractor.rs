@@ -440,6 +440,7 @@ fn record_to_message(
         edit_history: Vec::new(),
         receipts: Vec::new(),
         forwarded_from: None,
+        composing_device: None,
     })
 }
 

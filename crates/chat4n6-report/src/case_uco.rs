@@ -144,6 +144,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         }
     }
 

@@ -640,6 +640,9 @@ fn record_to_message(
         edit_history: Vec::new(),
         receipts: Vec::new(),
         forwarded_from: None,
+        // Populated after all rows are parsed, from the message_details table
+        // joined to jid.device (see attach loop in extract_from_msgstore).
+        composing_device: None,
     })
 }
 
@@ -802,6 +805,7 @@ fn build_quoted_map(
                 edit_history: Vec::new(),
                 receipts: Vec::new(),
                 forwarded_from: None,
+                composing_device: None,
             },
         );
     }
@@ -1395,6 +1399,82 @@ mod tests {
         assert_eq!(
             call.duration_secs, 90,
             "duration must resolve via values[7], not transaction_id"
+        );
+    }
+
+    // ── Composing device: message_details.author_device_jid → jid.device ─────
+    //
+    // WhatsApp records which of the sender's OWN devices authored a message in
+    // `message_details.author_device_jid` (a jid row_id). Resolving that jid's
+    // `device` column gives the composing device number: 0 = the account's
+    // primary phone, N>0 = a linked / companion device. The field is populated
+    // for only a minority of messages, so a message with no message_details row
+    // must resolve to `None` — never silently to "primary".
+    fn make_msgstore_with_composing_device() -> Vec<u8> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r#"
+            PRAGMA user_version = 200;
+            CREATE TABLE jid (_id INTEGER PRIMARY KEY, user TEXT, server TEXT, agent INTEGER, type INTEGER, raw_string TEXT, device INTEGER);
+            CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, subject TEXT);
+            CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER NOT NULL, sender_jid_row_id INTEGER, from_me INTEGER NOT NULL DEFAULT 0, timestamp INTEGER NOT NULL, text_data TEXT, message_type INTEGER NOT NULL DEFAULT 0, media_mime_type TEXT, media_name TEXT);
+            CREATE TABLE message_details (message_row_id INTEGER PRIMARY KEY, author_device_jid INTEGER);
+            -- jid 1 = owner primary (device 0); jid 2 = alice; jid 3 = owner companion (device 3)
+            INSERT INTO jid VALUES (1, '10000000001', 's.whatsapp.net', 0, 0, 'me@s.whatsapp.net', 0);
+            INSERT INTO jid VALUES (2, '10000000002', 's.whatsapp.net', 0, 0, 'alice@s.whatsapp.net', 0);
+            INSERT INTO jid VALUES (3, '10000000001', 's.whatsapp.net', 0, 0, '10000000001.0:3@s.whatsapp.net', 3);
+            INSERT INTO chat VALUES (1, 2, 'Alice');
+            -- msg 10 composed on primary (:0); msg 11 on companion (:3); msg 12 has NO details row
+            INSERT INTO message VALUES (10, 1, 1, 1, 1660000000000, 'from primary', 0, NULL, NULL);
+            INSERT INTO message VALUES (11, 1, 1, 1, 1660000001000, 'from companion', 0, NULL, NULL);
+            INSERT INTO message VALUES (12, 1, 1, 1, 1660000002000, 'no device record', 0, NULL, NULL);
+            INSERT INTO message_details VALUES (10, 1);
+            INSERT INTO message_details VALUES (11, 3);
+        "#).unwrap();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.backup(rusqlite::DatabaseName::Main, tmp.path(), None)
+            .unwrap();
+        std::fs::read(tmp.path()).unwrap()
+    }
+
+    fn composing_device_of(db: &[u8], msg_id: i64) -> Option<u32> {
+        let result = extract_from_msgstore(db, 0, SchemaVersion::Modern).unwrap();
+        result
+            .chats
+            .iter()
+            .flat_map(|c| &c.messages)
+            .find(|m| m.id == msg_id)
+            .unwrap_or_else(|| panic!("message {msg_id} not found"))
+            .composing_device
+    }
+
+    #[test]
+    fn test_composing_device_primary_is_zero() {
+        // msg 10: message_details → jid 1 (device 0) → primary phone.
+        assert_eq!(
+            composing_device_of(&make_msgstore_with_composing_device(), 10),
+            Some(0),
+            "a message authored on jid.device=0 must resolve to Some(0) (primary phone)"
+        );
+    }
+
+    #[test]
+    fn test_composing_device_companion_is_device_number() {
+        // msg 11: message_details → jid 3 (device 3) → linked/companion device.
+        assert_eq!(
+            composing_device_of(&make_msgstore_with_composing_device(), 11),
+            Some(3),
+            "a message authored on jid.device=3 must resolve to Some(3) (companion device)"
+        );
+    }
+
+    #[test]
+    fn test_composing_device_absent_is_none_not_primary() {
+        // msg 12: no message_details row → no composing-device record. Must be
+        // None, never silently Some(0): absence is not evidence of primary-phone.
+        assert_eq!(
+            composing_device_of(&make_msgstore_with_composing_device(), 12),
+            None,
+            "a message with no message_details row must resolve to None, not primary"
         );
     }
 

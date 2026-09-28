@@ -317,6 +317,7 @@ mod header_tamper_tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let chat = Chat {
             id: 1,
@@ -377,6 +378,7 @@ mod header_tamper_tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let chat = Chat {
             id: 1,
@@ -568,6 +570,7 @@ mod new_detector_tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
 
         // Same row_id=42, two different timestamps from different source layers

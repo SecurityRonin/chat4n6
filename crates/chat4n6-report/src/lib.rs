@@ -723,6 +723,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let msg = Message {
             id: 1,
@@ -741,6 +742,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let media_msg = Message {
             id: 2,
@@ -770,6 +772,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let chat = Chat {
             id: 1,
@@ -1265,6 +1268,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let chat = Chat {
             id: 1,
@@ -1315,6 +1319,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let chat = Chat {
             id: 1,
@@ -1368,6 +1373,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let chat = Chat {
             id: 1,
@@ -1445,6 +1451,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let msg_b1 = Message {
             id: 20,
@@ -1463,6 +1470,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let msg_a2 = Message {
             id: 11,
@@ -1481,6 +1489,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let chat_a = Chat {
             id: 1,
@@ -1674,6 +1683,7 @@ mod tests {
                 edit_history: vec![],
                 receipts: vec![],
                 forwarded_from: None,
+                composing_device: None,
             }
         };
         let chat = Chat {
@@ -1765,6 +1775,7 @@ mod tests {
                     edit_history: vec![],
                     receipts: vec![],
                     forwarded_from: None,
+                    composing_device: None,
                 },
                 Message {
                     id: 2,
@@ -1783,6 +1794,7 @@ mod tests {
                     edit_history: vec![],
                     receipts: vec![],
                     forwarded_from: None,
+                    composing_device: None,
                 },
             ],
             archived: false,
@@ -1836,6 +1848,7 @@ mod tests {
                 edit_history: vec![],
                 receipts: vec![],
                 forwarded_from: None,
+                composing_device: None,
             };
             let chat = Chat {
                 id: 1,

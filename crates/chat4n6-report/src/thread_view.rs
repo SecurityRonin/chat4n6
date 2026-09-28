@@ -517,6 +517,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         }
     }
 
@@ -702,6 +703,79 @@ mod tests {
         assert!(
             html.contains("bob@s.whatsapp.net"),
             "received message must show sender jid"
+        );
+    }
+
+    // ── Composing-device (linked/companion) badge ───────────────────────────
+    // The self-contained viewer must show which of the sender's OWN devices
+    // composed each of the defendant's outgoing messages: primary phone (:0) vs
+    // a linked/companion device (:N). It must render a THREE-state signal, never
+    // a binary one — a message with no composing_device record gets no badge, and
+    // absence must not read as "primary".
+
+    fn sent_msg_with_device(id: i64, device: Option<u32>) -> Message {
+        let mut m = make_msg(
+            id,
+            1,
+            None,
+            true,
+            MessageContent::Text(format!("msg {id}")),
+            EvidenceSource::Live,
+            false,
+        );
+        m.composing_device = device;
+        m
+    }
+
+    #[test]
+    fn test_viewer_badges_companion_device_with_number() {
+        let result = make_result_with(vec![sent_msg_with_device(1, Some(3))]);
+        let html = render_thread_view(&result, "case");
+        assert!(
+            html.contains("linked") && html.contains(":3"),
+            "an outgoing message composed on companion device :3 must be badged as a linked device with its number"
+        );
+    }
+
+    #[test]
+    fn test_viewer_badges_primary_device() {
+        let result = make_result_with(vec![sent_msg_with_device(1, Some(0))]);
+        let html = render_thread_view(&result, "case");
+        assert!(
+            html.contains("primary"),
+            "an outgoing message composed on device :0 must be badged as the primary phone"
+        );
+    }
+
+    #[test]
+    fn test_viewer_no_device_badge_when_unrecorded() {
+        let result = make_result_with(vec![sent_msg_with_device(1, None)]);
+        let html = render_thread_view(&result, "case");
+        assert!(
+            !html.contains("linked :") && !html.contains("primary phone"),
+            "a message with no composing_device record must carry no device badge (absence is not 'primary')"
+        );
+    }
+
+    #[test]
+    fn test_viewer_no_device_badge_on_received_message() {
+        // Scoped to the defendant's own messages: a received message must not be
+        // badged even if the DB recorded the counterparty's composing device.
+        let mut m = make_msg(
+            1,
+            1,
+            Some("alice@s.whatsapp.net"),
+            false,
+            MessageContent::Text("incoming".into()),
+            EvidenceSource::Live,
+            false,
+        );
+        m.composing_device = Some(2);
+        let result = make_result_with(vec![m]);
+        let html = render_thread_view(&result, "case");
+        assert!(
+            !html.contains("linked :2"),
+            "a received message must not carry an outgoing-device badge"
         );
     }
 
