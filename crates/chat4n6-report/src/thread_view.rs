@@ -1,4 +1,6 @@
-use chat4n6_plugin_api::{EvidenceSource, ExtractionResult, MediaRef, Message, MessageContent};
+use chat4n6_plugin_api::{
+    CallRecord, CallResult, EvidenceSource, ExtractionResult, MediaRef, Message, MessageContent,
+};
 use std::path::Path;
 
 /// Resolves a `MediaRef` to a self-contained `data:` URI, or `None` when the
@@ -241,6 +243,55 @@ fn render_message_bubble(msg: &Message, resolver: &dyn MediaResolver) -> String 
     )
 }
 
+/// Render a WhatsApp voice/video call event as an inline timeline row, aligned
+/// like a message (sent/received) and labelled by direction, kind and result.
+/// Not-connected outcomes (missed, rejected, unavailable, cancelled) are shown
+/// with the actual result rather than hidden.
+fn render_call_row(call: &CallRecord) -> String {
+    let dir_class = if call.from_me { "sent" } else { "received" };
+    let kind = if call.video { "video" } else { "voice" };
+    let icon = if call.video { "📹" } else { "📞" };
+    let ts = call.timestamp.utc_str();
+    let src_class = evidence_class(&call.source);
+    let color = evidence_color(&call.source);
+    let source_label = call.source.to_string();
+    let dir = if call.from_me { "Outgoing" } else { "Incoming" };
+    let (label, notable) = match call.call_result {
+        CallResult::Connected => {
+            let label = if call.duration_secs > 0 {
+                let (m, s) = (call.duration_secs / 60, call.duration_secs % 60);
+                format!("{dir} {kind} call ({m}m {s}s)")
+            } else {
+                format!("{dir} {kind} call")
+            };
+            (label, false)
+        }
+        CallResult::Missed => (format!("Missed {kind} call"), true),
+        ref other => (format!("{dir} {kind} call — {other}"), true),
+    };
+    let notable_class = if notable { " call-missed" } else { "" };
+    format!(
+        r#"<div class="msg {dir_class} call-row" data-from-me="{from_me}" data-source="{source_label}">
+  <div class="bubble call-bubble{notable_class}">
+    <span class="call-icon">{icon}</span> <span class="call-label">{label}</span>
+    <div class="meta">
+      <span class="timestamp">{ts}</span>
+      <span class="evidence-badge {src_class}" style="background:{color}" title="{source_label}"> </span>
+    </div>
+  </div>
+</div>"#,
+        dir_class = dir_class,
+        from_me = call.from_me,
+        source_label = html_escape(&source_label),
+        notable_class = notable_class,
+        icon = icon,
+        label = html_escape(&label),
+        ts = html_escape(&ts),
+        src_class = src_class,
+        color = color,
+    )
+}
+
 /// Render a fully self-contained thread view: like [`render_thread_view`], but
 /// every recoverable media item is embedded as a base64 `data:` URI read from
 /// `fs`, so the HTML has no external media dependency. Deterministic — identical
@@ -296,11 +347,28 @@ fn render_with(result: &ExtractionResult, case_name: &str, resolver: &dyn MediaR
     for chat in &result.chats {
         let chat_title = chat.name.as_deref().unwrap_or(&chat.jid).to_string();
 
-        let messages_html: String = chat
-            .messages
+        // Interleave this chat's calls (matched by participant jid) with its
+        // messages, chronologically, so call events appear inline in the timeline.
+        // Sort key (timestamp, kind, id) is total and reproducible; kind orders a
+        // message (0) before a call (1) at an identical instant.
+        let mut rows = Vec::new();
+        for m in &chat.messages {
+            rows.push((
+                m.timestamp.utc,
+                0u8,
+                m.id,
+                render_message_bubble(m, resolver),
+            ));
+        }
+        for c in result
+            .calls
             .iter()
-            .map(|m| render_message_bubble(m, resolver))
-            .collect();
+            .filter(|c| c.participants.iter().any(|p| p == &chat.jid))
+        {
+            rows.push((c.timestamp.utc, 1u8, c.call_id, render_call_row(c)));
+        }
+        rows.sort_by_key(|(ts, kind, id, _)| (*ts, *kind, *id));
+        let messages_html: String = rows.into_iter().map(|(_, _, _, html)| html).collect();
 
         chat_sections.push_str(&format!(
             r#"<section class="chat-section" id="chat-{id}">
@@ -449,6 +517,24 @@ header {{
   font-size: 13px;
   color: #5a4a1a;
 }}
+.call-bubble {{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #eef1f4;
+  border: 1px solid #dfe4e8;
+}}
+.call-icon {{
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: #e2ede6;
+  font-size: 14px;
+}}
+.call-label {{ font-size: 13px; color: #2b3a42; }}
+.call-missed {{ background: #fdecea; border-color: #f3c0ba; }}
+.call-missed .call-icon {{ background: #f7d4cf; }}
+.call-missed .call-label {{ color: #c0392b; font-weight: 600; }}
 .reactions {{
   display: flex;
   gap: 4px;
