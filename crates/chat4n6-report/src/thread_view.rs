@@ -243,8 +243,8 @@ fn render_message_bubble(msg: &Message, resolver: &dyn MediaResolver) -> String 
     )
 }
 
-/// Render a WhatsApp voice/video call event as an inline timeline row, aligned
-/// like a message (sent/received) and labelled by direction, kind and result.
+/// Render a voice/video call event as an inline timeline row, aligned like a
+/// message (sent/received) and labelled by direction, kind and result.
 /// Not-connected outcomes (missed, rejected, unavailable, cancelled) are shown
 /// with the actual result rather than hidden.
 fn render_call_row(call: &CallRecord) -> String {
@@ -304,7 +304,9 @@ pub fn render_thread_view_self_contained(
     render_with(result, case_name, &FsMedia(fs))
 }
 
-/// Render a WhatsApp-style thread view HTML report (media referenced, not embedded).
+/// Render a platform-agnostic chat thread view HTML report from any plugin's
+/// `ExtractionResult` (WhatsApp, iMessage, Signal, Telegram, …); media is
+/// referenced, not embedded.
 pub fn render_thread_view(result: &ExtractionResult, case_name: &str) -> String {
     render_with(result, case_name, &NoMedia)
 }
