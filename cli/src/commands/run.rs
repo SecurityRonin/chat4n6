@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chat4n6_fs::{DarFs, IosBackupFs, PlaintextDirFs};
+use chat4n6_imessage::ImessagePlugin;
 use chat4n6_ios_whatsapp::IosWhatsAppPlugin;
 use chat4n6_plugin_api::ForensicPlugin;
 use chat4n6_report::ReportGenerator;
@@ -48,6 +49,7 @@ pub fn registered_plugins(key_bytes: Option<Vec<u8>>) -> Vec<Box<dyn ForensicPlu
     vec![
         whatsapp,
         Box::new(IosWhatsAppPlugin),
+        Box::new(ImessagePlugin),
         Box::new(SignalPlugin),
         Box::new(TelegramPlugin),
     ]
@@ -206,12 +208,16 @@ mod tests {
     }
 
     #[test]
-    fn registered_plugins_includes_all_three_platforms() {
+    fn registered_plugins_includes_expected_platforms() {
         let plugins = super::registered_plugins(None);
         let names: Vec<&str> = plugins.iter().map(|p| p.name()).collect();
         assert!(
             names.iter().any(|n| n.to_lowercase().contains("whatsapp")),
             "must include WhatsApp plugin, got: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.to_lowercase().contains("imessage")),
+            "must include iMessage plugin, got: {names:?}"
         );
         assert!(
             names.iter().any(|n| n.to_lowercase().contains("signal")),

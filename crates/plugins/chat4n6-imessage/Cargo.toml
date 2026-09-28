@@ -1,0 +1,14 @@
+[package]
+name = "chat4n6-imessage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chat4n6-plugin-api = { path = "../../chat4n6-plugin-api" }
+chat4n6-sqlite-forensics = { path = "../../chat4n6-sqlite-forensics" }
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
