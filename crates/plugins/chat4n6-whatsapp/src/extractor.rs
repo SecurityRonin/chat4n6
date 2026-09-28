@@ -49,6 +49,7 @@ pub fn extract_from_msgstore(
     let chat_cols = cols_of(&ddl_map, "chat");
     let message_cols = cols_of(&ddl_map, "message");
     let call_cols = cols_of(&ddl_map, "call_log");
+    let md_cols = cols_of(&ddl_map, "message_details");
 
     let records = engine.recover_layer1().context("Layer 1 recovery failed")?;
 
@@ -57,6 +58,10 @@ pub fn extract_from_msgstore(
 
     // Build JID lookup: id → raw_string
     let jid_map = build_jid_map(tbl(&by_table, "jid"), &jid_cols);
+
+    // Build JID device map: jid row_id → device number (jid.device). Device 0 is
+    // the account's primary phone; N>0 is a linked/companion device.
+    let jid_device_map = build_jid_device_map(tbl(&by_table, "jid"), &jid_cols);
 
     // Build chat map: chat_id → Chat (populated with messages below)
     let mut chats = build_chats(tbl(&by_table, "chat"), &jid_map, &chat_cols);
@@ -234,6 +239,28 @@ pub fn extract_from_msgstore(
         forwarded_map.insert(msg_row_id, score);
     }
 
+    // Composing device per message: message_details.author_device_jid (a jid
+    // row_id) resolved through jid.device. Populated for only a minority of
+    // messages; a message with no row stays None, never silently "primary".
+    let mut composing_device_map: HashMap<i64, u32> = HashMap::new();
+    for r in tbl(&by_table, "message_details") {
+        // message_row_id is the table's PRIMARY KEY (== the row_id); prefer the
+        // named column, fall back to row_id when the DDL order differs.
+        let Some(msg_row_id) = (match val(r, &md_cols, "message_row_id") {
+            Some(SqlValue::Int(n)) => Some(*n),
+            _ => r.row_id,
+        }) else {
+            continue;
+        };
+        let author_jid_row = match val(r, &md_cols, "author_device_jid") {
+            Some(SqlValue::Int(n)) => *n,
+            _ => continue,
+        };
+        if let Some(dev) = jid_device_map.get(&author_jid_row) {
+            composing_device_map.insert(msg_row_id, *dev);
+        }
+    }
+
     // Attach reactions, edit history, receipts, and forwarding to messages
     for chat in chats.values_mut() {
         for msg in &mut chat.messages {
@@ -249,6 +276,9 @@ pub fn extract_from_msgstore(
             if let Some(score) = forwarded_map.get(&msg.id) {
                 msg.forward_score = Some(*score);
                 msg.is_forwarded = true;
+            }
+            if let Some(dev) = composing_device_map.get(&msg.id) {
+                msg.composing_device = Some(*dev);
             }
         }
     }
@@ -476,6 +506,26 @@ fn build_jid_map(
             _ => continue,
         };
         map.insert(id, raw);
+    }
+    map
+}
+
+/// jid table: `device` column (jid row_id → device number), resolved by name.
+/// Device 0 is the account's primary phone; N>0 is a linked/companion device
+/// (WhatsApp Web/Desktop or a further linked phone). Absent on the legacy
+/// `(_id, raw_string)` schema, where every jid resolves to no device number.
+fn build_jid_device_map(
+    records: &[&RecoveredRecord],
+    cols: &HashMap<String, usize>,
+) -> HashMap<i64, u32> {
+    let mut map = HashMap::new();
+    for r in records {
+        let Some(id) = r.row_id else { continue };
+        if let Some(SqlValue::Int(n)) = val(r, cols, "device") {
+            if *n >= 0 {
+                map.insert(id, *n as u32);
+            }
+        }
     }
     map
 }

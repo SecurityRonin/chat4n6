@@ -199,6 +199,18 @@ fn render_message_bubble(msg: &Message, resolver: &dyn MediaResolver) -> String 
         String::new()
     };
 
+    // Composing-device badge — only on the sender's OWN (from_me) messages, and
+    // only where message_details actually recorded a device. Three-state: primary
+    // (:0), a linked/companion device (:N), or no badge at all. Never binary — an
+    // absent badge must not read as "sent from the primary phone".
+    let device_html = match (msg.from_me, msg.composing_device) {
+        (true, Some(0)) => "<span class=\"dev-badge dev-primary\" title=\"Composed on the account's primary phone (device :0)\">📱 primary</span>".to_string(),
+        (true, Some(n)) => format!(
+            "<span class=\"dev-badge dev-linked\" title=\"Composed on a linked / companion device (device :{n}) — not the primary phone\">🔗 linked :{n}</span>"
+        ),
+        _ => String::new(),
+    };
+
     format!(
         r#"<div class="msg {dir_class}" data-from-me="{from_me}" data-source="{source_label}">
   {sender_html}
@@ -207,6 +219,7 @@ fn render_message_bubble(msg: &Message, resolver: &dyn MediaResolver) -> String 
     <div class="content">{content_html}</div>
     <div class="meta">
       <span class="timestamp">{ts}</span>
+      {device_html}
       <span class="evidence-badge {src_class}" style="background:{color}" title="{source_label}"> </span>
     </div>
   </div>
@@ -221,6 +234,7 @@ fn render_message_bubble(msg: &Message, resolver: &dyn MediaResolver) -> String 
         quoted_html = quoted_html,
         content_html = content_html,
         ts = html_escape(&ts),
+        device_html = device_html,
         src_class = src_class,
         color = color,
         reactions_html = reactions_html,
@@ -260,6 +274,22 @@ fn render_with(result: &ExtractionResult, case_name: &str, resolver: &dyn MediaR
 </div>"#,
             items.join("\n")
         )
+    };
+
+    // Composing-device caveat: shown only when at least one OUTGOING message
+    // actually carries a composing-device record, so the note (and its badges)
+    // never appear on data that lacks the signal. The three-state honesty
+    // (primary / linked / no-record) lives in this note plus the per-message
+    // badges; absence of a badge is explicitly not evidence of primary-phone use.
+    let has_device_info = result
+        .chats
+        .iter()
+        .flat_map(|c| &c.messages)
+        .any(|m| m.from_me && m.composing_device.is_some());
+    let device_caveat = if has_device_info {
+        r#"<div class="device-note">The 📱 / 🔗 badges show which of the sender's own devices composed an outgoing message — the account's primary phone, or a linked companion device (WhatsApp Web/Desktop or a further linked phone) — read from <code>message_details</code>. WhatsApp records this for only a minority of messages, so a message without a badge is not evidence that it was sent from the primary phone.</div>"#.to_string()
+    } else {
+        String::new()
     };
 
     let mut chat_sections = String::new();
@@ -399,6 +429,26 @@ header {{
   border-radius: 50%;
   flex-shrink: 0;
 }}
+.dev-badge {{
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 0 6px;
+  border-radius: 9px;
+  white-space: nowrap;
+}}
+.dev-primary {{ background: #e7eef0; color: #5b7079; border: 1px solid #d4dde0; }}
+.dev-linked {{ background: #ffe9c7; color: #8a5a00; border: 1px solid #f0c675; }}
+.device-note {{
+  margin: 8px 12px;
+  padding: 8px 12px;
+  background: #fff8e6;
+  border: 1px solid #f0d98c;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #5a4a1a;
+}}
 .reactions {{
   display: flex;
   gap: 4px;
@@ -446,6 +496,7 @@ header {{
   <h1>Thread View — {case_name_esc}</h1>
 </header>
 {warning_banner}
+{device_caveat}
 <div class="search-bar">
   <input type="text" id="msg-search" placeholder="Search messages..." oninput="filterMessages(this.value)">
 </div>
@@ -464,6 +515,7 @@ function filterMessages(query) {{
         case_name = html_escape(case_name),
         case_name_esc = html_escape(case_name),
         warning_banner = warning_banner,
+        device_caveat = device_caveat,
         chat_sections = chat_sections,
     )
 }
