@@ -1,4 +1,6 @@
-use chat4n6_plugin_api::{EvidenceSource, ExtractionResult, MediaRef, Message, MessageContent};
+use chat4n6_plugin_api::{
+    CallRecord, CallResult, EvidenceSource, ExtractionResult, MediaRef, Message, MessageContent,
+};
 use std::path::Path;
 
 /// Resolves a `MediaRef` to a self-contained `data:` URI, or `None` when the
@@ -199,6 +201,18 @@ fn render_message_bubble(msg: &Message, resolver: &dyn MediaResolver) -> String 
         String::new()
     };
 
+    // Composing-device badge — only on the sender's OWN (from_me) messages, and
+    // only where message_details actually recorded a device. Three-state: primary
+    // (:0), a linked/companion device (:N), or no badge at all. Never binary — an
+    // absent badge must not read as "sent from the primary phone".
+    let device_html = match (msg.from_me, msg.composing_device) {
+        (true, Some(0)) => "<span class=\"dev-badge dev-primary\" title=\"Composed on the account's primary phone (device :0)\">📱 primary</span>".to_string(),
+        (true, Some(n)) => format!(
+            "<span class=\"dev-badge dev-linked\" title=\"Composed on a linked / companion device (device :{n}) — not the primary phone\">🔗 linked :{n}</span>"
+        ),
+        _ => String::new(),
+    };
+
     format!(
         r#"<div class="msg {dir_class}" data-from-me="{from_me}" data-source="{source_label}">
   {sender_html}
@@ -207,6 +221,7 @@ fn render_message_bubble(msg: &Message, resolver: &dyn MediaResolver) -> String 
     <div class="content">{content_html}</div>
     <div class="meta">
       <span class="timestamp">{ts}</span>
+      {device_html}
       <span class="evidence-badge {src_class}" style="background:{color}" title="{source_label}"> </span>
     </div>
   </div>
@@ -221,9 +236,59 @@ fn render_message_bubble(msg: &Message, resolver: &dyn MediaResolver) -> String 
         quoted_html = quoted_html,
         content_html = content_html,
         ts = html_escape(&ts),
+        device_html = device_html,
         src_class = src_class,
         color = color,
         reactions_html = reactions_html,
+    )
+}
+
+/// Render a voice/video call event as an inline timeline row, aligned like a
+/// message (sent/received) and labelled by direction, kind and result.
+/// Not-connected outcomes (missed, rejected, unavailable, cancelled) are shown
+/// with the actual result rather than hidden.
+fn render_call_row(call: &CallRecord) -> String {
+    let dir_class = if call.from_me { "sent" } else { "received" };
+    let kind = if call.video { "video" } else { "voice" };
+    let icon = if call.video { "📹" } else { "📞" };
+    let ts = call.timestamp.utc_str();
+    let src_class = evidence_class(&call.source);
+    let color = evidence_color(&call.source);
+    let source_label = call.source.to_string();
+    let dir = if call.from_me { "Outgoing" } else { "Incoming" };
+    let (label, notable) = match call.call_result {
+        CallResult::Connected => {
+            let label = if call.duration_secs > 0 {
+                let (m, s) = (call.duration_secs / 60, call.duration_secs % 60);
+                format!("{dir} {kind} call ({m}m {s}s)")
+            } else {
+                format!("{dir} {kind} call")
+            };
+            (label, false)
+        }
+        CallResult::Missed => (format!("Missed {kind} call"), true),
+        ref other => (format!("{dir} {kind} call — {other}"), true),
+    };
+    let notable_class = if notable { " call-missed" } else { "" };
+    format!(
+        r#"<div class="msg {dir_class} call-row" data-from-me="{from_me}" data-source="{source_label}">
+  <div class="bubble call-bubble{notable_class}">
+    <span class="call-icon">{icon}</span> <span class="call-label">{label}</span>
+    <div class="meta">
+      <span class="timestamp">{ts}</span>
+      <span class="evidence-badge {src_class}" style="background:{color}" title="{source_label}"> </span>
+    </div>
+  </div>
+</div>"#,
+        dir_class = dir_class,
+        from_me = call.from_me,
+        source_label = html_escape(&source_label),
+        notable_class = notable_class,
+        icon = icon,
+        label = html_escape(&label),
+        ts = html_escape(&ts),
+        src_class = src_class,
+        color = color,
     )
 }
 
@@ -239,7 +304,9 @@ pub fn render_thread_view_self_contained(
     render_with(result, case_name, &FsMedia(fs))
 }
 
-/// Render a WhatsApp-style thread view HTML report (media referenced, not embedded).
+/// Render a platform-agnostic chat thread view HTML report from any plugin's
+/// `ExtractionResult` (WhatsApp, iMessage, Signal, Telegram, …); media is
+/// referenced, not embedded.
 pub fn render_thread_view(result: &ExtractionResult, case_name: &str) -> String {
     render_with(result, case_name, &NoMedia)
 }
@@ -262,15 +329,48 @@ fn render_with(result: &ExtractionResult, case_name: &str, resolver: &dyn MediaR
         )
     };
 
+    // Composing-device caveat: shown only when at least one OUTGOING message
+    // actually carries a composing-device record, so the note (and its badges)
+    // never appear on data that lacks the signal. The three-state honesty
+    // (primary / linked / no-record) lives in this note plus the per-message
+    // badges; absence of a badge is explicitly not evidence of primary-phone use.
+    let has_device_info = result
+        .chats
+        .iter()
+        .flat_map(|c| &c.messages)
+        .any(|m| m.from_me && m.composing_device.is_some());
+    let device_caveat = if has_device_info {
+        r#"<div class="device-note">The 📱 / 🔗 badges show which of the sender's own devices composed an outgoing message — the account's primary phone, or a linked companion device (WhatsApp Web/Desktop or a further linked phone) — read from <code>message_details</code>. WhatsApp records this for only a minority of messages, so a message without a badge is not evidence that it was sent from the primary phone.</div>"#.to_string()
+    } else {
+        String::new()
+    };
+
     let mut chat_sections = String::new();
     for chat in &result.chats {
         let chat_title = chat.name.as_deref().unwrap_or(&chat.jid).to_string();
 
-        let messages_html: String = chat
-            .messages
+        // Interleave this chat's calls (matched by participant jid) with its
+        // messages, chronologically, so call events appear inline in the timeline.
+        // Sort key (timestamp, kind, id) is total and reproducible; kind orders a
+        // message (0) before a call (1) at an identical instant.
+        let mut rows = Vec::new();
+        for m in &chat.messages {
+            rows.push((
+                m.timestamp.utc,
+                0u8,
+                m.id,
+                render_message_bubble(m, resolver),
+            ));
+        }
+        for c in result
+            .calls
             .iter()
-            .map(|m| render_message_bubble(m, resolver))
-            .collect();
+            .filter(|c| c.participants.iter().any(|p| p == &chat.jid))
+        {
+            rows.push((c.timestamp.utc, 1u8, c.call_id, render_call_row(c)));
+        }
+        rows.sort_by_key(|(ts, kind, id, _)| (*ts, *kind, *id));
+        let messages_html: String = rows.into_iter().map(|(_, _, _, html)| html).collect();
 
         chat_sections.push_str(&format!(
             r#"<section class="chat-section" id="chat-{id}">
@@ -399,6 +499,44 @@ header {{
   border-radius: 50%;
   flex-shrink: 0;
 }}
+.dev-badge {{
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 0 6px;
+  border-radius: 9px;
+  white-space: nowrap;
+}}
+.dev-primary {{ background: #e7eef0; color: #5b7079; border: 1px solid #d4dde0; }}
+.dev-linked {{ background: #ffe9c7; color: #8a5a00; border: 1px solid #f0c675; }}
+.device-note {{
+  margin: 8px 12px;
+  padding: 8px 12px;
+  background: #fff8e6;
+  border: 1px solid #f0d98c;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #5a4a1a;
+}}
+.call-bubble {{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #eef1f4;
+  border: 1px solid #dfe4e8;
+}}
+.call-icon {{
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: #e2ede6;
+  font-size: 14px;
+}}
+.call-label {{ font-size: 13px; color: #2b3a42; }}
+.call-missed {{ background: #fdecea; border-color: #f3c0ba; }}
+.call-missed .call-icon {{ background: #f7d4cf; }}
+.call-missed .call-label {{ color: #c0392b; font-weight: 600; }}
 .reactions {{
   display: flex;
   gap: 4px;
@@ -446,6 +584,7 @@ header {{
   <h1>Thread View — {case_name_esc}</h1>
 </header>
 {warning_banner}
+{device_caveat}
 <div class="search-bar">
   <input type="text" id="msg-search" placeholder="Search messages..." oninput="filterMessages(this.value)">
 </div>
@@ -464,6 +603,7 @@ function filterMessages(query) {{
         case_name = html_escape(case_name),
         case_name_esc = html_escape(case_name),
         warning_banner = warning_banner,
+        device_caveat = device_caveat,
         chat_sections = chat_sections,
     )
 }
@@ -483,8 +623,8 @@ pub fn write_thread_view(
 mod tests {
     use super::*;
     use chat4n6_plugin_api::{
-        Chat, EvidenceSource, ExtractionResult, ForensicTimestamp, ForensicWarning, MediaRef,
-        Message, MessageContent,
+        CallRecord, CallResult, Chat, EvidenceSource, ExtractionResult, ForensicTimestamp,
+        ForensicWarning, MediaRef, Message, MessageContent,
     };
 
     fn ts(ms: i64) -> ForensicTimestamp {
@@ -517,6 +657,7 @@ mod tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         }
     }
 
@@ -702,6 +843,154 @@ mod tests {
         assert!(
             html.contains("bob@s.whatsapp.net"),
             "received message must show sender jid"
+        );
+    }
+
+    // ── Composing-device (linked/companion) badge ───────────────────────────
+    // The self-contained viewer must show which of the sender's OWN devices
+    // composed each of the defendant's outgoing messages: primary phone (:0) vs
+    // a linked/companion device (:N). It must render a THREE-state signal, never
+    // a binary one — a message with no composing_device record gets no badge, and
+    // absence must not read as "primary".
+
+    fn sent_msg_with_device(id: i64, device: Option<u32>) -> Message {
+        let mut m = make_msg(
+            id,
+            1,
+            None,
+            true,
+            MessageContent::Text(format!("msg {id}")),
+            EvidenceSource::Live,
+            false,
+        );
+        m.composing_device = device;
+        m
+    }
+
+    #[test]
+    fn test_viewer_badges_companion_device_with_number() {
+        let result = make_result_with(vec![sent_msg_with_device(1, Some(3))]);
+        let html = render_thread_view(&result, "case");
+        assert!(
+            html.contains("linked") && html.contains(":3"),
+            "an outgoing message composed on companion device :3 must be badged as a linked device with its number"
+        );
+    }
+
+    #[test]
+    fn test_viewer_badges_primary_device() {
+        let result = make_result_with(vec![sent_msg_with_device(1, Some(0))]);
+        let html = render_thread_view(&result, "case");
+        assert!(
+            html.contains("primary"),
+            "an outgoing message composed on device :0 must be badged as the primary phone"
+        );
+    }
+
+    #[test]
+    fn test_viewer_no_device_badge_when_unrecorded() {
+        let result = make_result_with(vec![sent_msg_with_device(1, None)]);
+        let html = render_thread_view(&result, "case");
+        assert!(
+            !html.contains("linked :") && !html.contains("primary phone"),
+            "a message with no composing_device record must carry no device badge (absence is not 'primary')"
+        );
+    }
+
+    #[test]
+    fn test_viewer_no_device_badge_on_received_message() {
+        // Scoped to the defendant's own messages: a received message must not be
+        // badged even if the DB recorded the counterparty's composing device.
+        let mut m = make_msg(
+            1,
+            1,
+            Some("alice@s.whatsapp.net"),
+            false,
+            MessageContent::Text("incoming".into()),
+            EvidenceSource::Live,
+            false,
+        );
+        m.composing_device = Some(2);
+        let result = make_result_with(vec![m]);
+        let html = render_thread_view(&result, "case");
+        assert!(
+            !html.contains("linked :2"),
+            "a received message must not carry an outgoing-device badge"
+        );
+    }
+
+    // ── Inline calls in the thread ──────────────────────────────────────────
+    // WhatsApp voice/video call events must appear inline in the conversation
+    // timeline (like messages), scoped to the chat whose participant they name,
+    // never leaking into another chat.
+
+    fn call(
+        id: i64,
+        participant: &str,
+        from_me: bool,
+        video: bool,
+        result: CallResult,
+    ) -> CallRecord {
+        CallRecord {
+            call_id: id,
+            participants: vec![participant.to_string()],
+            from_me,
+            video,
+            group_call: false,
+            duration_secs: 0,
+            call_result: result,
+            timestamp: ts(1710513100000 + id * 1000),
+            source: EvidenceSource::Live,
+            call_creator_device_jid: None,
+        }
+    }
+
+    #[test]
+    fn test_viewer_renders_missed_call_inline() {
+        let mut result = make_result_with(vec![]);
+        // make_result_with's chat.jid is "alice@s.whatsapp.net"
+        result.calls = vec![call(
+            1,
+            "alice@s.whatsapp.net",
+            false,
+            false,
+            CallResult::Missed,
+        )];
+        let html = render_thread_view(&result, "case");
+        assert!(
+            html.contains("Missed voice call"),
+            "a missed voice call must render inline in the thread"
+        );
+    }
+
+    #[test]
+    fn test_viewer_renders_connected_video_call_with_direction() {
+        let mut result = make_result_with(vec![]);
+        let mut c = call(1, "alice@s.whatsapp.net", true, true, CallResult::Connected);
+        c.duration_secs = 95;
+        result.calls = vec![c];
+        let html = render_thread_view(&result, "case");
+        assert!(
+            html.contains("Outgoing video call"),
+            "a connected outgoing video call must be labelled with direction and kind"
+        );
+    }
+
+    #[test]
+    fn test_viewer_does_not_leak_call_into_wrong_chat() {
+        let mut result = make_result_with(vec![]);
+        // participant does NOT match the chat's jid (alice@…): must not render.
+        result.calls = vec![call(
+            1,
+            "bob@s.whatsapp.net",
+            false,
+            false,
+            CallResult::Missed,
+        )];
+        let html = render_thread_view(&result, "case");
+        assert!(
+            !html.contains("Missed voice call"),
+            "a call whose participant does not match the chat jid must not render in it"
         );
     }
 

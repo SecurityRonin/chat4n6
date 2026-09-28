@@ -523,6 +523,15 @@ pub struct Message {
     /// Resolved origin of a forwarded message (channel, user, unknown source).
     #[serde(default)]
     pub forwarded_from: Option<ForwardOrigin>,
+    /// Which of the sender's own devices composed this message, resolved from
+    /// `message_details.author_device_jid` → `jid.device`. `Some(0)` = the
+    /// account's primary phone; `Some(n)` (n>0) = a linked / companion device
+    /// (WhatsApp Web/Desktop or a further linked phone). `None` = the database
+    /// recorded no composing device for this message — which is NOT evidence it
+    /// was sent from the primary phone (WhatsApp stores this for only a minority
+    /// of messages).
+    #[serde(default)]
+    pub composing_device: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -753,6 +762,7 @@ mod new_types_tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: None,
+            composing_device: None,
         };
         let json = serde_json::to_string(&m).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -885,6 +895,7 @@ mod new_types_tests {
             edit_history: vec![],
             receipts: vec![],
             forwarded_from: Some(origin),
+            composing_device: None,
         };
         let json = serde_json::to_string(&m).unwrap();
         assert!(
