@@ -535,8 +535,8 @@ pub fn write_thread_view(
 mod tests {
     use super::*;
     use chat4n6_plugin_api::{
-        Chat, EvidenceSource, ExtractionResult, ForensicTimestamp, ForensicWarning, MediaRef,
-        Message, MessageContent,
+        CallRecord, CallResult, Chat, EvidenceSource, ExtractionResult, ForensicTimestamp,
+        ForensicWarning, MediaRef, Message, MessageContent,
     };
 
     fn ts(ms: i64) -> ForensicTimestamp {
@@ -828,6 +828,81 @@ mod tests {
         assert!(
             !html.contains("linked :2"),
             "a received message must not carry an outgoing-device badge"
+        );
+    }
+
+    // ── Inline calls in the thread ──────────────────────────────────────────
+    // WhatsApp voice/video call events must appear inline in the conversation
+    // timeline (like messages), scoped to the chat whose participant they name,
+    // never leaking into another chat.
+
+    fn call(
+        id: i64,
+        participant: &str,
+        from_me: bool,
+        video: bool,
+        result: CallResult,
+    ) -> CallRecord {
+        CallRecord {
+            call_id: id,
+            participants: vec![participant.to_string()],
+            from_me,
+            video,
+            group_call: false,
+            duration_secs: 0,
+            call_result: result,
+            timestamp: ts(1710513100000 + id * 1000),
+            source: EvidenceSource::Live,
+            call_creator_device_jid: None,
+        }
+    }
+
+    #[test]
+    fn test_viewer_renders_missed_call_inline() {
+        let mut result = make_result_with(vec![]);
+        // make_result_with's chat.jid is "alice@s.whatsapp.net"
+        result.calls = vec![call(
+            1,
+            "alice@s.whatsapp.net",
+            false,
+            false,
+            CallResult::Missed,
+        )];
+        let html = render_thread_view(&result, "case");
+        assert!(
+            html.contains("Missed voice call"),
+            "a missed voice call must render inline in the thread"
+        );
+    }
+
+    #[test]
+    fn test_viewer_renders_connected_video_call_with_direction() {
+        let mut result = make_result_with(vec![]);
+        let mut c = call(1, "alice@s.whatsapp.net", true, true, CallResult::Connected);
+        c.duration_secs = 95;
+        result.calls = vec![c];
+        let html = render_thread_view(&result, "case");
+        assert!(
+            html.contains("Outgoing video call"),
+            "a connected outgoing video call must be labelled with direction and kind"
+        );
+    }
+
+    #[test]
+    fn test_viewer_does_not_leak_call_into_wrong_chat() {
+        let mut result = make_result_with(vec![]);
+        // participant does NOT match the chat's jid (alice@…): must not render.
+        result.calls = vec![call(
+            1,
+            "bob@s.whatsapp.net",
+            false,
+            false,
+            CallResult::Missed,
+        )];
+        let html = render_thread_view(&result, "case");
+        assert!(
+            !html.contains("Missed voice call"),
+            "a call whose participant does not match the chat jid must not render in it"
         );
     }
 
