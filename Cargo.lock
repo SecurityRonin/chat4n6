@@ -253,6 +253,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "chat4n6-fs",
+ "chat4n6-imessage",
  "chat4n6-ios-whatsapp",
  "chat4n6-plugin-api",
  "chat4n6-report",
@@ -277,6 +278,17 @@ dependencies = [
  "chat4n6-plugin-api",
  "dar-archive",
  "ios-backup",
+ "rusqlite",
+ "tempfile",
+]
+
+[[package]]
+name = "chat4n6-imessage"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "chat4n6-plugin-api",
+ "chat4n6-sqlite-forensics",
  "rusqlite",
  "tempfile",
 ]
